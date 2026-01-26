@@ -1,0 +1,50 @@
+---
+title: The Golden Test
+author: Audiobooker Test Suite
+---
+
+# Chapter 1: The Meeting
+
+The café was quiet in the late afternoon. Sarah sat by the window, watching raindrops trace paths down the glass.
+
+"You're early," said Marcus, sliding into the seat across from her.
+
+"I'm always early," Sarah replied. "You know that."
+
+Marcus smiled. "Fair enough." He signaled the waiter. "Two coffees, please."
+
+Sarah leaned forward. "So what did you want to talk about?"
+
+"The project," Marcus said quietly. "There's been a complication."
+
+[Sarah|worried] "What kind of complication?"
+
+Marcus hesitated. "The kind that keeps me up at night."
+
+The waiter arrived with their drinks. Neither spoke until he left.
+
+"Tell me everything," Sarah whispered.
+
+# Chapter 2: The Revelation
+
+Marcus pulled a folder from his bag. His hands trembled slightly.
+
+"I found this in the old archives," he explained. "No one was supposed to see it."
+
+Sarah opened the folder carefully. Inside were photographs, yellowed documents, handwritten notes in faded ink.
+
+"This is from 1952," she said. "What does it have to do with our project?"
+
+"Everything," Marcus replied grimly. "Look at page three."
+
+She turned the pages. When she reached the third document, her eyes widened.
+
+[Sarah|shocked] "This can't be real."
+
+"I thought the same thing," said Marcus. "But I've verified it three times."
+
+Sarah closed the folder. "If this gets out..."
+
+"Exactly." Marcus took a long sip of his coffee. "Now you understand why I couldn't discuss this over the phone."
+
+The rain continued falling outside. Neither of them noticed.
