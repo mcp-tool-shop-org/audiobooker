@@ -3,8 +3,8 @@ requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "audiobooker"
-version = "0.2.0"
+name = "audiobooker-ai"
+version = "0.2.1"
 description = "AI Audiobook Generator - Convert books to narrated audiobooks"
 readme = "README.md"
 license = {text = "MIT"}
@@ -48,9 +48,9 @@ dev = [
 audiobooker = "audiobooker.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/mcp-tool-shop/audiobooker"
-Repository = "https://github.com/mcp-tool-shop/audiobooker"
-Issues = "https://github.com/mcp-tool-shop/audiobooker/issues"
+Homepage = "https://github.com/mcp-tool-shop-org/audiobooker"
+Repository = "https://github.com/mcp-tool-shop-org/audiobooker"
+Issues = "https://github.com/mcp-tool-shop-org/audiobooker/issues"
 
 [tool.setuptools.packages.find]
 where = ["."]
