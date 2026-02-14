@@ -3,13 +3,17 @@ Render Engine for Audiobooker.
 
 Synthesizes chapters to audio. Accepts an injected TTSEngine for testability;
 defaults to the real voice-soundboard DialogueEngine when none is provided.
+
+Supports persistent chapter cache with manifest-driven resume.
 """
 
 import json
 import logging
+import os
 import tempfile
 import time
 from dataclasses import dataclass, asdict
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Callable, TYPE_CHECKING
 
@@ -187,7 +191,28 @@ def render_chapter(
 
 
 # ---------------------------------------------------------------------------
-# Project rendering
+# Render summary (returned to caller for user-facing messages)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class RenderSummary:
+    """Result of render_project with per-chapter accounting."""
+    output_path: Path
+    rendered: int = 0
+    skipped_cached: int = 0
+    failed: int = 0
+    total: int = 0
+    cache_dir: str = ""
+    manifest_path: str = ""
+    failed_chapters: list[dict] = None  # type: ignore[assignment]
+
+    def __post_init__(self):
+        if self.failed_chapters is None:
+            self.failed_chapters = []
+
+
+# ---------------------------------------------------------------------------
+# Project rendering (with persistent cache + resume)
 # ---------------------------------------------------------------------------
 
 def render_project(
@@ -197,9 +222,16 @@ def render_project(
     *,
     engine: Optional[TTSEngine] = None,
     assembler: Optional[Callable] = None,
+    cache_root: Optional[Path] = None,
+    resume: bool = True,
+    from_chapter: Optional[int] = None,
+    allow_partial: bool = False,
 ) -> Path:
     """
     Render all chapters and assemble final audiobook.
+
+    Chapter WAVs are persisted to a stable cache directory so that
+    failures are non-catastrophic and reruns skip completed work.
 
     Args:
         project: AudiobookProject to render.
@@ -207,59 +239,185 @@ def render_project(
         progress_callback: Callback(current_chapter, total_chapters, status).
         engine: Injected TTSEngine (defaults to voice-soundboard).
         assembler: Injected assembly function (defaults to assemble_m4b).
+        cache_root: Override cache directory (default: derive from project).
+        resume: If True, skip chapters whose cache entries are still valid.
+        from_chapter: Start rendering from this chapter index (0-based).
+        allow_partial: If True, assemble even if some chapters failed.
 
     Returns:
         Path to final audiobook file.
     """
     from audiobooker.renderer.output import assemble_m4b as _default_assembler
+    from audiobooker.renderer.cache_manifest import (
+        CacheManifest, ChapterCacheEntry,
+        load_manifest, save_manifest,
+        get_cache_root, get_chapter_wav_path, get_manifest_path,
+    )
+    from audiobooker.renderer.hash_utils import (
+        chapter_text_hash, casting_hash, render_params_hash,
+    )
 
     if assembler is None:
         assembler = _default_assembler
 
     output_path = Path(output_path)
-    temp_dir = Path(tempfile.mkdtemp(prefix="audiobooker_"))
+
+    # Determine cache root
+    if cache_root is None:
+        project_dir = _resolve_project_dir(project)
+        cache_root = get_cache_root(project_dir)
+
+    manifest_path = get_manifest_path(cache_root)
 
     logger.info(
         f"RENDER_START: project={project.title!r} "
-        f"chapters={len(project.chapters)} output={output_path}"
+        f"chapters={len(project.chapters)} output={output_path} "
+        f"cache={cache_root} resume={resume}"
+    )
+
+    # Compute current hashes
+    current_casting_hash = casting_hash(project.casting)
+    current_params_hash = render_params_hash(project.config)
+
+    # Load or create manifest
+    manifest = load_manifest(manifest_path) if resume else None
+    if manifest is None:
+        manifest = CacheManifest(book_title=project.title)
+
+    # Ensure cache dirs exist
+    cache_root.mkdir(parents=True, exist_ok=True)
+    (cache_root / "chapters").mkdir(exist_ok=True)
+    (cache_root / "manifests").mkdir(exist_ok=True)
+
+    summary = RenderSummary(
+        output_path=output_path,
+        total=len(project.chapters),
+        cache_dir=str(cache_root),
+        manifest_path=str(manifest_path),
     )
 
     try:
-        chapter_audio_paths = []
-        total_render_time = 0.0
-
         for i, chapter in enumerate(project.chapters):
+            if from_chapter is not None and i < from_chapter:
+                # Skip chapters before the requested start
+                if progress_callback:
+                    progress_callback(i + 1, len(project.chapters), f"Skipping: {chapter.title}")
+                continue
+
             if progress_callback:
                 progress_callback(i + 1, len(project.chapters), f"Rendering: {chapter.title}")
 
-            if chapter.is_rendered and chapter.audio_path and chapter.audio_path.exists():
-                logger.info(f"RENDER_SKIP: chapter={i} title={chapter.title!r} (already rendered)")
-                chapter_audio_paths.append(chapter.audio_path)
-                continue
+            current_text_hash = chapter_text_hash(chapter)
 
-            chapter_path = temp_dir / f"chapter_{i:03d}.wav"
+            # Check cache
+            if resume:
+                existing = manifest.get_entry(i)
+                if existing and existing.is_valid(current_text_hash, current_casting_hash, current_params_hash):
+                    # Cache hit — restore chapter state from cache
+                    chapter.audio_path = Path(existing.wav_path)
+                    chapter.duration_seconds = existing.duration_s
+                    logger.info(f"RENDER_CACHE_HIT: chapter={i} title={chapter.title!r}")
+                    summary.skipped_cached += 1
+                    continue
+
+            # Cache miss — render this chapter
+            target_path = get_chapter_wav_path(cache_root, i)
+            tmp_path = target_path.with_suffix(".wav.tmp")
+
             start = time.time()
-            render_chapter(chapter, project.casting, chapter_path, engine=engine)
-            elapsed = time.time() - start
-            total_render_time += elapsed
+            try:
+                render_chapter(chapter, project.casting, tmp_path, engine=engine)
 
-            chapter_audio_paths.append(chapter_path)
+                # Atomic rename: tmp → final
+                if target_path.exists():
+                    target_path.unlink()
+                os.rename(str(tmp_path), str(target_path))
 
+                # Update chapter to point at cached path
+                chapter.audio_path = target_path
+                # duration_seconds is set by render_chapter
+
+                elapsed = time.time() - start
+
+                # Update manifest entry
+                entry = ChapterCacheEntry(
+                    chapter_index=i,
+                    text_hash=current_text_hash,
+                    casting_hash=current_casting_hash,
+                    render_params_hash=current_params_hash,
+                    wav_path=str(target_path),
+                    duration_s=chapter.duration_seconds,
+                    status="ok",
+                    created_at=datetime.now(timezone.utc).isoformat(),
+                )
+                manifest.set_entry(entry)
+                save_manifest(manifest, manifest_path)
+
+                summary.rendered += 1
+                logger.info(
+                    f"RENDER_OK: chapter={i} title={chapter.title!r} "
+                    f"elapsed={elapsed:.1f}s duration={chapter.duration_seconds:.1f}s"
+                )
+
+            except Exception as e:
+                # Clean up partial tmp file
+                if tmp_path.exists():
+                    tmp_path.unlink(missing_ok=True)
+
+                # Record failure in manifest (prior OK chapters are preserved)
+                entry = ChapterCacheEntry(
+                    chapter_index=i,
+                    text_hash=current_text_hash,
+                    casting_hash=current_casting_hash,
+                    render_params_hash=current_params_hash,
+                    wav_path="",
+                    status="failed",
+                    error_summary=str(e)[:200],
+                    created_at=datetime.now(timezone.utc).isoformat(),
+                )
+                manifest.set_entry(entry)
+                save_manifest(manifest, manifest_path)
+
+                summary.failed += 1
+                summary.failed_chapters.append({
+                    "index": i,
+                    "title": chapter.title,
+                    "error": str(e),
+                })
+
+                logger.error(f"RENDER_CHAPTER_FAIL: chapter={i} error={e}")
+
+                if not allow_partial:
+                    raise RenderError(
+                        f"Chapter {i} ({chapter.title!r}) failed: {e}",
+                        summary=summary,
+                    ) from e
+
+        # Verify all chapters are ready for assembly
+        ok_paths = []
+        for i, chapter in enumerate(project.chapters):
+            if chapter.audio_path and chapter.audio_path.exists():
+                ok_paths.append((chapter.audio_path, chapter.title, chapter.duration_seconds))
+            elif not allow_partial:
+                raise RenderError(
+                    f"Chapter {i} ({chapter.title!r}) has no audio — "
+                    f"cannot assemble. Use --allow-partial or fix and --resume.",
+                    summary=summary,
+                )
+
+        if not ok_paths:
+            raise RenderError("No chapters rendered successfully.", summary=summary)
+
+        # Assembly
         if progress_callback:
-            progress_callback(len(project.chapters), len(project.chapters), "Assembling audiobook...")
+            progress_callback(
+                len(project.chapters), len(project.chapters), "Assembling audiobook..."
+            )
 
-        logger.info(
-            f"RENDER_ASSEMBLE: chapters={len(chapter_audio_paths)} "
-            f"total_render_time={total_render_time:.1f}s"
-        )
-
-        chapter_info = [
-            (path, chapter.title, chapter.duration_seconds)
-            for path, chapter in zip(chapter_audio_paths, project.chapters)
-        ]
+        logger.info(f"RENDER_ASSEMBLE: chapters={len(ok_paths)}")
 
         assembly = assembler(
-            chapter_files=chapter_info,
+            chapter_files=ok_paths,
             output_path=output_path,
             title=project.title,
             author=project.author,
@@ -267,6 +425,7 @@ def render_project(
         )
 
         project.output_path = assembly.output_path
+        summary.output_path = assembly.output_path
 
         total_duration = sum(c.duration_seconds for c in project.chapters)
         if not assembly.chapters_embedded:
@@ -277,11 +436,40 @@ def render_project(
         else:
             logger.info(f"RENDER_COMPLETE: output={assembly.output_path} duration={total_duration:.1f}s")
 
+        _log_summary(summary)
         return assembly.output_path
+
+    except RenderError:
+        _log_summary(summary)
+        raise
 
     except Exception as e:
         logger.error(f"RENDER_PROJECT_FAIL: error={e}")
+        _log_summary(summary)
         raise
 
-    finally:
-        pass
+
+class RenderError(RuntimeError):
+    """Rendering failed with recoverable context."""
+
+    def __init__(self, message: str, summary: Optional[RenderSummary] = None):
+        super().__init__(message)
+        self.summary = summary
+
+
+def _resolve_project_dir(project: "AudiobookProject") -> Path:
+    """Derive the project directory for cache placement."""
+    if project.project_path:
+        return project.project_path.parent
+    if project.source_path:
+        return Path(project.source_path).parent
+    return Path.cwd()
+
+
+def _log_summary(summary: RenderSummary) -> None:
+    """Log the render summary."""
+    logger.info(
+        f"RENDER_SUMMARY: rendered={summary.rendered} "
+        f"cached={summary.skipped_cached} failed={summary.failed} "
+        f"total={summary.total} cache={summary.cache_dir}"
+    )

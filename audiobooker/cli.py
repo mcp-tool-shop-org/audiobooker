@@ -55,6 +55,10 @@ def create_parser() -> argparse.ArgumentParser:
     render_parser.add_argument("-p", "--project", help="Project file")
     render_parser.add_argument("-o", "--output", help="Output file path")
     render_parser.add_argument("-c", "--chapter", type=int, help="Render single chapter (0-indexed)")
+    render_parser.add_argument("--no-resume", action="store_true", help="Force full re-render (ignore cache)")
+    render_parser.add_argument("--from-chapter", type=int, metavar="N", help="Start rendering from chapter N (0-indexed)")
+    render_parser.add_argument("--allow-partial", action="store_true", help="Assemble even if some chapters failed")
+    render_parser.add_argument("--clean-cache", action="store_true", help="Delete render cache before starting")
 
     # --- info ---
     info_parser = subparsers.add_parser("info", help="Show project information")
@@ -237,10 +241,22 @@ def cmd_compile(args) -> int:
 def cmd_render(args) -> int:
     """Render audiobook."""
     from audiobooker import AudiobookProject
+    from audiobooker.renderer.engine import RenderError
 
     try:
         project_path = find_project_file(args.project)
         project = AudiobookProject.load(project_path)
+
+        # Handle --clean-cache before rendering
+        if getattr(args, "clean_cache", False):
+            from audiobooker.renderer.cache_manifest import get_cache_root
+            import shutil
+            cache_dir = get_cache_root(project_path.parent)
+            if cache_dir.exists():
+                shutil.rmtree(cache_dir)
+                print(f"Cache cleared: {cache_dir}")
+            else:
+                print("No cache to clean.")
 
         if args.chapter is not None:
             # Render single chapter
@@ -251,12 +267,24 @@ def cmd_render(args) -> int:
         else:
             # Render full audiobook
             output = args.output or f"{project.title}.m4b"
+            resume = not getattr(args, "no_resume", False)
+            from_chapter = getattr(args, "from_chapter", None)
+            allow_partial = getattr(args, "allow_partial", False)
+
             print(f"Rendering audiobook to: {output}")
+            if not resume:
+                print("  (cache disabled — full re-render)")
 
             def progress(current, total, status):
                 print(f"  [{current}/{total}] {status}")
 
-            path = project.render(output, progress_callback=progress)
+            path = project.render(
+                output,
+                progress_callback=progress,
+                resume=resume,
+                from_chapter=from_chapter,
+                allow_partial=allow_partial,
+            )
             project.save()
 
             print(f"\nAudiobook created: {path}")
@@ -264,11 +292,42 @@ def cmd_render(args) -> int:
 
         return 0
 
+    except RenderError as e:
+        _print_render_failure(e)
+        return 1
+
     except Exception as e:
         print(f"Error: {e}")
         import traceback
         traceback.print_exc()
         return 1
+
+
+def _print_render_failure(e: "RenderError") -> None:
+    """Print user-friendly render failure message with recovery hints."""
+    print(f"\nRender failed: {e}")
+
+    summary = e.summary
+    if summary is None:
+        return
+
+    if summary.failed_chapters:
+        print("\nFailed chapters:")
+        for ch in summary.failed_chapters:
+            print(f"  Chapter {ch['index']}: {ch['title']}")
+            print(f"    Error: {ch['error']}")
+
+    print(f"\nRender summary: {summary.rendered} rendered, "
+          f"{summary.skipped_cached} cached, {summary.failed} failed "
+          f"(of {summary.total} total)")
+
+    if summary.cache_dir:
+        print(f"\nCached chapter audio: {summary.cache_dir}")
+    if summary.manifest_path:
+        print(f"Manifest: {summary.manifest_path}")
+
+    print("\nTo resume: audiobooker render --resume")
+    print("To force:  audiobooker render --no-resume")
 
 
 def cmd_info(args) -> int:

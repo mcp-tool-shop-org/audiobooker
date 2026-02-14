@@ -41,10 +41,12 @@ jobs:
       run: |
         python -c "
         import audiobooker
-        from audiobooker.renderer.engine import render_chapter, render_project
+        from audiobooker.renderer.engine import render_chapter, render_project, RenderError, RenderSummary
         from audiobooker.renderer.protocols import TTSEngine, SynthesisResult, FFmpegRunner, RunResult
         from audiobooker.renderer.ffmpeg_runner import RealFFmpegRunner
         from audiobooker.renderer.output import assemble_m4b, AssemblyResult, generate_chapter_metadata
+        from audiobooker.renderer.cache_manifest import CacheManifest, load_manifest, save_manifest
+        from audiobooker.renderer.hash_utils import sha256_text, sha256_json, chapter_text_hash, casting_hash, render_params_hash
         from audiobooker.casting.voice_registry import validate_voices, get_available_voices
         print('All imports OK')
         "

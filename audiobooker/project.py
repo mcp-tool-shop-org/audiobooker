@@ -396,6 +396,12 @@ class AudiobookProject:
         self,
         output_path: Optional[str | Path] = None,
         progress_callback: Optional[Callable[[int, int, str], None]] = None,
+        *,
+        resume: bool = True,
+        from_chapter: Optional[int] = None,
+        allow_partial: bool = False,
+        engine=None,
+        assembler=None,
     ) -> Path:
         """
         Render all chapters and assemble final audiobook.
@@ -403,6 +409,11 @@ class AudiobookProject:
         Args:
             output_path: Output file path (default: {title}.m4b)
             progress_callback: Callback(current, total, status)
+            resume: Skip chapters with valid cached audio (default True).
+            from_chapter: Start from this chapter index (0-based).
+            allow_partial: Assemble even if some chapters failed.
+            engine: Injected TTSEngine (for testing).
+            assembler: Injected assembly callable (for testing).
 
         Returns:
             Path to output file
@@ -427,7 +438,14 @@ class AudiobookProject:
             self.compile()
 
         # Render
-        result_path = render_project(self, output_path, progress_callback)
+        result_path = render_project(
+            self, output_path, progress_callback,
+            engine=engine,
+            assembler=assembler,
+            resume=resume,
+            from_chapter=from_chapter,
+            allow_partial=allow_partial,
+        )
 
         self.progress.status = "complete"
         self.modified_at = datetime.now().isoformat()

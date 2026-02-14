@@ -184,6 +184,7 @@ class TestRenderProject:
         result = render_project(
             project, tmp_path / "book.m4b",
             engine=engine, assembler=assembler,
+            cache_root=tmp_path / "cache",
         )
 
         assert result.exists()
@@ -196,7 +197,11 @@ class TestRenderProject:
         engine = FakeTTSEngine(duration_per_call=0.25)
         assembler = FakeAssembler()
 
-        render_project(project, tmp_path / "book.m4b", engine=engine, assembler=assembler)
+        render_project(
+            project, tmp_path / "book.m4b",
+            engine=engine, assembler=assembler,
+            cache_root=tmp_path / "cache",
+        )
 
         chapter_files = assembler.calls[0]["chapter_files"]
         assert len(chapter_files) == 3
@@ -216,6 +221,7 @@ class TestRenderProject:
         render_project(
             project, tmp_path / "book.m4b",
             progress_callback=on_progress, engine=engine, assembler=assembler,
+            cache_root=tmp_path / "cache",
         )
 
         assert len(progress) >= 3  # 2 chapters + 1 assembling
@@ -223,19 +229,19 @@ class TestRenderProject:
 
     def test_skips_already_rendered_chapters(self, tmp_path: Path):
         project = self._make_project(num_chapters=2)
-        engine = FakeTTSEngine()
+        engine1 = FakeTTSEngine(duration_per_call=0.5)
         assembler = FakeAssembler()
+        cache = tmp_path / "cache"
 
-        # Pre-render chapter 0
-        wav_path = tmp_path / "pre_rendered.wav"
-        write_silence_wav(wav_path)
-        project.chapters[0].audio_path = wav_path
-        project.chapters[0].duration_seconds = 1.0
+        # First render: both chapters
+        render_project(project, tmp_path / "book1.m4b", engine=engine1, assembler=assembler, cache_root=cache)
+        assert len(engine1.calls) == 2
 
-        render_project(project, tmp_path / "book.m4b", engine=engine, assembler=assembler)
-
-        # Only chapter 1 should have been rendered by the engine
-        assert len(engine.calls) == 1
+        # Second render with resume: both should be cache hits
+        engine2 = FakeTTSEngine(duration_per_call=0.5)
+        assembler2 = FakeAssembler()
+        render_project(project, tmp_path / "book2.m4b", engine=engine2, assembler=assembler2, cache_root=cache)
+        assert len(engine2.calls) == 0
 
     def test_assembly_failure_surfaces(self, tmp_path: Path):
         project = self._make_project(num_chapters=1)
@@ -245,6 +251,7 @@ class TestRenderProject:
         result = render_project(
             project, tmp_path / "book.m4b",
             engine=engine, assembler=assembler,
+            cache_root=tmp_path / "cache",
         )
 
         # Should still return a path (M4A fallback)

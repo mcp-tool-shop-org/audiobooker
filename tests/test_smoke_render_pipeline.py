@@ -56,7 +56,10 @@ class TestHermeticRenderPipeline:
         assembler = FakeAssembler()
 
         out = tmp_path / "book.m4b"
-        result = render_project(project, out, engine=engine, assembler=assembler)
+        result = render_project(
+            project, out, engine=engine, assembler=assembler,
+            cache_root=tmp_path / "cache",
+        )
 
         assert result.exists()
         assert len(engine.calls) == len(project.chapters)
@@ -79,6 +82,7 @@ class TestHermeticRenderPipeline:
             project, tmp_path / "book.m4b",
             progress_callback=on_progress,
             engine=engine, assembler=assembler,
+            cache_root=tmp_path / "cache",
         )
 
         # At least one event per chapter + assembly
@@ -89,31 +93,48 @@ class TestHermeticRenderPipeline:
         engine = FakeTTSEngine(duration_per_call=0.75)
         assembler = FakeAssembler()
 
-        render_project(project, tmp_path / "book.m4b", engine=engine, assembler=assembler)
+        render_project(
+            project, tmp_path / "book.m4b",
+            engine=engine, assembler=assembler,
+            cache_root=tmp_path / "cache",
+        )
 
         for ch in project.chapters:
             assert ch.duration_seconds == 0.75
             assert ch.audio_path is not None
 
     def test_skip_already_rendered(self, project: AudiobookProject, tmp_path: Path):
-        engine = FakeTTSEngine(duration_per_call=1.0)
-        assembler = FakeAssembler()
+        cache = tmp_path / "cache"
+        engine1 = FakeTTSEngine(duration_per_call=1.0)
+        assembler1 = FakeAssembler()
 
-        # Pre-render chapter 0
-        pre = tmp_path / "pre.wav"
-        render_chapter(project.chapters[0], project.casting, pre, engine=engine)
+        # First full render
+        render_project(
+            project, tmp_path / "book1.m4b",
+            engine=engine1, assembler=assembler1,
+            cache_root=cache,
+        )
+        assert len(engine1.calls) == len(project.chapters)
 
+        # Second render: all chapters should be cache hits
         engine2 = FakeTTSEngine(duration_per_call=2.0)
-        render_project(project, tmp_path / "book.m4b", engine=engine2, assembler=assembler)
-
-        # engine2 should only have rendered the remaining chapters
-        assert len(engine2.calls) == len(project.chapters) - 1
+        assembler2 = FakeAssembler()
+        render_project(
+            project, tmp_path / "book2.m4b",
+            engine=engine2, assembler=assembler2,
+            cache_root=cache,
+        )
+        assert len(engine2.calls) == 0
 
     def test_voice_mapping_flows_through(self, project: AudiobookProject, tmp_path: Path):
         engine = FakeTTSEngine()
         assembler = FakeAssembler()
 
-        render_project(project, tmp_path / "book.m4b", engine=engine, assembler=assembler)
+        render_project(
+            project, tmp_path / "book.m4b",
+            engine=engine, assembler=assembler,
+            cache_root=tmp_path / "cache",
+        )
 
         # Every TTS call should have received voice mappings
         for call in engine.calls:
