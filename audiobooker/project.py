@@ -146,12 +146,16 @@ class AudiobookProject:
             Initialized AudiobookProject
         """
         from audiobooker.parser.text import parse_text
+        from audiobooker.language.profile import get_profile
 
         path = Path(path)
         if not path.exists():
             raise FileNotFoundError(f"Text file not found: {path}")
 
-        metadata, chapters = parse_text(path)
+        config = kwargs.get("config", ProjectConfig())
+        profile = get_profile(config.language_code)
+
+        metadata, chapters = parse_text(path, profile=profile)
 
         project = cls(
             title=metadata.get("title", path.stem),
@@ -164,6 +168,95 @@ class AudiobookProject:
         # Auto-add narrator to casting
         project.cast("narrator", "af_heart", emotion="calm", description="Default narrator")
 
+        return project
+
+    @classmethod
+    def from_string(
+        cls,
+        text: str,
+        title: str = "Untitled",
+        author: str = "",
+        lang: str = "en",
+        **kwargs,
+    ) -> "AudiobookProject":
+        """
+        Create project from a raw text string (no file needed).
+
+        Args:
+            text: Full book text.
+            title: Book title.
+            author: Book author.
+            lang: Language code (default "en").
+            **kwargs: Additional project config.
+
+        Returns:
+            Initialized AudiobookProject.
+        """
+        from audiobooker.parser.text import split_into_chapters, extract_frontmatter
+        from audiobooker.language.profile import get_profile
+
+        config = kwargs.pop("config", ProjectConfig(language_code=lang))
+        config.language_code = lang
+        profile = get_profile(lang)
+
+        metadata, body = extract_frontmatter(text)
+        chapter_data = split_into_chapters(body, profile=profile)
+
+        chapters = [
+            Chapter(index=i, title=ch_title, raw_text=content)
+            for i, (ch_title, content) in enumerate(chapter_data)
+        ]
+
+        project = cls(
+            title=metadata.get("title", title),
+            author=metadata.get("author", author),
+            chapters=chapters,
+            config=config,
+            **kwargs,
+        )
+
+        project.cast("narrator", "af_heart", emotion="calm", description="Default narrator")
+        return project
+
+    @classmethod
+    def from_chapters(
+        cls,
+        chapters: list[tuple[str, str]],
+        title: str = "Untitled",
+        author: str = "",
+        lang: str = "en",
+        **kwargs,
+    ) -> "AudiobookProject":
+        """
+        Create project from pre-split chapters.
+
+        Args:
+            chapters: List of (title, raw_text) tuples.
+            title: Book title.
+            author: Book author.
+            lang: Language code (default "en").
+            **kwargs: Additional project config.
+
+        Returns:
+            Initialized AudiobookProject.
+        """
+        config = kwargs.pop("config", ProjectConfig(language_code=lang))
+        config.language_code = lang
+
+        chapter_objects = [
+            Chapter(index=i, title=ch_title, raw_text=content)
+            for i, (ch_title, content) in enumerate(chapters)
+        ]
+
+        project = cls(
+            title=title,
+            author=author,
+            chapters=chapter_objects,
+            config=config,
+            **kwargs,
+        )
+
+        project.cast("narrator", "af_heart", emotion="calm", description="Default narrator")
         return project
 
     @classmethod
@@ -310,9 +403,9 @@ class AudiobookProject:
         Get speakers that appear in text but aren't cast.
 
         Returns:
-            Set of uncast speaker names
+            Set of uncast speaker names (canonical keys)
         """
-        detected = self.get_detected_speakers()
+        detected = {self.casting.normalize_key(s) for s in self.get_detected_speakers()}
         cast = set(self.casting.characters.keys())
         return detected - cast
 
@@ -352,6 +445,9 @@ class AudiobookProject:
             progress_callback: Callback(current, total, chapter_title)
         """
         from audiobooker.casting.dialogue import compile_chapter
+        from audiobooker.language.profile import get_profile
+
+        profile = get_profile(self.config.language_code)
 
         self.progress.status = "compiling"
         self.progress.total_chapters = len(self.chapters)
@@ -362,7 +458,7 @@ class AudiobookProject:
                 progress_callback(i + 1, len(self.chapters), chapter.title)
 
             # Compile chapter to utterances
-            utterances = compile_chapter(chapter, self.casting)
+            utterances = compile_chapter(chapter, self.casting, profile=profile)
             chapter.utterances = utterances
 
         self.progress.status = "idle"
@@ -379,12 +475,15 @@ class AudiobookProject:
             List of Utterances
         """
         from audiobooker.casting.dialogue import compile_chapter
+        from audiobooker.language.profile import get_profile
+
+        profile = get_profile(self.config.language_code)
 
         if chapter_index < 0 or chapter_index >= len(self.chapters):
             raise IndexError(f"Chapter index {chapter_index} out of range")
 
         chapter = self.chapters[chapter_index]
-        utterances = compile_chapter(chapter, self.casting)
+        utterances = compile_chapter(chapter, self.casting, profile=profile)
         chapter.utterances = utterances
         return utterances
 

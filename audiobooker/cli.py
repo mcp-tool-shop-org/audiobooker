@@ -33,6 +33,7 @@ def create_parser() -> argparse.ArgumentParser:
     new_parser = subparsers.add_parser("new", help="Create new project from source file")
     new_parser.add_argument("source", help="Source file (EPUB, TXT, MD)")
     new_parser.add_argument("-o", "--output", help="Output project file path")
+    new_parser.add_argument("--lang", default="en", metavar="CODE", help="Language code (default: en)")
 
     # --- load ---
     load_parser = subparsers.add_parser("load", help="Load existing project")
@@ -77,6 +78,16 @@ def create_parser() -> argparse.ArgumentParser:
     # --- speakers ---
     speakers_parser = subparsers.add_parser("speakers", help="List detected speakers")
     speakers_parser.add_argument("-p", "--project", help="Project file")
+
+    # --- from-stdin ---
+    stdin_parser = subparsers.add_parser(
+        "from-stdin",
+        help="Create project from stdin text",
+    )
+    stdin_parser.add_argument("-t", "--title", default="Untitled", help="Book title")
+    stdin_parser.add_argument("-a", "--author", default="", help="Author name")
+    stdin_parser.add_argument("--lang", default="en", metavar="CODE", help="Language code (default: en)")
+    stdin_parser.add_argument("-o", "--output", help="Output project file path")
 
     # --- review-export ---
     review_export_parser = subparsers.add_parser(
@@ -146,10 +157,23 @@ def cmd_new(args) -> int:
     print(f"Creating project from: {source}")
 
     try:
+        from audiobooker.language.profile import get_profile, available_profiles
+        from audiobooker.models import ProjectConfig
+
+        lang = getattr(args, "lang", "en")
+        try:
+            get_profile(lang)
+        except ValueError:
+            print(f"Error: Unsupported language: {lang!r}")
+            print(f"Available: {', '.join(available_profiles())}")
+            return 1
+
+        config = ProjectConfig(language_code=lang)
+
         if suffix == ".epub":
-            project = AudiobookProject.from_epub(source)
+            project = AudiobookProject.from_epub(source, config=config)
         elif suffix in (".txt", ".md", ".markdown"):
-            project = AudiobookProject.from_text(source)
+            project = AudiobookProject.from_text(source, config=config)
         else:
             print(f"Error: Unsupported file format: {suffix}")
             print("Supported: .epub, .txt, .md")
@@ -527,6 +551,44 @@ def cmd_review_import(args) -> int:
         return 1
 
 
+def cmd_from_stdin(args) -> int:
+    """Create project from stdin text."""
+    from audiobooker import AudiobookProject
+
+    if sys.stdin.isatty():
+        print("Error: No input on stdin. Pipe text in, e.g.:")
+        print('  cat book.txt | audiobooker from-stdin --title "My Book"')
+        return 1
+
+    text = sys.stdin.read()
+    if not text.strip():
+        print("Error: stdin was empty")
+        return 1
+
+    try:
+        project = AudiobookProject.from_string(
+            text,
+            title=args.title,
+            author=args.author,
+            lang=args.lang,
+        )
+
+        output_path = args.output or f"{args.title}.audiobooker"
+        project.save(output_path)
+
+        print(f"Project created: {output_path}")
+        print(f"  Title: {project.title}")
+        print(f"  Chapters: {len(project.chapters)}")
+        print(f"  Words: ~{project.total_words:,}")
+        print(f"  Language: {args.lang}")
+
+        return 0
+
+    except Exception as e:
+        print(f"Error: {e}")
+        return 1
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     """Main entry point."""
     parser = create_parser()
@@ -545,6 +607,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         "voices": cmd_voices,
         "chapters": cmd_chapters,
         "speakers": cmd_speakers,
+        "from-stdin": cmd_from_stdin,
         "review-export": cmd_review_export,
         "review-import": cmd_review_import,
     }

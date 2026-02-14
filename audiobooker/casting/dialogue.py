@@ -13,113 +13,78 @@ Detection Heuristics:
 Attribution:
 - Looks for "said X" / "X said" patterns
 - Falls back to "unknown" which maps to narrator
+
+All language-specific rules (verbs, blacklist, quote pairs, etc.)
+are drawn from a LanguageProfile.  Default is English.
 """
 
 import re
 from typing import Optional
 
 from audiobooker.models import Chapter, Utterance, UtteranceType, CastingTable
+from audiobooker.language.profile import LanguageProfile, get_profile
 
 
-# Patterns for detecting dialogue
-DOUBLE_QUOTE_PATTERN = re.compile(
-    r'"([^"]+)"',
-    re.DOTALL
-)
+# ---------------------------------------------------------------------------
+# Quote-pattern compilation (from profile)
+# ---------------------------------------------------------------------------
 
-SINGLE_QUOTE_PATTERN = re.compile(
-    r"'([^']+)'",
-    re.DOTALL
-)
+def _build_quote_patterns(
+    profile: LanguageProfile,
+    include_single_quotes: bool = False,
+) -> list[tuple[re.Pattern, bool]]:
+    """
+    Compile regex patterns for detecting quoted segments.
 
-# Smart/curly quotes
-SMART_QUOTE_PATTERN = re.compile(
-    r'[""]([^""]+)[""]',
-    re.DOTALL
-)
+    Returns list of (pattern, is_dialogue) tuples.
+    Each pattern has one capture group for the quoted content.
+    """
+    patterns = []
+
+    # Double quotes
+    for open_q, close_q in profile.dialogue_quotes:
+        pat = re.compile(
+            rf'{re.escape(open_q)}([^{re.escape(close_q)}]+){re.escape(close_q)}',
+            re.DOTALL,
+        )
+        patterns.append((pat, True))
+
+    # Smart/curly quotes
+    for open_q, close_q in profile.smart_quotes:
+        pat = re.compile(
+            rf'{re.escape(open_q)}([^{re.escape(close_q)}]+){re.escape(close_q)}',
+            re.DOTALL,
+        )
+        patterns.append((pat, True))
+
+    # Single quotes (optional)
+    if include_single_quotes:
+        for open_q, close_q in profile.single_quotes:
+            pat = re.compile(
+                rf'{re.escape(open_q)}([^{re.escape(close_q)}]+){re.escape(close_q)}',
+                re.DOTALL,
+            )
+            patterns.append((pat, True))
+
+    return patterns
+
 
 # Inline override pattern: [Character|emotion] or [Character]
 INLINE_OVERRIDE_PATTERN = re.compile(
     r'\[([^\]|]+)(?:\|([^\]]+))?\]\s*',
 )
 
-# Speaker attribution patterns (for auto-detection)
-# "said Alice", "Alice said", "whispered Bob", "Bob muttered"
-# Pattern captures single capitalized word (name), not followed by lowercase continuation
-SAID_PATTERNS = [
-    # "said Alice" - verb then name
-    re.compile(
-        r'(?:said|asked|replied|answered|whispered|shouted|muttered|exclaimed|'
-        r'cried|called|yelled|screamed|murmured|demanded|pleaded|begged|'
-        r'suggested|agreed|added|continued|explained|insisted|admitted|'
-        r'confessed|announced|declared|stated|mentioned|noted|observed|'
-        r'remarked|commented|groaned|sighed|laughed|chuckled|giggled|sobbed)\s+'
-        r'([A-Z][a-z]+)(?:\s|[,.\!\?]|$)',
-        re.IGNORECASE
-    ),
-    # "Alice said" - name then verb
-    re.compile(
-        r'([A-Z][a-z]+)\s+'
-        r'(?:said|asked|replied|answered|whispered|shouted|muttered|exclaimed|'
-        r'cried|called|yelled|screamed|murmured|demanded|pleaded|begged|'
-        r'suggested|agreed|added|continued|explained|insisted|admitted|'
-        r'confessed|announced|declared|stated|mentioned|noted|observed|'
-        r'remarked|commented|groaned|sighed|laughed|chuckled|giggled|sobbed)',
-        re.IGNORECASE
-    ),
-]
 
-# Emotion hints from attribution verbs
-EMOTION_HINTS = {
-    "whispered": "whisper",
-    "shouted": "angry",
-    "yelled": "angry",
-    "screamed": "fearful",
-    "muttered": "grumpy",
-    "exclaimed": "excited",
-    "cried": "sad",
-    "sobbed": "sad",
-    "laughed": "happy",
-    "chuckled": "happy",
-    "giggled": "happy",
-    "sighed": "sad",
-    "groaned": "grumpy",
-    "demanded": "angry",
-    "pleaded": "sad",
-    "begged": "sad",
-}
+# ---------------------------------------------------------------------------
+# Speaker validation
+# ---------------------------------------------------------------------------
 
-# Blacklist: words that look like names but are adverbs/manner descriptions
-# These should NEVER be treated as speaker names
-SPEAKER_BLACKLIST = {
-    # Pronouns (often match patterns like "said he")
-    "he", "she", "it", "they", "we", "i", "you",
-    "him", "her", "them", "us", "me",
-    "his", "hers", "its", "theirs", "ours", "mine", "yours",
-    # Adverbs of manner (how someone speaks)
-    "softly", "loudly", "quietly", "gruffly", "sharply", "gently",
-    "slowly", "quickly", "rapidly", "carefully", "angrily", "sadly",
-    "happily", "nervously", "anxiously", "fearfully", "excitedly",
-    "calmly", "coldly", "warmly", "coolly", "hotly", "flatly",
-    "dryly", "wryly", "sweetly", "bitterly", "harshly", "roughly",
-    "smoothly", "evenly", "unevenly", "breathlessly", "hoarsely",
-    "huskily", "shrilly", "deeply", "lightly", "heavily", "urgently",
-    "desperately", "frantically", "hysterically", "sarcastically",
-    "mockingly", "teasingly", "playfully", "seriously", "solemnly",
-    "thoughtfully", "absently", "distractedly", "sleepily", "wearily",
-    "tiredly", "briskly", "curtly", "abruptly", "suddenly",
-    # Other non-name words that might match
-    "finally", "immediately", "eventually", "meanwhile", "instead",
-    "however", "therefore", "moreover", "furthermore", "nevertheless",
-    # Time/manner phrases that could false-match
-    "wonderfully", "terribly", "horribly", "awfully", "incredibly",
-}
-
-# Valid name pattern: Capitalized word, 2-15 chars, no weird suffixes
-VALID_NAME_PATTERN = re.compile(r'^[A-Z][a-z]{1,14}$')
-
-
-def is_valid_speaker_name(name: str, casting: CastingTable) -> bool:
+def is_valid_speaker_name(
+    name: str,
+    casting: CastingTable,
+    *,
+    profile: Optional[LanguageProfile] = None,
+) -> bool:
     """
     Check if a detected name is likely a valid speaker.
 
@@ -131,6 +96,7 @@ def is_valid_speaker_name(name: str, casting: CastingTable) -> bool:
     Args:
         name: Detected speaker name
         casting: CastingTable to check against
+        profile: Language profile (defaults to English)
 
     Returns:
         True if name should be accepted as a speaker
@@ -138,22 +104,29 @@ def is_valid_speaker_name(name: str, casting: CastingTable) -> bool:
     if not name:
         return False
 
-    name_lower = name.lower()
+    if profile is None:
+        profile = get_profile("en")
+
+    name_key = casting.normalize_key(name)
 
     # Rule 1: Already in casting table = valid
-    if name_lower in casting.characters:
+    if name_key in casting.characters:
         return True
 
     # Rule 2: Blacklisted = invalid
-    if name_lower in SPEAKER_BLACKLIST:
+    if name_key in profile.speaker_blacklist:
         return False
 
     # Rule 3: Must match valid name pattern
-    if not VALID_NAME_PATTERN.match(name):
+    if not profile.is_valid_name(name):
         return False
 
     return True
 
+
+# ---------------------------------------------------------------------------
+# Inline override parsing
+# ---------------------------------------------------------------------------
 
 def parse_inline_override(text: str) -> tuple[Optional[str], Optional[str], str]:
     """
@@ -177,9 +150,15 @@ def parse_inline_override(text: str) -> tuple[Optional[str], Optional[str], str]
     return None, None, text
 
 
+# ---------------------------------------------------------------------------
+# Dialogue detection
+# ---------------------------------------------------------------------------
+
 def detect_dialogue(
     text: str,
     include_single_quotes: bool = False,
+    *,
+    profile: Optional[LanguageProfile] = None,
 ) -> list[tuple[str, bool, int, int]]:
     """
     Detect dialogue segments in text.
@@ -187,31 +166,25 @@ def detect_dialogue(
     Args:
         text: Text to analyze
         include_single_quotes: Also treat 'single quotes' as dialogue
+        profile: Language profile (defaults to English)
 
     Returns:
         List of (content, is_dialogue, start, end) tuples
     """
+    if profile is None:
+        profile = get_profile("en")
+
     segments = []
 
     # Find all quoted segments
     quote_positions = []
 
-    # Double quotes
-    for match in DOUBLE_QUOTE_PATTERN.finditer(text):
-        quote_positions.append((match.start(), match.end(), match.group(1), True))
+    patterns = _build_quote_patterns(profile, include_single_quotes)
 
-    # Smart quotes
-    for match in SMART_QUOTE_PATTERN.finditer(text):
-        # Avoid duplicates if same position
-        start, end = match.start(), match.end()
-        if not any(s <= start < e for s, e, _, _ in quote_positions):
-            quote_positions.append((start, end, match.group(1), True))
-
-    # Single quotes (optional)
-    if include_single_quotes:
-        for match in SINGLE_QUOTE_PATTERN.finditer(text):
+    for pat, _is_dialogue in patterns:
+        for match in pat.finditer(text):
             start, end = match.start(), match.end()
-            # Only if not inside another quote
+            # Avoid duplicates if overlapping position
             if not any(s <= start < e for s, e, _, _ in quote_positions):
                 quote_positions.append((start, end, match.group(1), True))
 
@@ -240,11 +213,17 @@ def detect_dialogue(
     return segments
 
 
+# ---------------------------------------------------------------------------
+# Speaker attribution
+# ---------------------------------------------------------------------------
+
 def extract_speaker_from_context(
     text: str,
     dialogue_start: int,
     dialogue_end: int,
     casting: Optional[CastingTable] = None,
+    *,
+    profile: Optional[LanguageProfile] = None,
 ) -> tuple[Optional[str], Optional[str]]:
     """
     Try to extract speaker name from surrounding context.
@@ -256,45 +235,53 @@ def extract_speaker_from_context(
         dialogue_start: Start position of dialogue
         dialogue_end: End position of dialogue
         casting: Optional CastingTable for validation
+        profile: Language profile (defaults to English)
 
     Returns:
         Tuple of (speaker_name, emotion_hint)
     """
+    if profile is None:
+        profile = get_profile("en")
+
     # Look in a window around the dialogue
     window_before = text[max(0, dialogue_start - 100):dialogue_start]
     window_after = text[dialogue_end:min(len(text), dialogue_end + 100)]
 
     context = window_before + " " + window_after
 
-    for pattern in SAID_PATTERNS:
+    said_patterns = profile.build_said_patterns()
+    emotion_pattern = profile.build_emotion_verb_pattern()
+
+    for pattern in said_patterns:
         match = pattern.search(context)
         if match:
             speaker = match.group(1)
 
             # Validate speaker name if casting table provided
-            if casting is not None and not is_valid_speaker_name(speaker, casting):
+            if casting is not None and not is_valid_speaker_name(speaker, casting, profile=profile):
                 continue  # Try next pattern
 
             # Try to get emotion from verb
-            verb_match = re.search(
-                r'\b(whispered|shouted|yelled|screamed|muttered|exclaimed|'
-                r'cried|sobbed|laughed|chuckled|giggled|sighed|groaned|'
-                r'demanded|pleaded|begged)\b',
-                context,
-                re.IGNORECASE
-            )
             emotion = None
-            if verb_match:
-                emotion = EMOTION_HINTS.get(verb_match.group(1).lower())
+            if emotion_pattern:
+                verb_match = emotion_pattern.search(context)
+                if verb_match:
+                    emotion = profile.emotion_hints.get(verb_match.group(1).lower())
             return speaker, emotion
 
     return None, None
 
 
+# ---------------------------------------------------------------------------
+# Chapter compilation
+# ---------------------------------------------------------------------------
+
 def compile_chapter(
     chapter: Chapter,
     casting: CastingTable,
     include_single_quotes: bool = False,
+    *,
+    profile: Optional[LanguageProfile] = None,
 ) -> list[Utterance]:
     """
     Compile a chapter's raw text into a list of Utterances.
@@ -306,10 +293,14 @@ def compile_chapter(
         chapter: Chapter to compile
         casting: CastingTable for voice mapping
         include_single_quotes: Treat single quotes as dialogue
+        profile: Language profile (defaults to English)
 
     Returns:
         List of Utterances ready for synthesis
     """
+    if profile is None:
+        profile = get_profile("en")
+
     utterances = []
     line_index = 0
 
@@ -325,7 +316,7 @@ def compile_chapter(
         override_char, override_emotion, para = parse_inline_override(para)
 
         # Detect dialogue segments in this paragraph
-        segments = detect_dialogue(para, include_single_quotes)
+        segments = detect_dialogue(para, include_single_quotes, profile=profile)
 
         if not segments:
             # Pure narration paragraph
@@ -353,7 +344,7 @@ def compile_chapter(
                     emotion = override_emotion
                 else:
                     speaker, emotion = extract_speaker_from_context(
-                        para, start, end, casting
+                        para, start, end, casting, profile=profile,
                     )
                     if speaker is None:
                         speaker = "unknown"
@@ -382,7 +373,7 @@ def compile_chapter(
 
     # Update character line counts in casting table
     for utterance in utterances:
-        key = utterance.speaker.lower()
+        key = casting.normalize_key(utterance.speaker)
         if key in casting.characters:
             casting.characters[key].line_count += 1
 
@@ -408,7 +399,7 @@ def utterances_to_script(
     next_id = 1
 
     for utterance in utterances:
-        speaker = utterance.speaker.lower()
+        speaker = CastingTable.normalize_key(utterance.speaker)
 
         # Assign speaker ID
         if speaker not in speaker_ids:

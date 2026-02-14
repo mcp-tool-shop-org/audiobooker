@@ -48,6 +48,9 @@ jobs:
         from audiobooker.renderer.cache_manifest import CacheManifest, load_manifest, save_manifest
         from audiobooker.renderer.hash_utils import sha256_text, sha256_json, chapter_text_hash, casting_hash, render_params_hash
         from audiobooker.casting.voice_registry import validate_voices, get_available_voices
+        from audiobooker.language.profile import LanguageProfile, get_profile, available_profiles
+        from audiobooker.language.en import ENGLISH
+        assert get_profile('en').code == 'en'
         print('All imports OK')
         "
 

@@ -3,6 +3,9 @@ Text/Markdown Parser for Audiobooker.
 
 Parses plain text and Markdown files into chapters.
 Supports various chapter delimiter patterns.
+
+Chapter heading and scene-break patterns are drawn from a LanguageProfile.
+Default is English.
 """
 
 import re
@@ -10,46 +13,41 @@ from pathlib import Path
 from typing import Optional
 
 from audiobooker.models import Chapter
+from audiobooker.language.profile import LanguageProfile, get_profile
 
 
-# Common chapter delimiter patterns
-CHAPTER_PATTERNS = [
-    # "Chapter 1", "Chapter I", "Chapter One"
-    r"^(?:Chapter|CHAPTER)\s+(\d+|[IVXLCDM]+|[A-Za-z]+)(?:\s*[:\-\.]\s*(.*))?$",
-    # "Part 1", "Part I"
-    r"^(?:Part|PART)\s+(\d+|[IVXLCDM]+)(?:\s*[:\-\.]\s*(.*))?$",
-    # "1.", "1:", "1 -"
-    r"^(\d+)\s*[\.\:\-]\s+(.+)$",
-    # "# Chapter Title" (Markdown H1)
-    r"^#\s+(.+)$",
-    # "## Section Title" (Markdown H2)
-    r"^##\s+(.+)$",
-    # "*** break ***" or "* * *" (scene breaks - not chapters, skip)
-    # Handled separately
-]
-
-# Scene break patterns (don't create new chapters)
-SCENE_BREAK_PATTERNS = [
-    r"^\*\s*\*\s*\*\s*$",
-    r"^-\s*-\s*-\s*$",
-    r"^~\s*~\s*~\s*$",
-    r"^###\s*$",
-]
+def _get_chapter_patterns(profile: Optional[LanguageProfile] = None) -> list[str]:
+    """Return chapter patterns from the given profile (default: English)."""
+    if profile is None:
+        profile = get_profile("en")
+    return list(profile.chapter_patterns)
 
 
-def detect_chapter_pattern(text: str) -> Optional[re.Pattern]:
+def _get_scene_break_patterns(profile: Optional[LanguageProfile] = None) -> list[str]:
+    """Return scene break patterns from the given profile (default: English)."""
+    if profile is None:
+        profile = get_profile("en")
+    return list(profile.scene_break_patterns)
+
+
+def detect_chapter_pattern(
+    text: str,
+    *,
+    profile: Optional[LanguageProfile] = None,
+) -> Optional[re.Pattern]:
     """
     Detect which chapter pattern is used in the text.
 
     Scans the text and returns the most commonly matching pattern.
     """
-    pattern_counts = {pattern: 0 for pattern in CHAPTER_PATTERNS}
+    chapter_patterns = _get_chapter_patterns(profile)
+    pattern_counts = {pattern: 0 for pattern in chapter_patterns}
 
     for line in text.split("\n")[:200]:  # Check first 200 lines
         line = line.strip()
         if not line:
             continue
-        for pattern in CHAPTER_PATTERNS:
+        for pattern in chapter_patterns:
             if re.match(pattern, line, re.MULTILINE):
                 pattern_counts[pattern] += 1
 
@@ -61,10 +59,14 @@ def detect_chapter_pattern(text: str) -> Optional[re.Pattern]:
     return None
 
 
-def is_scene_break(line: str) -> bool:
+def is_scene_break(
+    line: str,
+    *,
+    profile: Optional[LanguageProfile] = None,
+) -> bool:
     """Check if a line is a scene break (not a chapter break)."""
     line = line.strip()
-    for pattern in SCENE_BREAK_PATTERNS:
+    for pattern in _get_scene_break_patterns(profile):
         if re.match(pattern, line):
             return True
     return False
@@ -102,6 +104,8 @@ def extract_frontmatter(text: str) -> tuple[dict, str]:
 def split_into_chapters(
     text: str,
     delimiter_pattern: Optional[str] = None,
+    *,
+    profile: Optional[LanguageProfile] = None,
 ) -> list[tuple[str, str]]:
     """
     Split text into chapters using delimiter pattern.
@@ -109,6 +113,7 @@ def split_into_chapters(
     Args:
         text: Full text content
         delimiter_pattern: Optional custom regex pattern
+        profile: Language profile (defaults to English)
 
     Returns:
         List of (title, content) tuples
@@ -116,7 +121,7 @@ def split_into_chapters(
     if delimiter_pattern:
         pattern = re.compile(delimiter_pattern, re.MULTILINE)
     else:
-        pattern = detect_chapter_pattern(text)
+        pattern = detect_chapter_pattern(text, profile=profile)
 
     if pattern is None:
         # No chapters detected - treat as single chapter
@@ -167,6 +172,8 @@ def split_into_chapters(
 def parse_text(
     path: Path,
     chapter_delimiter: Optional[str] = None,
+    *,
+    profile: Optional[LanguageProfile] = None,
 ) -> tuple[dict, list[Chapter]]:
     """
     Parse a text or Markdown file into chapters.
@@ -174,6 +181,7 @@ def parse_text(
     Args:
         path: Path to text file
         chapter_delimiter: Optional custom delimiter pattern
+        profile: Language profile (defaults to English)
 
     Returns:
         Tuple of (metadata dict, list of Chapters)
@@ -194,7 +202,7 @@ def parse_text(
         metadata["title"] = path.stem
 
     # Split into chapters
-    chapter_data = split_into_chapters(text, chapter_delimiter)
+    chapter_data = split_into_chapters(text, chapter_delimiter, profile=profile)
 
     # Create Chapter objects
     chapters = []

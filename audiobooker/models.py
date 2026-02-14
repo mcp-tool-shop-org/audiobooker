@@ -205,6 +205,11 @@ class CastingTable:
     unknown_character_behavior: str = "narrator"  # "narrator" | "skip" | "ask"
     fallback_voice_id: str = "af_heart"
 
+    @staticmethod
+    def normalize_key(name: str) -> str:
+        """Canonical key for speaker lookups (casefold for i18n safety)."""
+        return name.casefold().strip()
+
     def cast(
         self,
         name: str,
@@ -216,7 +221,7 @@ class CastingTable:
         Assign a voice to a character.
 
         Args:
-            name: Character name
+            name: Character name (display form preserved in Character.name)
             voice: Voice ID (e.g., "af_bella", "bm_george")
             emotion: Default emotion
             description: Notes about the character
@@ -224,7 +229,7 @@ class CastingTable:
         Returns:
             The created/updated Character
         """
-        key = name.lower()
+        key = self.normalize_key(name)
         char = Character(
             name=name,
             voice=voice,
@@ -244,7 +249,7 @@ class CastingTable:
         Returns:
             Tuple of (voice_id, emotion)
         """
-        key = speaker.lower()
+        key = self.normalize_key(speaker)
         if key in self.characters:
             char = self.characters[key]
             return char.voice, char.emotion
@@ -265,7 +270,7 @@ class CastingTable:
             Dict mapping speaker names to voice IDs
         """
         return {
-            char.name.lower(): char.voice
+            self.normalize_key(char.name): char.voice
             for char in self.characters.values()
         }
 
@@ -324,6 +329,7 @@ class ProjectConfig:
     estimated_wpm: int = 150
     min_chapter_words: int = 50
     keep_titled_short_chapters: bool = True
+    language_code: str = "en"
 
     def to_dict(self) -> dict:
         """Serialize to dictionary."""
@@ -338,6 +344,7 @@ class ProjectConfig:
             "estimated_wpm": self.estimated_wpm,
             "min_chapter_words": self.min_chapter_words,
             "keep_titled_short_chapters": self.keep_titled_short_chapters,
+            "language_code": self.language_code,
         }
 
     @classmethod
@@ -354,4 +361,5 @@ class ProjectConfig:
             estimated_wpm=data.get("estimated_wpm", 150),
             min_chapter_words=data.get("min_chapter_words", 50),
             keep_titled_short_chapters=data.get("keep_titled_short_chapters", True),
+            language_code=data.get("language_code", "en"),
         )
