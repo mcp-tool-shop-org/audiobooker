@@ -8,6 +8,14 @@ Handles:
 """
 
 from audiobooker.renderer.engine import render_project, render_chapter
-from audiobooker.renderer.output import assemble_m4b
+from audiobooker.renderer.output import assemble_m4b, AssemblyResult
+from audiobooker.renderer.protocols import TTSEngine, SynthesisResult
 
-__all__ = ["render_project", "render_chapter", "assemble_m4b"]
+__all__ = [
+    "render_project",
+    "render_chapter",
+    "assemble_m4b",
+    "AssemblyResult",
+    "TTSEngine",
+    "SynthesisResult",
+]

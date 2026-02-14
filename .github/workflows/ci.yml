@@ -37,12 +37,23 @@ jobs:
         pip install -e .
         pip install -e .[dev]
 
-    - name: Run tests
-      run: pytest tests/ -v
+    - name: Import gate
+      run: |
+        python -c "
+        import audiobooker
+        from audiobooker.renderer.engine import render_chapter, render_project
+        from audiobooker.renderer.protocols import TTSEngine, SynthesisResult, FFmpegRunner, RunResult
+        from audiobooker.renderer.ffmpeg_runner import RealFFmpegRunner
+        from audiobooker.renderer.output import assemble_m4b, AssemblyResult, generate_chapter_metadata
+        from audiobooker.casting.voice_registry import validate_voices, get_available_voices
+        print('All imports OK')
+        "
+
+    - name: Run tests (hermetic only)
+      run: pytest tests/ -v --ignore=tests/test_e2e_smoke.py -k "not requires_voice_soundboard and not requires_ffmpeg"
 
     - name: Test CLI commands
       run: |
         audiobooker --help
         audiobooker voices --help || true
-        # Additional help tests
         audiobooker new --help || true
