@@ -461,6 +461,23 @@ class AudiobookProject:
             utterances = compile_chapter(chapter, self.casting, profile=profile)
             chapter.utterances = utterances
 
+        # Optional NLP speaker resolution (BookNLP)
+        if self.config.booknlp_mode != "off":
+            from audiobooker.nlp.speaker_resolver import SpeakerResolver
+            resolver = SpeakerResolver(mode=self.config.booknlp_mode)
+            resolver.resolve(self.chapters, self.casting)
+
+        # Optional emotion inference
+        if self.config.emotion_mode != "off":
+            from audiobooker.nlp.emotion import EmotionInferencer
+            inferencer = EmotionInferencer(
+                mode=self.config.emotion_mode,
+                threshold=self.config.emotion_confidence_threshold,
+                profile=profile,
+            )
+            for chapter in self.chapters:
+                inferencer.apply_to_utterances(chapter.utterances, chapter.raw_text)
+
         self.progress.status = "idle"
         self.modified_at = datetime.now().isoformat()
 

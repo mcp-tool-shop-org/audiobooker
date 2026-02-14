@@ -48,9 +48,16 @@ jobs:
         from audiobooker.renderer.cache_manifest import CacheManifest, load_manifest, save_manifest
         from audiobooker.renderer.hash_utils import sha256_text, sha256_json, chapter_text_hash, casting_hash, render_params_hash
         from audiobooker.casting.voice_registry import validate_voices, get_available_voices
+        from audiobooker.casting.voice_suggester import VoiceSuggester, VoiceSuggestion
         from audiobooker.language.profile import LanguageProfile, get_profile, available_profiles
         from audiobooker.language.en import ENGLISH
+        from audiobooker.nlp.booknlp_adapter import BookNLPAdapter, BookNLPResult
+        from audiobooker.nlp.speaker_resolver import SpeakerResolver
+        from audiobooker.nlp.emotion import EmotionInferencer, EmotionResult
+        from audiobooker.renderer.progress import RenderProgressTracker
+        from audiobooker.renderer.failure_report import RenderFailureReport
         assert get_profile('en').code == 'en'
+        assert BookNLPAdapter().is_available() == False  # not installed in CI
         print('All imports OK')
         "
 

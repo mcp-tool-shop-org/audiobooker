@@ -13,7 +13,7 @@ Example:
     project.render("output.m4b")
 """
 
-__version__ = "0.2.1"
+__version__ = "0.5.0"
 
 from audiobooker.models import (
     Chapter,

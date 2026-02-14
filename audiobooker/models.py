@@ -318,6 +318,10 @@ class ProjectConfig:
         estimated_wpm: Words-per-minute for duration estimates (varies by voice/emotion)
         min_chapter_words: Minimum word count for EPUB sections to be kept as chapters
         keep_titled_short_chapters: Keep short EPUB sections that have a title/heading
+        language_code: ISO language code for profile selection
+        booknlp_mode: NLP speaker resolution: "on"|"off"|"auto" (default "auto")
+        emotion_mode: Emotion inference: "off"|"rule"|"auto" (default "rule")
+        emotion_confidence_threshold: Minimum confidence to apply inferred emotion
     """
     chapter_pause_ms: int = 2000
     narrator_pause_ms: int = 600
@@ -330,6 +334,9 @@ class ProjectConfig:
     min_chapter_words: int = 50
     keep_titled_short_chapters: bool = True
     language_code: str = "en"
+    booknlp_mode: str = "auto"
+    emotion_mode: str = "rule"
+    emotion_confidence_threshold: float = 0.75
 
     def to_dict(self) -> dict:
         """Serialize to dictionary."""
@@ -345,6 +352,9 @@ class ProjectConfig:
             "min_chapter_words": self.min_chapter_words,
             "keep_titled_short_chapters": self.keep_titled_short_chapters,
             "language_code": self.language_code,
+            "booknlp_mode": self.booknlp_mode,
+            "emotion_mode": self.emotion_mode,
+            "emotion_confidence_threshold": self.emotion_confidence_threshold,
         }
 
     @classmethod
@@ -362,4 +372,7 @@ class ProjectConfig:
             min_chapter_words=data.get("min_chapter_words", 50),
             keep_titled_short_chapters=data.get("keep_titled_short_chapters", True),
             language_code=data.get("language_code", "en"),
+            booknlp_mode=data.get("booknlp_mode", "auto"),
+            emotion_mode=data.get("emotion_mode", "rule"),
+            emotion_confidence_threshold=data.get("emotion_confidence_threshold", 0.75),
         )

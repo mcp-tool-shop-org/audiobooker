@@ -34,6 +34,8 @@ def create_parser() -> argparse.ArgumentParser:
     new_parser.add_argument("source", help="Source file (EPUB, TXT, MD)")
     new_parser.add_argument("-o", "--output", help="Output project file path")
     new_parser.add_argument("--lang", default="en", metavar="CODE", help="Language code (default: en)")
+    new_parser.add_argument("--booknlp", default="auto", choices=["on", "off", "auto"],
+                            help="BookNLP speaker resolution (default: auto)")
 
     # --- load ---
     load_parser = subparsers.add_parser("load", help="Load existing project")
@@ -46,6 +48,16 @@ def create_parser() -> argparse.ArgumentParser:
     cast_parser.add_argument("-e", "--emotion", help="Default emotion")
     cast_parser.add_argument("-d", "--description", help="Character description")
     cast_parser.add_argument("-p", "--project", help="Project file (auto-detected if omitted)")
+
+    # --- cast-suggest ---
+    suggest_parser = subparsers.add_parser("cast-suggest", help="Suggest voices for uncast speakers")
+    suggest_parser.add_argument("-p", "--project", help="Project file")
+    suggest_parser.add_argument("-n", "--top", type=int, default=3, help="Show top N suggestions per speaker")
+
+    # --- cast-apply ---
+    apply_parser = subparsers.add_parser("cast-apply", help="Auto-apply voice suggestions")
+    apply_parser.add_argument("-p", "--project", help="Project file")
+    apply_parser.add_argument("--auto", action="store_true", help="Apply top suggestion for all uncast speakers")
 
     # --- compile ---
     compile_parser = subparsers.add_parser("compile", help="Compile chapters to utterances")
@@ -168,7 +180,8 @@ def cmd_new(args) -> int:
             print(f"Available: {', '.join(available_profiles())}")
             return 1
 
-        config = ProjectConfig(language_code=lang)
+        booknlp_mode = getattr(args, "booknlp", "auto")
+        config = ProjectConfig(language_code=lang, booknlp_mode=booknlp_mode)
 
         if suffix == ".epub":
             project = AudiobookProject.from_epub(source, config=config)
@@ -551,6 +564,99 @@ def cmd_review_import(args) -> int:
         return 1
 
 
+def cmd_cast_suggest(args) -> int:
+    """Suggest voices for uncast speakers."""
+    from audiobooker import AudiobookProject
+    from audiobooker.casting.voice_suggester import VoiceSuggester
+
+    try:
+        project_path = find_project_file(args.project)
+        project = AudiobookProject.load(project_path)
+
+        # Compile if needed
+        if not any(c.is_compiled for c in project.chapters):
+            print("Compiling to detect speakers...")
+            project.compile()
+            project.save()
+
+        # Get speakers and their utterances
+        speakers = sorted(project.get_detected_speakers())
+        already_cast = project.casting.get_voice_mapping()
+
+        # Gather sample utterances per speaker
+        speaker_utterances: dict[str, list[str]] = {}
+        for chapter in project.chapters:
+            for utt in chapter.utterances:
+                key = utt.speaker
+                if key not in speaker_utterances:
+                    speaker_utterances[key] = []
+                if len(speaker_utterances[key]) < 5:
+                    speaker_utterances[key].append(utt.text)
+
+        suggester = VoiceSuggester(max_suggestions=getattr(args, "top", 3))
+        results = suggester.suggest_all(speakers, speaker_utterances, already_cast)
+
+        print(f"Voice suggestions for {project.title}:\n")
+        for result in results:
+            cast_key = project.casting.normalize_key(result.speaker)
+            is_cast = cast_key in project.casting.characters
+            status = f" (cast: {project.casting.characters[cast_key].voice})" if is_cast else " [uncast]"
+            print(f"  {result.speaker}{status}")
+            for i, s in enumerate(result.suggestions):
+                marker = ">>>" if i == 0 else "   "
+                print(f"    {marker} {s.voice_id} (score: {s.score:.2f}) - {s.reason}")
+            print()
+
+        return 0
+
+    except Exception as e:
+        print(f"Error: {e}")
+        return 1
+
+
+def cmd_cast_apply(args) -> int:
+    """Auto-apply voice suggestions."""
+    from audiobooker import AudiobookProject
+    from audiobooker.casting.voice_suggester import VoiceSuggester
+
+    try:
+        project_path = find_project_file(args.project)
+        project = AudiobookProject.load(project_path)
+
+        if not getattr(args, "auto", False):
+            print("Use --auto to apply top suggestions for all uncast speakers.")
+            return 0
+
+        # Compile if needed
+        if not any(c.is_compiled for c in project.chapters):
+            print("Compiling to detect speakers...")
+            project.compile()
+
+        uncast = project.get_uncast_speakers()
+        if not uncast:
+            print("All speakers are already cast.")
+            return 0
+
+        already_cast = project.casting.get_voice_mapping()
+        suggester = VoiceSuggester(max_suggestions=1)
+        results = suggester.suggest_all(sorted(uncast), already_cast=already_cast)
+
+        applied = 0
+        for result in results:
+            if result.top:
+                project.cast(result.speaker, result.top.voice_id)
+                print(f"  Cast {result.speaker} as {result.top.voice_id} ({result.top.reason})")
+                applied += 1
+
+        project.save()
+        print(f"\nApplied {applied} voice assignments.")
+        return 0
+
+    except Exception as e:
+        print(f"Error: {e}")
+        return 1
+
+
 def cmd_from_stdin(args) -> int:
     """Create project from stdin text."""
     from audiobooker import AudiobookProject
@@ -601,6 +707,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     commands = {
         "new": cmd_new,
         "cast": cmd_cast,
+        "cast-suggest": cmd_cast_suggest,
+        "cast-apply": cmd_cast_apply,
         "compile": cmd_compile,
         "render": cmd_render,
         "info": cmd_info,

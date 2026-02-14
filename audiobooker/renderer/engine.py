@@ -256,6 +256,8 @@ def render_project(
     from audiobooker.renderer.hash_utils import (
         chapter_text_hash, casting_hash, render_params_hash,
     )
+    from audiobooker.renderer.progress import RenderProgressTracker
+    from audiobooker.renderer.failure_report import RenderFailureReport
 
     if assembler is None:
         assembler = _default_assembler
@@ -296,6 +298,15 @@ def render_project(
         manifest_path=str(manifest_path),
     )
 
+    # Progress tracker + failure report
+    tracker = RenderProgressTracker(total_chapters=len(project.chapters))
+    failure_report = RenderFailureReport(
+        book_title=project.title,
+        total_chapters=len(project.chapters),
+        cache_dir=str(cache_root),
+        manifest_path=str(manifest_path),
+    )
+
     try:
         for i, chapter in enumerate(project.chapters):
             if from_chapter is not None and i < from_chapter:
@@ -303,9 +314,6 @@ def render_project(
                 if progress_callback:
                     progress_callback(i + 1, len(project.chapters), f"Skipping: {chapter.title}")
                 continue
-
-            if progress_callback:
-                progress_callback(i + 1, len(project.chapters), f"Rendering: {chapter.title}")
 
             current_text_hash = chapter_text_hash(chapter)
 
@@ -316,11 +324,22 @@ def render_project(
                     # Cache hit — restore chapter state from cache
                     chapter.audio_path = Path(existing.wav_path)
                     chapter.duration_seconds = existing.duration_s
+                    tracker.mark_cached(i, chapter.title, existing.duration_s)
                     logger.info(f"RENDER_CACHE_HIT: chapter={i} title={chapter.title!r}")
                     summary.skipped_cached += 1
+
+                    if progress_callback:
+                        status = tracker.format_chapter_status(i, f"Cached: {chapter.title}")
+                        progress_callback(i + 1, len(project.chapters), status)
                     continue
 
             # Cache miss — render this chapter
+            tracker.start_chapter(i, chapter.title, word_count=chapter.word_count)
+
+            if progress_callback:
+                status = tracker.format_chapter_status(i, f"Rendering: {chapter.title}")
+                progress_callback(i + 1, len(project.chapters), status)
+
             target_path = get_chapter_wav_path(cache_root, i)
             tmp_path = target_path.with_suffix(".wav.tmp")
 
@@ -338,6 +357,7 @@ def render_project(
                 # duration_seconds is set by render_chapter
 
                 elapsed = time.time() - start
+                tracker.finish_chapter(i, duration_s=elapsed)
 
                 # Update manifest entry
                 entry = ChapterCacheEntry(
@@ -364,6 +384,8 @@ def render_project(
                 if tmp_path.exists():
                     tmp_path.unlink(missing_ok=True)
 
+                tracker.mark_failed(i, chapter.title)
+
                 # Record failure in manifest (prior OK chapters are preserved)
                 entry = ChapterCacheEntry(
                     chapter_index=i,
@@ -378,6 +400,13 @@ def render_project(
                 manifest.set_entry(entry)
                 save_manifest(manifest, manifest_path)
 
+                # Record in failure report
+                failure_report.add_failure(
+                    chapter_index=i,
+                    chapter_title=chapter.title,
+                    error=e,
+                )
+
                 summary.failed += 1
                 summary.failed_chapters.append({
                     "index": i,
@@ -388,6 +417,11 @@ def render_project(
                 logger.error(f"RENDER_CHAPTER_FAIL: chapter={i} error={e}")
 
                 if not allow_partial:
+                    # Write failure report before raising
+                    failure_report.rendered_ok = summary.rendered
+                    failure_report.cached_ok = summary.skipped_cached
+                    failure_report.save()
+
                     raise RenderError(
                         f"Chapter {i} ({chapter.title!r}) failed: {e}",
                         summary=summary,
@@ -436,6 +470,12 @@ def render_project(
         else:
             logger.info(f"RENDER_COMPLETE: output={assembly.output_path} duration={total_duration:.1f}s")
 
+        # Save failure report if any chapters failed
+        if failure_report.failed_chapters:
+            failure_report.rendered_ok = summary.rendered
+            failure_report.cached_ok = summary.skipped_cached
+            failure_report.save()
+
         _log_summary(summary)
         return assembly.output_path
 
@@ -445,6 +485,14 @@ def render_project(
 
     except Exception as e:
         logger.error(f"RENDER_PROJECT_FAIL: error={e}")
+        failure_report.rendered_ok = summary.rendered
+        failure_report.cached_ok = summary.skipped_cached
+        failure_report.add_failure(
+            chapter_index=-1,
+            chapter_title="(project-level)",
+            error=e,
+        )
+        failure_report.save()
         _log_summary(summary)
         raise
 
