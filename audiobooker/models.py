@@ -198,10 +198,12 @@ class CastingTable:
         characters: Dict mapping lowercase character names to Character objects
         default_narrator: Voice ID for unmarked narration
         unknown_character_behavior: How to handle unknown speakers
+        fallback_voice_id: Ultimate fallback voice when nothing else matches
     """
     characters: dict[str, Character] = field(default_factory=dict)
     default_narrator: str = "narrator"
     unknown_character_behavior: str = "narrator"  # "narrator" | "skip" | "ask"
+    fallback_voice_id: str = "af_heart"
 
     def cast(
         self,
@@ -253,7 +255,7 @@ class CastingTable:
             return char.voice, char.emotion
 
         # Ultimate fallback
-        return "af_heart", None
+        return self.fallback_voice_id, None
 
     def get_voice_mapping(self) -> dict[str, str]:
         """
@@ -279,6 +281,7 @@ class CastingTable:
             },
             "default_narrator": self.default_narrator,
             "unknown_character_behavior": self.unknown_character_behavior,
+            "fallback_voice_id": self.fallback_voice_id,
         }
 
     @classmethod
@@ -287,6 +290,7 @@ class CastingTable:
         table = cls(
             default_narrator=data.get("default_narrator", "narrator"),
             unknown_character_behavior=data.get("unknown_character_behavior", "narrator"),
+            fallback_voice_id=data.get("fallback_voice_id", "af_heart"),
         )
         for key, char_data in data.get("characters", {}).items():
             table.characters[key] = Character.from_dict(char_data)
@@ -304,12 +308,22 @@ class ProjectConfig:
         dialogue_pause_ms: Pause between dialogue lines
         sample_rate: Audio sample rate
         output_format: Default output format
+        fallback_voice_id: Voice used when a speaker has no casting entry
+        validate_voices_on_render: Check all voice IDs exist before rendering
+        estimated_wpm: Words-per-minute for duration estimates (varies by voice/emotion)
+        min_chapter_words: Minimum word count for EPUB sections to be kept as chapters
+        keep_titled_short_chapters: Keep short EPUB sections that have a title/heading
     """
     chapter_pause_ms: int = 2000
     narrator_pause_ms: int = 600
     dialogue_pause_ms: int = 400
     sample_rate: int = 24000
     output_format: str = "m4b"
+    fallback_voice_id: str = "af_heart"
+    validate_voices_on_render: bool = True
+    estimated_wpm: int = 150
+    min_chapter_words: int = 50
+    keep_titled_short_chapters: bool = True
 
     def to_dict(self) -> dict:
         """Serialize to dictionary."""
@@ -319,6 +333,11 @@ class ProjectConfig:
             "dialogue_pause_ms": self.dialogue_pause_ms,
             "sample_rate": self.sample_rate,
             "output_format": self.output_format,
+            "fallback_voice_id": self.fallback_voice_id,
+            "validate_voices_on_render": self.validate_voices_on_render,
+            "estimated_wpm": self.estimated_wpm,
+            "min_chapter_words": self.min_chapter_words,
+            "keep_titled_short_chapters": self.keep_titled_short_chapters,
         }
 
     @classmethod
@@ -330,4 +349,9 @@ class ProjectConfig:
             dialogue_pause_ms=data.get("dialogue_pause_ms", 400),
             sample_rate=data.get("sample_rate", 24000),
             output_format=data.get("output_format", "m4b"),
+            fallback_voice_id=data.get("fallback_voice_id", "af_heart"),
+            validate_voices_on_render=data.get("validate_voices_on_render", True),
+            estimated_wpm=data.get("estimated_wpm", 150),
+            min_chapter_words=data.get("min_chapter_words", 50),
+            keep_titled_short_chapters=data.get("keep_titled_short_chapters", True),
         )

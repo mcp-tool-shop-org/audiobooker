@@ -83,9 +83,11 @@ class AudiobookProject:
     _output_dir: Optional[Path] = None
 
     def __post_init__(self):
-        """Initialize output directory."""
+        """Initialize output directory and sync config to casting table."""
         if self._output_dir is None and self.source_path:
             self._output_dir = Path(self.source_path).parent / f"{Path(self.source_path).stem}_audio"
+        # Keep casting table fallback in sync with project config
+        self.casting.fallback_voice_id = self.config.fallback_voice_id
 
     # -------------------------------------------------------------------------
     # Factory methods
@@ -109,7 +111,14 @@ class AudiobookProject:
         if not path.exists():
             raise FileNotFoundError(f"EPUB not found: {path}")
 
-        metadata, chapters = parse_epub(path)
+        # Extract config to pass EPUB parsing thresholds
+        config = kwargs.get("config", ProjectConfig())
+
+        metadata, chapters = parse_epub(
+            path,
+            min_chapter_words=config.min_chapter_words,
+            keep_titled_short_chapters=config.keep_titled_short_chapters,
+        )
 
         project = cls(
             title=metadata.get("title", path.stem),
@@ -307,6 +316,24 @@ class AudiobookProject:
         cast = set(self.casting.characters.keys())
         return detected - cast
 
+    def _validate_voices(self) -> None:
+        """
+        Check that all referenced voice IDs exist in voice-soundboard.
+
+        Raises:
+            VoiceNotFoundError: If any voice IDs are missing.
+        """
+        from audiobooker.casting.voice_registry import validate_voices, get_available_voices, VoiceNotFoundError
+
+        # Collect all voice IDs: cast characters + fallback
+        voice_ids = {char.voice for char in self.casting.characters.values()}
+        voice_ids.add(self.config.fallback_voice_id)
+
+        available = get_available_voices()
+        missing = validate_voices(voice_ids, available)
+        if missing:
+            raise VoiceNotFoundError(missing=missing, available_count=len(available))
+
     # -------------------------------------------------------------------------
     # Compilation
     # -------------------------------------------------------------------------
@@ -389,6 +416,10 @@ class AudiobookProject:
 
         self.output_path = output_path
         self.progress.status = "rendering"
+
+        # Validate voices before spending time rendering
+        if self.config.validate_voices_on_render:
+            self._validate_voices()
 
         # Ensure all chapters are compiled
         uncompiled = [c for c in self.chapters if not c.is_compiled]
@@ -520,8 +551,8 @@ class AudiobookProject:
 
     @property
     def estimated_duration_minutes(self) -> float:
-        """Estimated total duration in minutes."""
-        return self.total_words / 150
+        """Estimated total duration in minutes (varies by voice/emotion)."""
+        return self.total_words / self.config.estimated_wpm
 
     @property
     def total_duration_seconds(self) -> float:

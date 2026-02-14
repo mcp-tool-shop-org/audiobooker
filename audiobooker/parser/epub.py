@@ -5,6 +5,7 @@ Extracts chapters and metadata from EPUB files using ebooklib.
 Converts HTML content to plain text suitable for TTS.
 """
 
+import logging
 import re
 from pathlib import Path
 from typing import Optional
@@ -12,6 +13,8 @@ from html.parser import HTMLParser
 from io import StringIO
 
 from audiobooker.models import Chapter
+
+logger = logging.getLogger("audiobooker.parser")
 
 
 class HTMLTextExtractor(HTMLParser):
@@ -123,12 +126,18 @@ def extract_title_from_html(html_content: str) -> Optional[str]:
     return None
 
 
-def parse_epub(path: Path) -> tuple[dict, list[Chapter]]:
+def parse_epub(
+    path: Path,
+    min_chapter_words: int = 50,
+    keep_titled_short_chapters: bool = True,
+) -> tuple[dict, list[Chapter]]:
     """
     Parse an EPUB file into chapters.
 
     Args:
         path: Path to EPUB file
+        min_chapter_words: Minimum word count for a section to be kept.
+        keep_titled_short_chapters: Keep short sections that have a heading/title.
 
     Returns:
         Tuple of (metadata dict, list of Chapters)
@@ -183,13 +192,25 @@ def parse_epub(path: Path) -> tuple[dict, list[Chapter]]:
 
         # Convert to plain text
         text = html_to_text(content)
-
-        # Skip empty or very short sections
-        if len(text.split()) < 50:
-            continue
+        word_count = len(text.split())
 
         # Try to extract title
         title = extract_title_from_html(item.get_content().decode("utf-8", errors="replace"))
+
+        # Skip short sections (unless titled and keep_titled_short_chapters)
+        if word_count < min_chapter_words:
+            if title and keep_titled_short_chapters:
+                logger.info(
+                    f"Keeping short titled section: {title!r} "
+                    f"({word_count} words < {min_chapter_words} threshold)"
+                )
+            else:
+                logger.info(
+                    f"Skipping short section: {title or item.get_name()!r} "
+                    f"({word_count} words < {min_chapter_words} threshold)"
+                )
+                continue
+
         if not title:
             title = f"Chapter {chapter_index + 1}"
 
@@ -216,10 +237,24 @@ def parse_epub(path: Path) -> tuple[dict, list[Chapter]]:
                 content = content.decode("utf-8", errors="replace")
 
             text = html_to_text(content)
-            if len(text.split()) < 50:
-                continue
+            word_count = len(text.split())
+            title = extract_title_from_html(content)
 
-            title = extract_title_from_html(content) or f"Chapter {chapter_index + 1}"
+            if word_count < min_chapter_words:
+                if title and keep_titled_short_chapters:
+                    logger.info(
+                        f"Keeping short titled section: {title!r} "
+                        f"({word_count} words < {min_chapter_words} threshold)"
+                    )
+                else:
+                    logger.info(
+                        f"Skipping short section: {title or item.get_name()!r} "
+                        f"({word_count} words < {min_chapter_words} threshold)"
+                    )
+                    continue
+
+            if not title:
+                title = f"Chapter {chapter_index + 1}"
 
             chapter = Chapter(
                 index=chapter_index,

@@ -3,8 +3,17 @@ name: CI
 on:
   push:
     branches: [ main ]
+    paths:
+      - 'audiobooker/**'
+      - 'tests/**'
+      - 'pyproject.toml'
   pull_request:
     branches: [ main ]
+    paths:
+      - 'audiobooker/**'
+      - 'tests/**'
+      - 'pyproject.toml'
+  workflow_dispatch:
 
 jobs:
   test:

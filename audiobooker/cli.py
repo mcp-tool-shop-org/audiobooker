@@ -19,10 +19,13 @@ from typing import Optional
 
 def create_parser() -> argparse.ArgumentParser:
     """Create argument parser."""
+    from audiobooker import __version__
+
     parser = argparse.ArgumentParser(
         prog="audiobooker",
         description="AI Audiobook Generator - Convert books to narrated audiobooks",
     )
+    parser.add_argument("--version", action="version", version=f"audiobooker {__version__}")
 
     subparsers = parser.add_subparsers(dest="command", help="Commands")
 
@@ -156,7 +159,7 @@ def cmd_new(args) -> int:
         print(f"  Title: {project.title}")
         print(f"  Chapters: {len(project.chapters)}")
         print(f"  Words: ~{project.total_words:,}")
-        print(f"  Estimated duration: {project.estimated_duration_minutes:.0f} minutes")
+        print(f"  Estimated duration: ~{project.estimated_duration_minutes:.0f} min (at {project.config.estimated_wpm} wpm, varies by voice)")
         print("\nNext steps:")
         print(f"  1. Cast voices: audiobooker cast narrator af_heart")
         print(f"  2. Compile: audiobooker compile")
@@ -284,7 +287,7 @@ def cmd_info(args) -> int:
         print(f"Source: {info['source']}")
         print(f"Chapters: {info['chapters']}")
         print(f"Words: ~{info['total_words']:,}")
-        print(f"Estimated duration: {info['estimated_duration_minutes']:.0f} minutes")
+        print(f"Estimated duration: ~{info['estimated_duration_minutes']:.0f} min (varies by voice)")
         print(f"Characters cast: {info['characters_cast']}")
         print(f"Compiled: {'Yes' if info['compiled'] else 'No'}")
         print(f"Rendered: {'Yes' if info['rendered'] else 'No'}")

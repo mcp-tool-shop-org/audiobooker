@@ -5,11 +5,23 @@ Assembles chapter audio files into final M4B/M4A audiobook
 with chapter markers and metadata using FFmpeg.
 """
 
+import logging
 import subprocess
 import tempfile
 import shutil
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
+
+logger = logging.getLogger("audiobooker.output")
+
+
+@dataclass
+class AssemblyResult:
+    """Result of M4B assembly with status details."""
+    output_path: Path
+    chapters_embedded: bool
+    chapter_error: str = ""
 
 
 def check_ffmpeg() -> bool:
@@ -174,7 +186,7 @@ def assemble_m4b(
     title: str = "Audiobook",
     author: str = "",
     chapter_pause_ms: int = 2000,
-) -> Path:
+) -> AssemblyResult:
     """
     Assemble chapter audio files into M4B audiobook.
 
@@ -186,7 +198,7 @@ def assemble_m4b(
         chapter_pause_ms: Pause between chapters
 
     Returns:
-        Path to M4B file
+        AssemblyResult with output_path and chapters_embedded flag.
     """
     if not check_ffmpeg():
         raise RuntimeError(
@@ -252,11 +264,23 @@ def assemble_m4b(
         )
 
         if result.returncode != 0:
-            # Try without chapters (some ffmpeg builds have issues)
+            # Log the actual FFmpeg error so it's never invisible
+            stderr_tail = "\n".join(result.stderr.strip().splitlines()[-20:])
+            logger.warning(
+                "Chapter embedding failed, producing M4A without chapters.\n"
+                f"FFmpeg stderr (last 20 lines):\n{stderr_tail}"
+            )
             shutil.copy(aac_path, output_path)
-            print(f"Warning: Could not add chapter markers. Basic M4A created.")
+            return AssemblyResult(
+                output_path=output_path,
+                chapters_embedded=False,
+                chapter_error=stderr_tail,
+            )
 
-        return output_path
+        return AssemblyResult(
+            output_path=output_path,
+            chapters_embedded=True,
+        )
 
     finally:
         # Cleanup temp directory

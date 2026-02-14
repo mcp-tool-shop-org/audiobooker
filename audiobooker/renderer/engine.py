@@ -222,7 +222,7 @@ def render_project(
             for path, chapter in zip(chapter_audio_paths, project.chapters)
         ]
 
-        final_path = assemble_m4b(
+        assembly = assemble_m4b(
             chapter_files=chapter_info,
             output_path=output_path,
             title=project.title,
@@ -230,12 +230,18 @@ def render_project(
             chapter_pause_ms=project.config.chapter_pause_ms,
         )
 
-        project.output_path = final_path
+        project.output_path = assembly.output_path
 
         total_duration = sum(c.duration_seconds for c in project.chapters)
-        logger.info(f"RENDER_COMPLETE: output={final_path} duration={total_duration:.1f}s")
+        if not assembly.chapters_embedded:
+            logger.warning(
+                f"RENDER_COMPLETE_NO_CHAPTERS: output={assembly.output_path} "
+                f"duration={total_duration:.1f}s reason={assembly.chapter_error!r}"
+            )
+        else:
+            logger.info(f"RENDER_COMPLETE: output={assembly.output_path} duration={total_duration:.1f}s")
 
-        return final_path
+        return assembly.output_path
 
     except Exception as e:
         logger.error(f"RENDER_PROJECT_FAIL: error={e}")
