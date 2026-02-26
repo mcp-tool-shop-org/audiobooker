@@ -18,22 +18,22 @@
   AI Audiobook Generator — Convert EPUB/TXT books into professionally narrated audiobooks using multi-voice synthesis.
 </p>
 
-## Features
+## 功能
 
-- **Multi-voice synthesis**: Assign unique voices to each character
-- **Dialogue detection**: Automatically identifies quoted dialogue vs narration
-- **Emotion inference**: Rule+lexicon emotion labeling with configurable confidence
-- **Voice suggestions**: Explainable, ranked voice recommendations per speaker
-- **BookNLP integration**: Optional NLP-powered speaker co-reference resolution
-- **Review-before-render**: Human-editable review format for correcting attributions
-- **Persistent render cache**: Resume failed renders without re-synthesizing completed chapters
-- **Dynamic progress & ETA**: Real-time rendering status with estimated completion time
-- **Failure reports**: Structured JSON diagnostics on render errors
-- **Language profiles**: Extensible language-specific rule abstraction
-- **M4B output**: Professional audiobook format with chapter navigation
-- **Project persistence**: Save/resume rendering sessions
+- **多声音合成**: 为每个角色分配独特的语音
+- **对话检测**: 自动识别引用的对话与旁白
+- **情感推断**: 基于规则和词典的情感标注，并具有可配置的置信度
+- **语音建议**: 提供可解释的、按说话人排序的语音推荐
+- **BookNLP 集成**: 可选的基于 NLP 的说话人指代消解
+- **渲染前审查**: 人工可编辑的审查格式，用于更正归属
+- **持久渲染缓存**: 在不重新合成已完成章节的情况下，恢复失败的渲染
+- **动态进度和预计完成时间**: 实时渲染状态，并显示预计完成时间
+- **错误报告**: 结构化的 JSON 格式的渲染错误诊断信息
+- **语言配置文件**: 扩展的、特定于语言的规则抽象
+- **M4B 输出**: 专业的有声书格式，支持章节导航
+- **项目持久性**: 保存/恢复渲染会话
 
-## Installation
+## 安装
 
 ```bash
 # Clone and install
@@ -50,15 +50,15 @@ pip install -e ../voice-soundboard
 # Linux: apt install ffmpeg
 ```
 
-## Optional Features
+## 可选功能
 
-| Feature | Install | Config |
-|---------|---------|--------|
-| **TTS rendering** | `pip install audiobooker-ai[render]` or install voice-soundboard | Required for `render` |
-| **BookNLP speaker resolution** | `pip install audiobooker-ai[nlp]` | `--booknlp on\|off\|auto` |
-| **FFmpeg audio assembly** | System package (winget/brew/apt) | Required for M4B output |
+| 功能 | 安装 | 配置 |
+| --------- | --------- | -------- |
+| **TTS rendering** | `pip install audiobooker-ai[render]` 或安装 voice-soundboard | `render` 功能的依赖项 |
+| **BookNLP 说话人消解** | `pip install audiobooker-ai[nlp]` | `--booknlp on` |off\|auto` |
+| **FFmpeg audio assembly** | 系统包 (winget/brew/apt) | M4B 输出的依赖项 |
 
-## Quick Start
+## 快速开始
 
 ```bash
 # 1. Create project from EPUB
@@ -83,9 +83,9 @@ audiobooker review-import mybook_review.txt
 audiobooker render
 ```
 
-## Review Workflow
+## 审查工作流程
 
-The review workflow lets you inspect and correct the compiled script before rendering:
+审查工作流程允许您在渲染之前检查和更正编译后的脚本：
 
 ```bash
 # Export to review format
@@ -110,12 +110,12 @@ audiobooker review-import mybook_review.txt
 audiobooker render
 ```
 
-**Review file format:**
-- `=== Chapter Title ===` - Chapter markers
-- `@Speaker` or `@Speaker (emotion)` - Speaker tags
-- `# comment` - Comments (ignored on import)
-- Delete blocks to remove unwanted utterances
-- Change `@Unknown` to `@ActualName` to fix attribution
+**审查文件格式：**
+- `=== 章节标题 ===` - 章节标记
+- `@Speaker` 或 `@Speaker (emotion)` - 说话人标签
+- `# comment` - 注释（导入时会被忽略）
+- 删除块以删除不需要的语句
+- 将 `@Unknown` 更改为 `@ActualName` 以修复归属
 
 ## Python API
 
@@ -147,25 +147,25 @@ project.render("mybook.m4b")
 project.save("mybook.audiobooker")
 ```
 
-## CLI Commands
+## 命令行
 
-| Command | Description |
-|---------|-------------|
-| `audiobooker new <file>` | Create project from EPUB/TXT |
-| `audiobooker cast <char> <voice>` | Assign voice to character |
-| `audiobooker cast-suggest` | Suggest voices for uncast speakers |
-| `audiobooker cast-apply --auto` | Auto-apply top voice suggestions |
-| `audiobooker compile` | Compile chapters to utterances |
-| `audiobooker review-export` | Export script for human review |
-| `audiobooker review-import <file>` | Import edited review file |
-| `audiobooker render` | Render audiobook |
-| `audiobooker info` | Show project information |
-| `audiobooker voices` | List available voices |
-| `audiobooker chapters` | List chapters |
-| `audiobooker speakers` | List detected speakers |
-| `audiobooker from-stdin` | Create project from piped text |
+| 命令 | 描述 |
+| --------- | ------------- |
+| `audiobooker new <file>` | 从 EPUB/TXT 创建项目 |
+| `audiobooker cast <char> <voice>` | 为角色分配语音 |
+| `audiobooker cast-suggest` | 为未分配说话人的角色提供语音建议 |
+| `audiobooker cast-apply --auto` | 自动应用最佳语音建议 |
+| `audiobooker compile` | 将章节编译为语句 |
+| `audiobooker review-export` | 导出脚本以供人工审查 |
+| `audiobooker review-import <file>` | 导入已编辑的审查文件 |
+| `audiobooker render` | 渲染有声书 |
+| `audiobooker info` | 显示项目信息 |
+| `audiobooker voices` | 列出可用语音 |
+| `audiobooker chapters` | 列出章节 |
+| `audiobooker speakers` | 列出检测到的说话人 |
+| `audiobooker from-stdin` | 从管道文本创建项目 |
 
-## Architecture
+## 架构
 
 ```
 audiobooker/
@@ -178,7 +178,7 @@ audiobooker/
 └── cli.py           # Command-line interface
 ```
 
-**Flow:**
+**流程：**
 ```
 Source File -> Parser -> Chapters -> Dialogue Detection ->
 Speaker Resolution (BookNLP optional) -> Emotion Inference ->
@@ -186,33 +186,33 @@ Utterances -> Review/Edit -> TTS (voice-soundboard) ->
 Chapter Audio (cached) -> FFmpeg -> M4B with Chapters
 ```
 
-## Troubleshooting
+## 故障排除
 
-**Render failure report**: On any render error, Audiobooker writes `render_failure_report.json` to the cache directory. This contains:
-- Chapter index and title where the error occurred
-- Utterance index, speaker, and text preview
-- Voice ID and emotion that were being synthesized
-- Full stack trace
-- Cache and manifest paths
+**渲染失败报告：** 发生任何渲染错误时，Audiobooker 会将 `render_failure_report.json` 写入缓存目录。其中包含：
+- 发生错误的章节索引和标题
+- 语句索引、说话人和文本预览
+- 正在合成的语音 ID 和情感
+- 完整的堆栈跟踪
+- 缓存和清单路径
 
-**Common FFmpeg issues**:
-- `FFmpeg not found`: Install via your package manager (winget/brew/apt)
-- `Chapter embedding failed`: Audiobooker falls back to M4A without chapter markers
-- Audio quality: Default is AAC 128kbps at 24kHz (configurable in ProjectConfig)
+**常见的 FFmpeg 问题：**
+- `FFmpeg not found`: 通过您的包管理器 (winget/brew/apt) 安装
+- `Chapter embedding failed`: Audiobooker 会回退到不带章节标记的 M4A 格式
+- 音频质量：默认值为 128kbps 的 AAC，采样率为 24kHz（可在 ProjectConfig 中配置）
 
-**Cache issues**:
-- `audiobooker render --clean-cache` — clear all cached audio and re-render
-- `audiobooker render --no-resume` — ignore cache for this run only
-- `audiobooker render --from-chapter 5` — start from a specific chapter
+**缓存问题：**
+- `audiobooker render --clean-cache` — 清除所有缓存的音频并重新渲染
+- `audiobooker render --no-resume` — 仅本次运行忽略缓存
+- `audiobooker render --from-chapter 5` — 从特定章节开始
 
-## Roadmap
+## 路线图
 
-- [x] v0.1.0 - Core pipeline (parse, cast, compile, render)
-- [x] v0.2.0 - Review-before-render workflow
-- [x] v0.3.0 - Persistent render cache + resume
-- [x] v0.4.0 - Language profiles + input flexibility
-- [x] v0.5.0 - BookNLP, emotion inference, voice suggestions, UX polish
+- [x] v0.1.0 - 核心流水线（解析、转换、编译、渲染）
+- [x] v0.2.0 - 渲染前审查工作流程
+- [x] v0.3.0 - 持久化渲染缓存 + 恢复功能
+- [x] v0.4.0 - 语言配置文件 + 输入灵活性
+- [x] v0.5.0 - BookNLP、情感推理、语音建议、用户体验优化
 
-## License
+## 许可证
 
 MIT

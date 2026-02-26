@@ -80,3 +80,10 @@ venv.bak/
 # OS files
 .DS_Store
 Thumbs.db
+
+# Site (Astro)
+site/.astro/
+site/node_modules/
+
+# Polyglot cache
+.polyglot-cache.json
