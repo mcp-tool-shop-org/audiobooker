@@ -9,7 +9,7 @@ Otherwise, falls back to existing heuristic attribution (no-op).
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional, TYPE_CHECKING
 
 from audiobooker.nlp.booknlp_adapter import BookNLPAdapter, BookNLPResult, NLPBackend

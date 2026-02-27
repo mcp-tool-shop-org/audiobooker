@@ -10,7 +10,6 @@ Supports persistent chapter cache with manifest-driven resume.
 import json
 import logging
 import os
-import tempfile
 import time
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
