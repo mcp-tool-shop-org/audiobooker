@@ -1,5 +1,5 @@
 <p align="center">
-  <a href="README.ja.md">日本語</a> | <a href="README.zh.md">中文</a> | <a href="README.es.md">Español</a> | <a href="README.fr.md">Français</a> | <a href="README.hi.md">हिन्दी</a> | <a href="README.it.md">Italiano</a> | <a href="README.pt-BR.md">Português (BR)</a>
+  <a href="README.ja.md">日本語</a> | <a href="README.md">English</a> | <a href="README.es.md">Español</a> | <a href="README.fr.md">Français</a> | <a href="README.hi.md">हिन्दी</a> | <a href="README.it.md">Italiano</a> | <a href="README.pt-BR.md">Português (BR)</a>
 </p>
 
 <p align="center">
@@ -10,7 +10,8 @@
 
 <p align="center">
   <a href="https://github.com/mcp-tool-shop-org/audiobooker/actions/workflows/ci.yml"><img src="https://github.com/mcp-tool-shop-org/audiobooker/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <a href="https://github.com/mcp-tool-shop-org/audiobooker/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
+  <a href="https://codecov.io/gh/mcp-tool-shop-org/audiobooker"><img src="https://codecov.io/gh/mcp-tool-shop-org/audiobooker/branch/main/graph/badge.svg" alt="codecov"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT License"></a>
   <a href="https://mcp-tool-shop-org.github.io/audiobooker/"><img src="https://img.shields.io/badge/Landing_Page-live-blue" alt="Landing Page"></a>
 </p>
 
@@ -18,20 +19,20 @@
   AI Audiobook Generator — Convert EPUB/TXT books into professionally narrated audiobooks using multi-voice synthesis.
 </p>
 
-## 功能
+## Features
 
-- **多声音合成**: 为每个角色分配独特的语音
-- **对话检测**: 自动识别引用的对话与旁白
-- **情感推断**: 基于规则和词典的情感标注，并具有可配置的置信度
-- **语音建议**: 提供可解释的、按说话人排序的语音推荐
-- **BookNLP 集成**: 可选的基于 NLP 的说话人指代消解
-- **渲染前审查**: 人工可编辑的审查格式，用于更正归属
-- **持久渲染缓存**: 在不重新合成已完成章节的情况下，恢复失败的渲染
-- **动态进度和预计完成时间**: 实时渲染状态，并显示预计完成时间
-- **错误报告**: 结构化的 JSON 格式的渲染错误诊断信息
-- **语言配置文件**: 扩展的、特定于语言的规则抽象
-- **M4B 输出**: 专业的有声书格式，支持章节导航
-- **项目持久性**: 保存/恢复渲染会话
+- **多声音合成**: 为每个角色分配独特的语音。
+- **对话检测**: 自动识别引用的对话与旁白。
+- **情感推断**: 基于规则和词典的情感标注，并具有可配置的置信度。
+- **语音建议**: 提供可解释的、按说话人排序的语音推荐。
+- **BookNLP 集成**: 可选的基于 NLP 的说话人指代消解功能。
+- **渲染前审查**: 人工可编辑的审查格式，用于更正角色归属。
+- **持久渲染缓存**: 在不重新合成已完成章节的情况下，恢复失败的渲染。
+- **动态进度和预计完成时间**: 实时渲染状态，并显示预计完成时间。
+- **错误报告**: 结构化的 JSON 格式的渲染错误诊断信息。
+- **语言配置文件**: 扩展的、特定于语言的规则抽象。
+- **M4B 输出**: 专业的有声书格式，支持章节导航。
+- **项目持久性**: 保存/恢复渲染会话。
 
 ## 安装
 
@@ -53,10 +54,10 @@ pip install -e ../voice-soundboard
 ## 可选功能
 
 | 功能 | 安装 | 配置 |
-| --------- | --------- | -------- |
-| **TTS rendering** | `pip install audiobooker-ai[render]` 或安装 voice-soundboard | `render` 功能的依赖项 |
-| **BookNLP 说话人消解** | `pip install audiobooker-ai[nlp]` | `--booknlp on` |off\|auto` |
-| **FFmpeg audio assembly** | 系统包 (winget/brew/apt) | M4B 输出的依赖项 |
+|---------|---------|--------|
+| **TTS rendering** | `pip install audiobooker-ai[render]` 或安装 voice-soundboard | `render` 功能的必要组件 |
+| **BookNLP 说话人消解** | `pip install audiobooker-ai[nlp]` | `--booknlp on` | `off` | `auto` |
+| **FFmpeg audio assembly** | 系统包 (winget/brew/apt) | M4B 输出的必要组件 |
 
 ## 快速开始
 
@@ -115,7 +116,7 @@ audiobooker render
 - `@Speaker` 或 `@Speaker (emotion)` - 说话人标签
 - `# comment` - 注释（导入时会被忽略）
 - 删除块以删除不需要的语句
-- 将 `@Unknown` 更改为 `@ActualName` 以修复归属
+- 将 `@Unknown` 更改为 `@ActualName` 以更正角色归属
 
 ## Python API
 
@@ -150,10 +151,10 @@ project.save("mybook.audiobooker")
 ## 命令行
 
 | 命令 | 描述 |
-| --------- | ------------- |
+|---------|-------------|
 | `audiobooker new <file>` | 从 EPUB/TXT 创建项目 |
 | `audiobooker cast <char> <voice>` | 为角色分配语音 |
-| `audiobooker cast-suggest` | 为未分配说话人的角色提供语音建议 |
+| `audiobooker cast-suggest` | 为未分配角色的说话人提供语音建议 |
 | `audiobooker cast-apply --auto` | 自动应用最佳语音建议 |
 | `audiobooker compile` | 将章节编译为语句 |
 | `audiobooker review-export` | 导出脚本以供人工审查 |
@@ -188,7 +189,7 @@ Chapter Audio (cached) -> FFmpeg -> M4B with Chapters
 
 ## 故障排除
 
-**渲染失败报告：** 发生任何渲染错误时，Audiobooker 会将 `render_failure_report.json` 写入缓存目录。其中包含：
+**渲染失败报告：** 发生任何渲染错误时，Audiobooker 会将 `render_failure_report.json` 写入缓存目录。它包含：
 - 发生错误的章节索引和标题
 - 语句索引、说话人和文本预览
 - 正在合成的语音 ID 和情感
@@ -196,23 +197,43 @@ Chapter Audio (cached) -> FFmpeg -> M4B with Chapters
 - 缓存和清单路径
 
 **常见的 FFmpeg 问题：**
-- `FFmpeg not found`: 通过您的包管理器 (winget/brew/apt) 安装
-- `Chapter embedding failed`: Audiobooker 会回退到不带章节标记的 M4A 格式
-- 音频质量：默认值为 128kbps 的 AAC，采样率为 24kHz（可在 ProjectConfig 中配置）
+- `FFmpeg not found`: 通过您的包管理器 (winget/brew/apt) 安装。
+- `Chapter embedding failed`: Audiobooker 会回退到不带章节标记的 M4A 格式。
+- 音频质量：默认值为 128kbps 的 AAC，采样率为 24kHz（可在 ProjectConfig 中配置）。
 
 **缓存问题：**
-- `audiobooker render --clean-cache` — 清除所有缓存的音频并重新渲染
-- `audiobooker render --no-resume` — 仅本次运行忽略缓存
-- `audiobooker render --from-chapter 5` — 从特定章节开始
+- `audiobooker render --clean-cache` — 清除所有缓存的音频并重新渲染。
+- `audiobooker render --no-resume` — 仅本次运行忽略缓存。
+- `audiobooker render --from-chapter 5` — 从特定章节开始。
 
 ## 路线图
 
-- [x] v0.1.0 - 核心流水线（解析、转换、编译、渲染）
+- [x] v0.1.0 - 核心流水线 (解析、角色分配、编译、渲染)
 - [x] v0.2.0 - 渲染前审查工作流程
-- [x] v0.3.0 - 持久化渲染缓存 + 恢复功能
+- [x] v0.3.0 - 持久渲染缓存 + 恢复功能
 - [x] v0.4.0 - 语言配置文件 + 输入灵活性
-- [x] v0.5.0 - BookNLP、情感推理、语音建议、用户体验优化
+- [x] v0.5.0 - BookNLP、情感推断、语音建议、用户体验优化
+
+## 安全与数据范围
+
+- **访问的数据：** 从本地文件系统中读取 EPUB/TXT 文件。将音频文件和缓存清单写入输出目录。可选地使用语音合成器（TTS）和 FFmpeg 进行音频处理。
+- **未访问的数据：** 不进行任何网络请求。不收集任何遥测数据。不存储任何用户数据。不使用任何凭证或令牌。
+- **所需权限：** 访问输入书籍文件的读取权限。写入输出目录的写入权限。可选：FFmpeg 必须在 PATH 环境变量中。
+
+## 评分卡
+
+| 关卡 | 状态 |
+|------|--------|
+| A. 安全基线 | 通过 |
+| B. 错误处理 | 通过 |
+| C. 操作员文档 | 通过 |
+| D. 发布前的检查 | 通过 |
+| E. 身份验证 | 通过 |
 
 ## 许可证
 
-MIT
+[MIT](LICENSE)
+
+---
+
+由 <a href="https://mcp-tool-shop.github.io/">MCP Tool Shop</a> 构建。

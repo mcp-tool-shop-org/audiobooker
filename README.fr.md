@@ -1,5 +1,5 @@
 <p align="center">
-  <a href="README.ja.md">日本語</a> | <a href="README.zh.md">中文</a> | <a href="README.es.md">Español</a> | <a href="README.fr.md">Français</a> | <a href="README.hi.md">हिन्दी</a> | <a href="README.it.md">Italiano</a> | <a href="README.pt-BR.md">Português (BR)</a>
+  <a href="README.ja.md">日本語</a> | <a href="README.zh.md">中文</a> | <a href="README.es.md">Español</a> | <a href="README.md">English</a> | <a href="README.hi.md">हिन्दी</a> | <a href="README.it.md">Italiano</a> | <a href="README.pt-BR.md">Português (BR)</a>
 </p>
 
 <p align="center">
@@ -10,7 +10,8 @@
 
 <p align="center">
   <a href="https://github.com/mcp-tool-shop-org/audiobooker/actions/workflows/ci.yml"><img src="https://github.com/mcp-tool-shop-org/audiobooker/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <a href="https://github.com/mcp-tool-shop-org/audiobooker/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
+  <a href="https://codecov.io/gh/mcp-tool-shop-org/audiobooker"><img src="https://codecov.io/gh/mcp-tool-shop-org/audiobooker/branch/main/graph/badge.svg" alt="codecov"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT License"></a>
   <a href="https://mcp-tool-shop-org.github.io/audiobooker/"><img src="https://img.shields.io/badge/Landing_Page-live-blue" alt="Landing Page"></a>
 </p>
 
@@ -18,20 +19,20 @@
   AI Audiobook Generator — Convert EPUB/TXT books into professionally narrated audiobooks using multi-voice synthesis.
 </p>
 
-## Fonctionnalités
+## Caractéristiques
 
-- **Synthèse vocale multi-voix**: Attribuez des voix uniques à chaque personnage.
-- **Détection de dialogue**: Identifie automatiquement les dialogues par rapport à la narration.
-- **Inférence émotionnelle**: Étiquetage des émotions basé sur des règles et un lexique, avec un niveau de confiance configurable.
-- **Suggestions de voix**: Recommandations de voix classées et explicables pour chaque locuteur.
-- **Intégration BookNLP**: Résolution optionnelle des références aux locuteurs grâce à la technologie NLP.
-- **Vérification avant la génération**: Format de révision modifiable par l'utilisateur pour corriger les attributions.
-- **Cache de génération persistant**: Reprenez les générations interrompues sans refaire les chapitres déjà générés.
-- **Progression et ETA dynamiques**: Statut de génération en temps réel avec une estimation du temps de fin.
-- **Rapports d'erreur**: Diagnostics structurés en JSON en cas d'erreur de génération.
-- **Profils de langue**: Abstraction de règles spécifiques à chaque langue, extensible.
-- **Sortie M4B**: Format de livre audio professionnel avec navigation par chapitre.
-- **Persistance du projet**: Enregistrez et reprenez les sessions de génération.
+- **Synthèse vocale multi-voix** : Attribuez des voix uniques à chaque personnage.
+- **Détection du dialogue** : Identifie automatiquement les dialogues par rapport à la narration.
+- **Inférence émotionnelle** : Étiquetage des émotions basé sur des règles et un lexique, avec un niveau de confiance configurable.
+- **Suggestions de voix** : Recommandations de voix expliquées et classées pour chaque locuteur.
+- **Intégration BookNLP** : Résolution optionnelle des références aux locuteurs grâce à la technologie NLP de BookNLP.
+- **Vérification avant la génération** : Format de révision modifiable par l'utilisateur pour corriger les attributions.
+- **Cache de génération persistant** : Reprenez les générations interrompues sans refaire les chapitres déjà générés.
+- **Progression et ETA dynamiques** : Statut de génération en temps réel avec une estimation du temps de fin.
+- **Rapports d'erreur** : Diagnostics structurés au format JSON en cas d'erreur de génération.
+- **Profils de langue** : Abstraction des règles spécifiques à chaque langue, extensible.
+- **Sortie M4B** : Format de livre audio professionnel avec navigation par chapitre.
+- **Persistance du projet** : Enregistrez et reprenez les sessions de génération.
 
 ## Installation
 
@@ -52,10 +53,10 @@ pip install -e ../voice-soundboard
 
 ## Fonctionnalités optionnelles
 
-| Fonctionnalité | Installer | Configuration |
-| --------- | --------- | -------- |
+| Fonctionnalité | Installation | Configuration |
+|---------|---------|--------|
 | **TTS rendering** | `pip install audiobooker-ai[render]` ou installez voice-soundboard | Nécessaire pour `render` |
-| **Résolution des locuteurs BookNLP** | `pip install audiobooker-ai[nlp]` | `--booknlp on` |off\|auto` |
+| **Résolution des locuteurs BookNLP** | `pip install audiobooker-ai[nlp]` | `--booknlp on\ | off\ | auto` |
 | **FFmpeg audio assembly** | Paquet système (winget/brew/apt) | Nécessaire pour la sortie M4B |
 
 ## Premiers pas
@@ -150,7 +151,7 @@ project.save("mybook.audiobooker")
 ## Commandes CLI
 
 | Commande | Description |
-| --------- | ------------- |
+|---------|-------------|
 | `audiobooker new <file>` | Créer un projet à partir d'un fichier EPUB/TXT |
 | `audiobooker cast <char> <voice>` | Attribuer une voix à un personnage |
 | `audiobooker cast-suggest` | Suggérer des voix pour les locuteurs non attribués |
@@ -163,7 +164,7 @@ project.save("mybook.audiobooker")
 | `audiobooker voices` | Lister les voix disponibles |
 | `audiobooker chapters` | Lister les chapitres |
 | `audiobooker speakers` | Lister les locuteurs détectés |
-| `audiobooker from-stdin` | Créer un projet à partir d'un texte en entrée |
+| `audiobooker from-stdin` | Créer un projet à partir d'un texte en entrée standard |
 
 ## Architecture
 
@@ -197,22 +198,42 @@ Chapter Audio (cached) -> FFmpeg -> M4B with Chapters
 
 **Problèmes courants de FFmpeg :**
 - `FFmpeg introuvable` : Installez via votre gestionnaire de paquets (winget/brew/apt).
-- `L'intégration des chapitres a échoué` : Audiobooker revient à M4A sans marqueurs de chapitre.
+- `L'intégration du chapitre a échoué` : Audiobooker revient à M4A sans marqueurs de chapitre.
 - Qualité audio : Par défaut, AAC 128 kbps à 24 kHz (configurable dans ProjectConfig).
 
 **Problèmes de cache :**
 - `audiobooker render --clean-cache` — efface tous les fichiers audio mis en cache et relance la génération.
 - `audiobooker render --no-resume` — ignore le cache pour cette exécution uniquement.
-- `audiobooker render --from-chapter 5` — commence à partir d'un chapitre spécifique.
+- `audiobooker render --from-chapter 5` — démarre à partir d'un chapitre spécifique.
 
 ## Feuille de route
 
-- [x] v0.1.0 - Pipeline principal (analyse, conversion, compilation, rendu)
-- [x] v0.2.0 - Flux de travail de vérification avant le rendu
-- [x] v0.3.0 - Cache de rendu persistant + reprise
+- [x] v0.1.0 - Pipeline de base (analyse, attribution, compilation, génération)
+- [x] v0.2.0 - Flux de travail de révision avant la génération
+- [x] v0.3.0 - Cache de génération persistant + reprise
 - [x] v0.4.0 - Profils de langue + flexibilité de l'entrée
-- [x] v0.5.0 - BookNLP, inférence émotionnelle, suggestions vocales, amélioration de l'expérience utilisateur
+- [x] v0.5.0 - BookNLP, inférence émotionnelle, suggestions de voix, amélioration de l'interface utilisateur
+
+## Sécurité et portée des données
+
+- **Données accessibles :** Lecture de fichiers EPUB/TXT à partir du système de fichiers local. Écriture de fichiers audio et de manifestes de cache dans les répertoires de sortie. Utilisation optionnelle d'une table de sons pour la synthèse vocale et de FFmpeg pour l'assemblage audio.
+- **Données non accessibles :** Aucune requête réseau. Aucune télémétrie. Aucun stockage de données utilisateur. Aucune information d'identification ou jeton.
+- **Autorisations requises :** Accès en lecture aux fichiers de livre d'entrée. Accès en écriture aux répertoires de sortie. Optionnel : FFmpeg doit être présent dans le PATH.
+
+## Tableau de bord
+
+| Étape | Statut |
+|------|--------|
+| A. Base de sécurité | PASSÉ |
+| B. Gestion des erreurs | PASSÉ |
+| C. Documentation pour les utilisateurs | PASSÉ |
+| D. Bonnes pratiques de déploiement | PASSÉ |
+| E. Identification | PASSÉ |
 
 ## Licence
 
-MIT
+[MIT](LICENSE)
+
+---
+
+Créé par <a href="https://mcp-tool-shop.github.io/">MCP Tool Shop</a

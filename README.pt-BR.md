@@ -1,5 +1,5 @@
 <p align="center">
-  <a href="README.ja.md">日本語</a> | <a href="README.zh.md">中文</a> | <a href="README.es.md">Español</a> | <a href="README.fr.md">Français</a> | <a href="README.hi.md">हिन्दी</a> | <a href="README.it.md">Italiano</a> | <a href="README.pt-BR.md">Português (BR)</a>
+  <a href="README.ja.md">日本語</a> | <a href="README.zh.md">中文</a> | <a href="README.es.md">Español</a> | <a href="README.fr.md">Français</a> | <a href="README.hi.md">हिन्दी</a> | <a href="README.it.md">Italiano</a> | <a href="README.md">English</a>
 </p>
 
 <p align="center">
@@ -10,7 +10,8 @@
 
 <p align="center">
   <a href="https://github.com/mcp-tool-shop-org/audiobooker/actions/workflows/ci.yml"><img src="https://github.com/mcp-tool-shop-org/audiobooker/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <a href="https://github.com/mcp-tool-shop-org/audiobooker/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
+  <a href="https://codecov.io/gh/mcp-tool-shop-org/audiobooker"><img src="https://codecov.io/gh/mcp-tool-shop-org/audiobooker/branch/main/graph/badge.svg" alt="codecov"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT License"></a>
   <a href="https://mcp-tool-shop-org.github.io/audiobooker/"><img src="https://img.shields.io/badge/Landing_Page-live-blue" alt="Landing Page"></a>
 </p>
 
@@ -21,12 +22,12 @@
 ## Características
 
 - **Síntese de múltiplas vozes**: Atribua vozes únicas a cada personagem.
-- **Detecção de diálogos**: Identifica automaticamente diálogos versus narração.
-- **Inferência de emoções**: Rotulagem de emoções com base em regras e léxico, com nível de confiança configurável.
-- **Sugestões de vozes**: Recomendações de vozes explicáveis e classificadas para cada locutor.
-- **Integração com BookNLP**: Resolução opcional de referências de locutores, utilizando NLP.
+- **Detecção de diálogo**: Identifica automaticamente diálogos em relação à narração.
+- **Inferência de emoção**: Rotulagem de emoções com base em regras e léxico, com nível de confiança configurável.
+- **Sugestões de voz**: Recomendações de voz explicáveis e classificadas para cada orador.
+- **Integração com BookNLP**: Resolução opcional de referência de oradores com tecnologia de processamento de linguagem natural (PNL).
 - **Revisão antes da renderização**: Formato de revisão editável por humanos para corrigir atribuições.
-- **Cache de renderização persistente**: Retoma renderizações interrompidas sem refazer capítulos já concluídos.
+- **Cache de renderização persistente**: Retoma renderizações interrompidas sem precisar re-sintetizar os capítulos já concluídos.
 - **Progresso e tempo estimado dinâmicos**: Status de renderização em tempo real com tempo estimado de conclusão.
 - **Relatórios de falhas**: Diagnósticos estruturados em formato JSON para erros de renderização.
 - **Perfis de idioma**: Abstração de regras específicas para cada idioma, que podem ser expandidas.
@@ -53,9 +54,9 @@ pip install -e ../voice-soundboard
 ## Recursos Opcionais
 
 | Recurso | Instalar | Configuração |
-| --------- | --------- | -------- |
+|---------|---------|--------|
 | **TTS rendering** | `pip install audiobooker-ai[render]` ou instale o voice-soundboard | Necessário para `render` |
-| **Resolução de locutores do BookNLP** | `pip install audiobooker-ai[nlp]` | `--booknlp on` |off\|auto` |
+| **Resolução de oradores do BookNLP** | `pip install audiobooker-ai[nlp]` | `--booknlp on\ | off\ | auto` |
 | **FFmpeg audio assembly** | Pacote do sistema (winget/brew/apt) | Necessário para a saída em formato M4B |
 
 ## Início Rápido
@@ -112,7 +113,7 @@ audiobooker render
 
 **Formato do arquivo de revisão:**
 - `=== Título do Capítulo ===` - Marcadores de capítulo
-- `@Locutor` ou `@Locutor (emoção)` - Tags de locutor
+- `@Orador` ou `@Orador (emoção)` - Tags de orador
 - `# comentário` - Comentários (ignorados na importação)
 - Exclua blocos para remover trechos indesejados
 - Altere `@Desconhecido` para `@NomeReal` para corrigir a atribuição
@@ -147,14 +148,14 @@ project.render("mybook.m4b")
 project.save("mybook.audiobooker")
 ```
 
-## Comandos da Linha de Comando
+## Comandos da Linha de Comando (CLI)
 
 | Comando | Descrição |
-| --------- | ------------- |
+|---------|-------------|
 | `audiobooker new <file>` | Criar projeto a partir de EPUB/TXT |
 | `audiobooker cast <char> <voice>` | Atribuir voz a um personagem |
-| `audiobooker cast-suggest` | Sugerir vozes para locutores sem voz atribuída |
-| `audiobooker cast-apply --auto` | Aplicar automaticamente as principais sugestões de voz |
+| `audiobooker cast-suggest` | Sugerir vozes para oradores sem voz atribuída |
+| `audiobooker cast-apply --auto` | Aplicar automaticamente as melhores sugestões de voz |
 | `audiobooker compile` | Compilar capítulos em trechos |
 | `audiobooker review-export` | Exportar o script para revisão humana |
 | `audiobooker review-import <file>` | Importar o arquivo de revisão editado |
@@ -162,7 +163,7 @@ project.save("mybook.audiobooker")
 | `audiobooker info` | Mostrar informações do projeto |
 | `audiobooker voices` | Listar vozes disponíveis |
 | `audiobooker chapters` | Listar capítulos |
-| `audiobooker speakers` | Listar locutores detectados |
+| `audiobooker speakers` | Listar oradores detectados |
 | `audiobooker from-stdin` | Criar projeto a partir de texto via pipe |
 
 ## Arquitetura
@@ -188,31 +189,51 @@ Chapter Audio (cached) -> FFmpeg -> M4B with Chapters
 
 ## Solução de Problemas
 
-**Relatório de falha de renderização**: Em caso de erro de renderização, o Audiobooker cria o arquivo `render_failure_report.json` no diretório de cache. Este arquivo contém:
+**Relatório de falha de renderização**: Em caso de erro de renderização, o Audiobooker cria um arquivo `render_failure_report.json` no diretório de cache. Este arquivo contém:
 - Índice e título do capítulo onde ocorreu o erro
-- Índice, locutor e trecho de texto
+- Índice, orador e trecho de texto
 - ID da voz e emoção que estavam sendo sintetizadas
-- Rastreamento completo da pilha de chamadas
+- Rastreamento completo da pilha de erros
 - Caminhos do cache e do manifesto
 
 **Problemas comuns com o FFmpeg**:
-- `FFmpeg não encontrado`: Instale via seu gerenciador de pacotes (winget/brew/apt)
+- `FFmpeg não encontrado`: Instale através do seu gerenciador de pacotes (winget/brew/apt)
 - `Falha na incorporação do capítulo`: O Audiobooker volta a usar o formato M4A sem marcadores de capítulo
-- Qualidade do áudio: O padrão é AAC a 128kbps a 24kHz (configurável em ProjectConfig)
+- Qualidade do áudio: O padrão é AAC a 128kbps a 24kHz (configurável no ProjectConfig)
 
 **Problemas com o cache**:
-- `audiobooker render --clean-cache` — limpa todo o cache de áudio e refaz a renderização
+- `audiobooker render --clean-cache` — limpa todo o cache de áudio e re-renderiza
 - `audiobooker render --no-resume` — ignora o cache para esta execução
 - `audiobooker render --from-chapter 5` — inicia a partir de um capítulo específico
 
-## Próximos Passos
+## Próximos Passos (Roadmap)
 
-- [x] v0.1.0 - Pipeline principal (análise, conversão, compilação, renderização)
-- [x] v0.2.0 - Fluxo de trabalho de revisão antes da renderização
+- [x] v0.1.0 - Pipeline principal (análise, atribuição, compilação, renderização)
+- [x] v0.2.0 - Fluxo de revisão antes da renderização
 - [x] v0.3.0 - Cache de renderização persistente + retomada
 - [x] v0.4.0 - Perfis de idioma + flexibilidade de entrada
-- [x] v0.5.0 - BookNLP, inferência de emoções, sugestões de voz, melhorias na experiência do usuário
+- [x] v0.5.0 - BookNLP, inferência de emoção, sugestões de voz, aprimoramentos na interface do usuário
+
+## Segurança e Escopo de Dados
+
+- **Dados acessados:** Lê arquivos EPUB/TXT do sistema de arquivos local. Escreve arquivos de áudio e arquivos de manifesto de cache em diretórios de saída. Opcionalmente, utiliza um painel de sons para síntese de voz e FFmpeg para montagem de áudio.
+- **Dados NÃO acessados:** Sem requisições de rede. Sem telemetria. Sem armazenamento de dados do usuário. Sem credenciais ou tokens.
+- **Permissões necessárias:** Acesso de leitura aos arquivos de entrada. Acesso de escrita aos diretórios de saída. Opcional: FFmpeg no PATH.
+
+## Painel de Avaliação
+
+| Critério | Status |
+|------|--------|
+| A. Base de Segurança | APROVADO |
+| B. Tratamento de Erros | APROVADO |
+| C. Documentação para Operadores | APROVADO |
+| D. Boas Práticas de Desenvolvimento | APROVADO |
+| E. Identidade | APROVADO |
 
 ## Licença
 
-MIT
+[MIT](LICENSE)
+
+---
+
+Desenvolvido por <a href="https://mcp-tool-shop.github.io/">MCP Tool Shop</a
