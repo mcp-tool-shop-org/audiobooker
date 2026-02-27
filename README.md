@@ -10,7 +10,8 @@
 
 <p align="center">
   <a href="https://github.com/mcp-tool-shop-org/audiobooker/actions/workflows/ci.yml"><img src="https://github.com/mcp-tool-shop-org/audiobooker/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <a href="https://github.com/mcp-tool-shop-org/audiobooker/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
+  <a href="https://codecov.io/gh/mcp-tool-shop-org/audiobooker"><img src="https://codecov.io/gh/mcp-tool-shop-org/audiobooker/branch/main/graph/badge.svg" alt="codecov"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT License"></a>
   <a href="https://mcp-tool-shop-org.github.io/audiobooker/"><img src="https://img.shields.io/badge/Landing_Page-live-blue" alt="Landing Page"></a>
 </p>
 
@@ -213,6 +214,26 @@ Chapter Audio (cached) -> FFmpeg -> M4B with Chapters
 - [x] v0.4.0 - Language profiles + input flexibility
 - [x] v0.5.0 - BookNLP, emotion inference, voice suggestions, UX polish
 
+## Security & Data Scope
+
+- **Data accessed:** Reads EPUB/TXT files from local filesystem. Writes audio files and cache manifests to output directories. Optionally uses voice-soundboard for TTS and FFmpeg for audio assembly.
+- **Data NOT accessed:** No network requests. No telemetry. No user data storage. No credentials or tokens.
+- **Permissions required:** Read access to input book files. Write access to output directories. Optional: FFmpeg on PATH.
+
+## Scorecard
+
+| Gate | Status |
+|------|--------|
+| A. Security Baseline | PASS |
+| B. Error Handling | PASS |
+| C. Operator Docs | PASS |
+| D. Shipping Hygiene | PASS |
+| E. Identity | PASS |
+
 ## License
 
-MIT
+[MIT](LICENSE)
+
+---
+
+Built by <a href="https://mcp-tool-shop.github.io/">MCP Tool Shop</a>
