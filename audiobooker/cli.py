@@ -11,8 +11,14 @@ Usage:
     audiobooker voices                     # List available voices
 """
 
+from __future__ import annotations
+
 import argparse
 import sys
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from audiobooker.renderer.engine import RenderError
 from pathlib import Path
 from typing import Optional
 
@@ -145,7 +151,7 @@ def find_project_file(specified: Optional[str] = None) -> Path:
         return project_files[0]
     elif len(project_files) > 1:
         raise ValueError(
-            f"Multiple project files found. Specify one with -p:\n"
+            "Multiple project files found. Specify one with -p:\n"
             + "\n".join(f"  {p}" for p in project_files)
         )
     else:
@@ -202,9 +208,9 @@ def cmd_new(args) -> int:
         print(f"  Words: ~{project.total_words:,}")
         print(f"  Estimated duration: ~{project.estimated_duration_minutes:.0f} min (at {project.config.estimated_wpm} wpm, varies by voice)")
         print("\nNext steps:")
-        print(f"  1. Cast voices: audiobooker cast narrator af_heart")
-        print(f"  2. Compile: audiobooker compile")
-        print(f"  3. Render: audiobooker render")
+        print("  1. Cast voices: audiobooker cast narrator af_heart")
+        print("  2. Compile: audiobooker compile")
+        print("  3. Render: audiobooker render")
 
         return 0
 
@@ -221,7 +227,7 @@ def cmd_cast(args) -> int:
         project_path = find_project_file(args.project)
         project = AudiobookProject.load(project_path)
 
-        character = project.cast(
+        project.cast(
             name=args.character,
             voice=args.voice,
             emotion=args.emotion,
@@ -260,7 +266,7 @@ def cmd_compile(args) -> int:
         # Show uncast speakers
         uncast = project.get_uncast_speakers()
         if uncast:
-            print(f"\nDetected speakers without voice assignments:")
+            print("\nDetected speakers without voice assignments:")
             for speaker in sorted(uncast):
                 print(f"  - {speaker}")
             print("\nAssign voices with: audiobooker cast <speaker> <voice>")
@@ -503,7 +509,7 @@ def cmd_review_export(args) -> int:
         if output:
             output = Path(output)
 
-        print(f"Exporting review file...")
+        print("Exporting review file...")
 
         review_path = project.export_for_review(output)
         project.save()
@@ -516,10 +522,10 @@ def cmd_review_export(args) -> int:
         print(f"  Chapters: {len(project.chapters)}")
         print(f"  Utterances: {total_utterances}")
         print(f"  Speakers: {', '.join(sorted(speakers))}")
-        print(f"\nEdit the file to:")
-        print(f"  - Change speaker names: @OldName -> @NewName")
-        print(f"  - Add/change emotions: @Name -> @Name (emotion)")
-        print(f"  - Delete unwanted lines by removing the block")
+        print("\nEdit the file to:")
+        print("  - Change speaker names: @OldName -> @NewName")
+        print("  - Add/change emotions: @Name -> @Name (emotion)")
+        print("  - Delete unwanted lines by removing the block")
         print(f"\nThen import: audiobooker review-import {review_path.name}")
 
         return 0
@@ -549,11 +555,11 @@ def cmd_review_import(args) -> int:
         stats = project.import_reviewed(review_path)
         project.save()
 
-        print(f"\nImport complete:")
+        print("\nImport complete:")
         print(f"  Chapters updated: {stats['chapters_updated']}")
         print(f"  Utterances imported: {stats['utterances_imported']}")
         print(f"  Speakers: {', '.join(sorted(stats['speakers_found']))}")
-        print(f"\nProject saved. Ready to render: audiobooker render")
+        print("\nProject saved. Ready to render: audiobooker render")
 
         return 0
 

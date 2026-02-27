@@ -32,7 +32,7 @@ import re
 from pathlib import Path
 from typing import Optional, TYPE_CHECKING
 
-from audiobooker.models import Chapter, Utterance, UtteranceType
+from audiobooker.models import Utterance, UtteranceType
 
 if TYPE_CHECKING:
     from audiobooker.project import AudiobookProject
@@ -64,28 +64,28 @@ def export_for_review(project: "AudiobookProject", output_path: Optional[Path] =
     lines = []
 
     # Header
-    lines.append(f"# Audiobooker Review File")
+    lines.append("# Audiobooker Review File")
     lines.append(f"# Title: {project.title}")
     lines.append(f"# Author: {project.author}")
-    lines.append(f"#")
-    lines.append(f"# Instructions:")
-    lines.append(f"#   - Edit speaker names by changing @OldName to @NewName")
-    lines.append(f"#   - Edit emotions by changing @Name (old) to @Name (new)")
-    lines.append(f"#   - Delete entire speaker blocks to remove them")
-    lines.append(f"#   - Add emotions: @narrator -> @narrator (somber)")
-    lines.append(f"#   - Lines starting with # are comments (ignored)")
-    lines.append(f"#")
+    lines.append("#")
+    lines.append("# Instructions:")
+    lines.append("#   - Edit speaker names by changing @OldName to @NewName")
+    lines.append("#   - Edit emotions by changing @Name (old) to @Name (new)")
+    lines.append("#   - Delete entire speaker blocks to remove them")
+    lines.append("#   - Add emotions: @narrator -> @narrator (somber)")
+    lines.append("#   - Lines starting with # are comments (ignored)")
+    lines.append("#")
     lines.append(f"# After editing, import with: audiobooker review-import {output_path.name}")
-    lines.append(f"")
+    lines.append("")
 
     for chapter in project.chapters:
         # Chapter header
         lines.append(f"=== {chapter.title} ===")
-        lines.append(f"")
+        lines.append("")
 
         if not chapter.utterances:
-            lines.append(f"# (Chapter not compiled - no utterances)")
-            lines.append(f"")
+            lines.append("# (Chapter not compiled - no utterances)")
+            lines.append("")
             continue
 
         current_speaker = None
@@ -96,7 +96,7 @@ def export_for_review(project: "AudiobookProject", output_path: Optional[Path] =
             if utterance.speaker != current_speaker or utterance.emotion != current_emotion:
                 # Add blank line before new speaker (except at start)
                 if current_speaker is not None:
-                    lines.append(f"")
+                    lines.append("")
 
                 # Speaker tag
                 if utterance.emotion:
@@ -110,7 +110,7 @@ def export_for_review(project: "AudiobookProject", output_path: Optional[Path] =
             # Text content (indent for readability)
             lines.append(utterance.text)
 
-        lines.append(f"")  # Blank line after chapter
+        lines.append("")  # Blank line after chapter
 
     # Write file
     output_path.write_text("\n".join(lines), encoding="utf-8")
@@ -260,10 +260,10 @@ def preview_review_format(project: "AudiobookProject", chapter_index: int = 0) -
     lines = []
 
     lines.append(f"=== {chapter.title} ===")
-    lines.append(f"")
+    lines.append("")
 
     if not chapter.utterances:
-        lines.append(f"# (Not compiled)")
+        lines.append("# (Not compiled)")
         return "\n".join(lines)
 
     current_speaker = None
@@ -272,7 +272,7 @@ def preview_review_format(project: "AudiobookProject", chapter_index: int = 0) -
     for utterance in chapter.utterances:
         if utterance.speaker != current_speaker or utterance.emotion != current_emotion:
             if current_speaker is not None:
-                lines.append(f"")
+                lines.append("")
 
             if utterance.emotion:
                 lines.append(f"@{utterance.speaker} ({utterance.emotion})")
