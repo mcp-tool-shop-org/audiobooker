@@ -14,7 +14,7 @@ export const config: SiteConfig = {
     headlineAccent: 'a voice.',
     description: 'Convert EPUB and TXT books into professionally narrated audiobooks with multi-voice synthesis, dialogue detection, and emotion inference.',
     primaryCta: { href: '#usage', label: 'Get started' },
-    secondaryCta: { href: '#features', label: 'Learn more' },
+    secondaryCta: { href: 'handbook/', label: 'Read the Handbook' },
     previews: [
       { label: 'Create', code: 'audiobooker new mybook.epub' },
       { label: 'Cast', code: 'audiobooker cast narrator bm_george --emotion calm' },
