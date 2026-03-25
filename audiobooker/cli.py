@@ -31,17 +31,27 @@ def create_parser() -> argparse.ArgumentParser:
         prog="audiobooker",
         description="AI Audiobook Generator - Convert books to narrated audiobooks",
     )
-    parser.add_argument("--version", action="version", version=f"audiobooker {__version__}")
+    parser.add_argument(
+        "--version", action="version", version=f"audiobooker {__version__}"
+    )
 
     subparsers = parser.add_subparsers(dest="command", help="Commands")
 
     # --- new ---
-    new_parser = subparsers.add_parser("new", help="Create new project from source file")
+    new_parser = subparsers.add_parser(
+        "new", help="Create new project from source file"
+    )
     new_parser.add_argument("source", help="Source file (EPUB, TXT, MD)")
     new_parser.add_argument("-o", "--output", help="Output project file path")
-    new_parser.add_argument("--lang", default="en", metavar="CODE", help="Language code (default: en)")
-    new_parser.add_argument("--booknlp", default="auto", choices=["on", "off", "auto"],
-                            help="BookNLP speaker resolution (default: auto)")
+    new_parser.add_argument(
+        "--lang", default="en", metavar="CODE", help="Language code (default: en)"
+    )
+    new_parser.add_argument(
+        "--booknlp",
+        default="auto",
+        choices=["on", "off", "auto"],
+        help="BookNLP speaker resolution (default: auto)",
+    )
 
     # --- load ---
     load_parser = subparsers.add_parser("load", help="Load existing project")
@@ -53,36 +63,67 @@ def create_parser() -> argparse.ArgumentParser:
     cast_parser.add_argument("voice", help="Voice ID (e.g., af_bella, bm_george)")
     cast_parser.add_argument("-e", "--emotion", help="Default emotion")
     cast_parser.add_argument("-d", "--description", help="Character description")
-    cast_parser.add_argument("-p", "--project", help="Project file (auto-detected if omitted)")
+    cast_parser.add_argument(
+        "-p", "--project", help="Project file (auto-detected if omitted)"
+    )
 
     # --- cast-suggest ---
-    suggest_parser = subparsers.add_parser("cast-suggest", help="Suggest voices for uncast speakers")
+    suggest_parser = subparsers.add_parser(
+        "cast-suggest", help="Suggest voices for uncast speakers"
+    )
     suggest_parser.add_argument("-p", "--project", help="Project file")
-    suggest_parser.add_argument("-n", "--top", type=int, default=3, help="Show top N suggestions per speaker")
+    suggest_parser.add_argument(
+        "-n", "--top", type=int, default=3, help="Show top N suggestions per speaker"
+    )
 
     # --- cast-apply ---
-    apply_parser = subparsers.add_parser("cast-apply", help="Auto-apply voice suggestions")
+    apply_parser = subparsers.add_parser(
+        "cast-apply", help="Auto-apply voice suggestions"
+    )
     apply_parser.add_argument("-p", "--project", help="Project file")
-    apply_parser.add_argument("--auto", action="store_true", help="Apply top suggestion for all uncast speakers")
+    apply_parser.add_argument(
+        "--auto",
+        action="store_true",
+        help="Apply top suggestion for all uncast speakers",
+    )
 
     # --- compile ---
-    compile_parser = subparsers.add_parser("compile", help="Compile chapters to utterances")
+    compile_parser = subparsers.add_parser(
+        "compile", help="Compile chapters to utterances"
+    )
     compile_parser.add_argument("-p", "--project", help="Project file")
 
     # --- render ---
     render_parser = subparsers.add_parser("render", help="Render audiobook")
     render_parser.add_argument("-p", "--project", help="Project file")
     render_parser.add_argument("-o", "--output", help="Output file path")
-    render_parser.add_argument("-c", "--chapter", type=int, help="Render single chapter (0-indexed)")
-    render_parser.add_argument("--no-resume", action="store_true", help="Force full re-render (ignore cache)")
-    render_parser.add_argument("--from-chapter", type=int, metavar="N", help="Start rendering from chapter N (0-indexed)")
-    render_parser.add_argument("--allow-partial", action="store_true", help="Assemble even if some chapters failed")
-    render_parser.add_argument("--clean-cache", action="store_true", help="Delete render cache before starting")
+    render_parser.add_argument(
+        "-c", "--chapter", type=int, help="Render single chapter (0-indexed)"
+    )
+    render_parser.add_argument(
+        "--no-resume", action="store_true", help="Force full re-render (ignore cache)"
+    )
+    render_parser.add_argument(
+        "--from-chapter",
+        type=int,
+        metavar="N",
+        help="Start rendering from chapter N (0-indexed)",
+    )
+    render_parser.add_argument(
+        "--allow-partial",
+        action="store_true",
+        help="Assemble even if some chapters failed",
+    )
+    render_parser.add_argument(
+        "--clean-cache", action="store_true", help="Delete render cache before starting"
+    )
 
     # --- info ---
     info_parser = subparsers.add_parser("info", help="Show project information")
     info_parser.add_argument("-p", "--project", help="Project file")
-    info_parser.add_argument("-v", "--verbose", action="store_true", help="Show detailed info")
+    info_parser.add_argument(
+        "-v", "--verbose", action="store_true", help="Show detailed info"
+    )
 
     # --- voices ---
     voices_parser = subparsers.add_parser("voices", help="List available voices")
@@ -104,7 +145,9 @@ def create_parser() -> argparse.ArgumentParser:
     )
     stdin_parser.add_argument("-t", "--title", default="Untitled", help="Book title")
     stdin_parser.add_argument("-a", "--author", default="", help="Author name")
-    stdin_parser.add_argument("--lang", default="en", metavar="CODE", help="Language code (default: en)")
+    stdin_parser.add_argument(
+        "--lang", default="en", metavar="CODE", help="Language code (default: en)"
+    )
     stdin_parser.add_argument("-o", "--output", help="Output project file path")
 
     # --- review-export ---
@@ -122,6 +165,15 @@ def create_parser() -> argparse.ArgumentParser:
     )
     review_import_parser.add_argument("review_file", help="Edited review file")
     review_import_parser.add_argument("-p", "--project", help="Project file")
+
+    # --- diagnose ---
+    diagnose_parser = subparsers.add_parser(
+        "diagnose",
+        help="Check environment: dependencies, voice engine, ffmpeg",
+    )
+    diagnose_parser.add_argument(
+        "--json", dest="json_output", action="store_true", help="Output as JSON"
+    )
 
     return parser
 
@@ -206,7 +258,9 @@ def cmd_new(args) -> int:
         print(f"  Title: {project.title}")
         print(f"  Chapters: {len(project.chapters)}")
         print(f"  Words: ~{project.total_words:,}")
-        print(f"  Estimated duration: ~{project.estimated_duration_minutes:.0f} min (at {project.config.estimated_wpm} wpm, varies by voice)")
+        print(
+            f"  Estimated duration: ~{project.estimated_duration_minutes:.0f} min (at {project.config.estimated_wpm} wpm, varies by voice)"
+        )
         print("\nNext steps:")
         print("  1. Cast voices: audiobooker cast narrator af_heart")
         print("  2. Compile: audiobooker compile")
@@ -294,6 +348,7 @@ def cmd_render(args) -> int:
         if getattr(args, "clean_cache", False):
             from audiobooker.renderer.cache_manifest import get_cache_root
             import shutil
+
             cache_dir = get_cache_root(project_path.parent)
             if cache_dir.exists():
                 shutil.rmtree(cache_dir)
@@ -342,6 +397,7 @@ def cmd_render(args) -> int:
     except Exception as e:
         print(f"Error: {e}")
         import traceback
+
         traceback.print_exc()
         return 1
 
@@ -360,9 +416,11 @@ def _print_render_failure(e: "RenderError") -> None:
             print(f"  Chapter {ch['index']}: {ch['title']}")
             print(f"    Error: {ch['error']}")
 
-    print(f"\nRender summary: {summary.rendered} rendered, "
-          f"{summary.skipped_cached} cached, {summary.failed} failed "
-          f"(of {summary.total} total)")
+    print(
+        f"\nRender summary: {summary.rendered} rendered, "
+        f"{summary.skipped_cached} cached, {summary.failed} failed "
+        f"(of {summary.total} total)"
+    )
 
     if summary.cache_dir:
         print(f"\nCached chapter audio: {summary.cache_dir}")
@@ -384,17 +442,19 @@ def cmd_info(args) -> int:
         info = project.info()
 
         print(f"Title: {info['title']}")
-        if info['author']:
+        if info["author"]:
             print(f"Author: {info['author']}")
         print(f"Source: {info['source']}")
         print(f"Chapters: {info['chapters']}")
         print(f"Words: ~{info['total_words']:,}")
-        print(f"Estimated duration: ~{info['estimated_duration_minutes']:.0f} min (varies by voice)")
+        print(
+            f"Estimated duration: ~{info['estimated_duration_minutes']:.0f} min (varies by voice)"
+        )
         print(f"Characters cast: {info['characters_cast']}")
         print(f"Compiled: {'Yes' if info['compiled'] else 'No'}")
         print(f"Rendered: {'Yes' if info['rendered'] else 'No'}")
 
-        if info['uncast_speakers']:
+        if info["uncast_speakers"]:
             print(f"\nUncast speakers: {', '.join(info['uncast_speakers'])}")
 
         if args.verbose and project.casting.characters:
@@ -423,14 +483,21 @@ def cmd_voices(args) -> int:
     for voice_id, info in sorted(VOICES.items()):
         # Filter by gender if specified
         if args.gender:
-            voice_gender = "female" if voice_id.startswith("af_") or voice_id.startswith("bf_") else "male"
+            voice_gender = (
+                "female"
+                if voice_id.startswith("af_") or voice_id.startswith("bf_")
+                else "male"
+            )
             if voice_gender != args.gender.lower():
                 continue
 
         # Filter by search term
         if args.search:
             search_lower = args.search.lower()
-            if search_lower not in voice_id.lower() and search_lower not in str(info).lower():
+            if (
+                search_lower not in voice_id.lower()
+                and search_lower not in str(info).lower()
+            ):
                 continue
 
         print(f"  {voice_id}")
@@ -455,7 +522,9 @@ def cmd_chapters(args) -> int:
             elif chapter.is_compiled:
                 status = " [compiled]"
 
-            print(f"  {chapter.index + 1}. {chapter.title} ({chapter.word_count} words){status}")
+            print(
+                f"  {chapter.index + 1}. {chapter.title} ({chapter.word_count} words){status}"
+            )
 
         return 0
 
@@ -533,6 +602,7 @@ def cmd_review_export(args) -> int:
     except Exception as e:
         print(f"Error: {e}")
         import traceback
+
         traceback.print_exc()
         return 1
 
@@ -566,6 +636,7 @@ def cmd_review_import(args) -> int:
     except Exception as e:
         print(f"Error: {e}")
         import traceback
+
         traceback.print_exc()
         return 1
 
@@ -606,7 +677,11 @@ def cmd_cast_suggest(args) -> int:
         for result in results:
             cast_key = project.casting.normalize_key(result.speaker)
             is_cast = cast_key in project.casting.characters
-            status = f" (cast: {project.casting.characters[cast_key].voice})" if is_cast else " [uncast]"
+            status = (
+                f" (cast: {project.casting.characters[cast_key].voice})"
+                if is_cast
+                else " [uncast]"
+            )
             print(f"  {result.speaker}{status}")
             for i, s in enumerate(result.suggestions):
                 marker = ">>>" if i == 0 else "   "
@@ -651,7 +726,9 @@ def cmd_cast_apply(args) -> int:
         for result in results:
             if result.top:
                 project.cast(result.speaker, result.top.voice_id)
-                print(f"  Cast {result.speaker} as {result.top.voice_id} ({result.top.reason})")
+                print(
+                    f"  Cast {result.speaker} as {result.top.voice_id} ({result.top.reason})"
+                )
                 applied += 1
 
         project.save()
@@ -701,6 +778,126 @@ def cmd_from_stdin(args) -> int:
         return 1
 
 
+def cmd_diagnose(args: argparse.Namespace) -> int:
+    """Check environment: dependencies, voice engine, ffmpeg."""
+    import json as json_mod
+    import shutil
+
+    from audiobooker import __version__
+
+    checks: list[dict[str, str | None]] = []
+    all_ok = True
+
+    # Python version
+    py_ver = (
+        f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
+    )
+    py_ok = sys.version_info >= (3, 10)
+    checks.append(
+        {
+            "check": "python_version",
+            "status": "ok" if py_ok else "fail",
+            "value": py_ver,
+            "hint": None if py_ok else "audiobooker requires Python 3.10+",
+        }
+    )
+    if not py_ok:
+        all_ok = False
+
+    # Core dependency: ebooklib
+    try:
+        import ebooklib  # noqa: F401
+
+        checks.append(
+            {
+                "check": "dep.ebooklib",
+                "status": "ok",
+                "value": "installed",
+                "hint": None,
+            }
+        )
+    except ImportError:
+        checks.append(
+            {
+                "check": "dep.ebooklib",
+                "status": "fail",
+                "value": "missing",
+                "hint": "pip install ebooklib",
+            }
+        )
+        all_ok = False
+
+    # Optional: voice-soundboard
+    try:
+        from audiobooker.casting.voice_registry import get_available_voices
+
+        voices = get_available_voices()
+        checks.append(
+            {
+                "check": "voice_engine",
+                "status": "ok",
+                "value": f"{len(voices)} voices available",
+                "hint": None,
+            }
+        )
+    except (ImportError, Exception):
+        checks.append(
+            {
+                "check": "voice_engine",
+                "status": "info",
+                "value": "voice-soundboard not installed",
+                "hint": "pip install voice-soundboard (required for rendering)",
+            }
+        )
+
+    # ffmpeg
+    ffmpeg_path = shutil.which("ffmpeg")
+    if ffmpeg_path:
+        checks.append(
+            {"check": "ffmpeg", "status": "ok", "value": ffmpeg_path, "hint": None}
+        )
+    else:
+        checks.append(
+            {
+                "check": "ffmpeg",
+                "status": "info",
+                "value": "not found",
+                "hint": "Install ffmpeg for M4B assembly",
+            }
+        )
+
+    # Package version
+    checks.append(
+        {
+            "check": "audiobooker_version",
+            "status": "ok",
+            "value": __version__,
+            "hint": None,
+        }
+    )
+
+    if getattr(args, "json_output", False):
+        print(json_mod.dumps({"ok": all_ok, "checks": checks}, indent=2))
+    else:
+        print(f"audiobooker v{__version__} — environment diagnostics\n")
+        for c in checks:
+            icon = (
+                "OK"
+                if c["status"] == "ok"
+                else ("INFO" if c["status"] == "info" else "FAIL")
+            )
+            print(f"  [{icon}] {c['check']}: {c['value']}")
+            if c["hint"]:
+                print(f"         Hint: {c['hint']}")
+        print()
+        if all_ok:
+            print("All checks passed.")
+        else:
+            print("Some checks failed. See hints above.")
+
+    return 0 if all_ok else 1
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     """Main entry point."""
     parser = create_parser()
@@ -724,6 +921,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         "from-stdin": cmd_from_stdin,
         "review-export": cmd_review_export,
         "review-import": cmd_review_import,
+        "diagnose": cmd_diagnose,
     }
 
     handler = commands.get(args.command)
