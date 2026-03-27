@@ -15,6 +15,10 @@ On any render error, Audiobooker writes `render_failure_report.json` to the cach
 - Full stack trace
 - Cache and manifest paths
 
+## Quick environment check
+
+Run `audiobooker diagnose` before debugging render failures. It checks Python version, ebooklib, voice-soundboard, FFmpeg, and prints actionable hints for anything missing. Use `--json` for machine-readable output.
+
 ## CI passes but render fails locally
 
 Common causes:
@@ -23,9 +27,19 @@ Common causes:
 - Voice ID doesn't exist in the local voice roster
 
 Fixes:
-- Run `audiobooker voices` to verify availability
+- Run `audiobooker diagnose` to verify all dependencies
+- Run `audiobooker voices` to verify voice availability
 - Ensure FFmpeg runs: `ffmpeg -version`
 - Keep `validate_voices_on_render=True` (the default)
+
+## Voice not found errors
+
+If rendering fails immediately with a `VoiceNotFoundError`, one or more voice IDs in your casting table do not exist in voice-soundboard.
+
+Fixes:
+- Run `audiobooker voices` to see what voices are available
+- Re-cast the speaker with a valid voice ID: `audiobooker cast <speaker> <valid_voice>`
+- To skip validation entirely, set `validate_voices_on_render` to `False` in your project config (not recommended)
 
 ## Unknown speakers everywhere
 
@@ -76,3 +90,13 @@ audiobooker render --from-chapter 5
 ## Docker
 
 A Dockerfile is included for containerized builds. This is often the simplest way to get a consistent environment with all TTS and FFmpeg dependencies.
+
+```bash
+# Build the image
+docker build -t audiobooker .
+
+# Run a project inside the container
+docker run --rm -v "$(pwd):/work" audiobooker audiobooker new /work/mybook.epub
+```
+
+Mount your working directory so the container can access source files and write output.

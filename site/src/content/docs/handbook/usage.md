@@ -12,6 +12,7 @@ Audiobooker ships a focused CLI with these commands:
 | Command | Description |
 |---------|-------------|
 | `audiobooker new <file>` | Create project from EPUB/TXT/MD |
+| `audiobooker load <project>` | Load existing `.audiobooker` project |
 | `audiobooker cast <char> <voice>` | Assign voice to character |
 | `audiobooker cast-suggest` | Suggest voices for uncast speakers |
 | `audiobooker cast-apply --auto` | Auto-apply top voice suggestions |
@@ -24,6 +25,13 @@ Audiobooker ships a focused CLI with these commands:
 | `audiobooker chapters` | List chapters |
 | `audiobooker speakers` | List detected speakers |
 | `audiobooker from-stdin` | Create project from piped text |
+| `audiobooker diagnose` | Check environment (deps, voice engine, FFmpeg) |
+
+### New project flags
+
+- `--lang CODE` -- language code for dialogue rules (default: `en`)
+- `--booknlp on|off|auto` -- NLP speaker resolution (default: `auto`)
+- `-o/--output <path>` -- output project file path
 
 ### Render flags
 

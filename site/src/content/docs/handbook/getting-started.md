@@ -9,7 +9,7 @@ Audiobooker converts EPUB, TXT, and Markdown books into chaptered audiobooks wit
 
 ## Requirements
 
-- **Python 3.10+** (3.11 recommended)
+- **Python 3.10+** (3.11 or 3.12 recommended)
 - **voice-soundboard** (TTS engine)
 - **FFmpeg** (audio assembly)
 - **ebooklib** (EPUB parsing, installed automatically)

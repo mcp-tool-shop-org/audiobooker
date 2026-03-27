@@ -9,6 +9,7 @@ Welcome to the Audiobooker handbook.
 
 ## What's inside
 
+- **[Beginners](/audiobooker/handbook/beginners/)** — New to Audiobooker? Start here
 - **[Getting Started](/audiobooker/handbook/getting-started/)** — Install and first use
 - **[Usage](/audiobooker/handbook/usage/)** — CLI commands and Python API
 - **[Architecture](/audiobooker/handbook/architecture/)** — How it works

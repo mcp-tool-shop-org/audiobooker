@@ -152,7 +152,8 @@ project.save("mybook.audiobooker")
 
 | Command | Description |
 |---------|-------------|
-| `audiobooker new <file>` | Create project from EPUB/TXT |
+| `audiobooker new <file>` | Create project from EPUB/TXT/MD |
+| `audiobooker load <project>` | Load existing `.audiobooker` project |
 | `audiobooker cast <char> <voice>` | Assign voice to character |
 | `audiobooker cast-suggest` | Suggest voices for uncast speakers |
 | `audiobooker cast-apply --auto` | Auto-apply top voice suggestions |
@@ -165,6 +166,7 @@ project.save("mybook.audiobooker")
 | `audiobooker chapters` | List chapters |
 | `audiobooker speakers` | List detected speakers |
 | `audiobooker from-stdin` | Create project from piped text |
+| `audiobooker diagnose` | Check environment (deps, voice engine, FFmpeg) |
 
 ## Architecture
 
@@ -208,11 +210,12 @@ Chapter Audio (cached) -> FFmpeg -> M4B with Chapters
 
 ## Roadmap
 
-- [x] v0.1.0 - Core pipeline (parse, cast, compile, render)
-- [x] v0.2.0 - Review-before-render workflow
-- [x] v0.3.0 - Persistent render cache + resume
-- [x] v0.4.0 - Language profiles + input flexibility
-- [x] v0.5.0 - BookNLP, emotion inference, voice suggestions, UX polish
+- [x] Core pipeline (parse, cast, compile, render)
+- [x] Review-before-render workflow
+- [x] Persistent render cache + resume
+- [x] Language profiles + input flexibility
+- [x] BookNLP, emotion inference, voice suggestions, UX polish
+- [x] v1.0.0 - Production release
 
 ## Security & Data Scope
 

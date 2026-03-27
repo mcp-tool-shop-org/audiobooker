@@ -427,7 +427,7 @@ def _print_render_failure(e: "RenderError") -> None:
     if summary.manifest_path:
         print(f"Manifest: {summary.manifest_path}")
 
-    print("\nTo resume: audiobooker render --resume")
+    print("\nTo resume: audiobooker render")
     print("To force:  audiobooker render --no-resume")
 
 

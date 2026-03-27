@@ -60,12 +60,12 @@ Key design principles:
 ```
 audiobooker/
   parser/            EPUB/TXT parsing
-  casting/           dialogue detection + attribution + voice registry
-  language/          language profiles
+  casting/           dialogue detection, attribution, voice registry, voice suggester
+  language/          language profiles (en, extensible)
   nlp/               BookNLP adapter, emotion inference, speaker resolver
-  renderer/          TTS + caching + FFmpeg assembly
+  renderer/          TTS engine, cache manifest, FFmpeg assembly, progress, failure reports
   review.py          review format import/export
-  models.py          core models
+  models.py          core data models (Chapter, Utterance, Character, CastingTable, ProjectConfig)
   project.py         AudiobookProject orchestration
   cli.py             CLI entrypoint
 ```
@@ -96,6 +96,17 @@ A manifest entry tracks validity by hashing the chapter text, casting table inpu
 - If a render fails at chapter 15, chapters 0-14 remain usable
 - Rerun `audiobooker render` to continue
 - Use `--no-resume` to force full re-render or `--clean-cache` to wipe cache
+
+## Voice suggestion engine
+
+The `cast-suggest` command uses a scoring engine that ranks voices per speaker based on:
+
+1. **Gender inference** -- pronoun and name cues in sample utterances hint at a preferred gender
+2. **Role match** -- narrator roles prefer calm/neutral voices tagged for narration; dialogue roles prefer expressive voices
+3. **Diversity** -- voices already assigned to other speakers receive a penalty to avoid reuse
+4. **Curated metadata** -- voices with known style notes (calm, powerful, warm) receive small bonuses for appropriate roles
+
+Each suggestion includes a human-readable reason string explaining why it scored the way it did. The top suggestion is applied when using `cast-apply --auto`.
 
 ## Language profiles
 
