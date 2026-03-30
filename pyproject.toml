@@ -19,8 +19,11 @@ keywords = [
     "ai",
     "narration",
     "epub",
+    "pdf",
     "multi-voice",
     "dialogue-detection",
+    "ssml",
+    "batch-processing",
 ]
 classifiers = [
     "Development Status :: 5 - Production/Stable",
@@ -33,9 +36,10 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Topic :: Multimedia :: Sound/Audio :: Speech",
+    "Topic :: Text Processing :: Linguistic",
 ]
 dependencies = [
-    "ebooklib>=0.18",
+    "ebooklib>=0.18,<1.0",
 ]
 
 [project.optional-dependencies]
@@ -43,7 +47,13 @@ render = [
     "voice-soundboard",
 ]
 nlp = [
-    "booknlp>=1.0",
+    "booknlp>=1.0,<2.0",
+]
+pdf = [
+    "pymupdf>=1.23",
+]
+rich = [
+    "rich>=13.0",
 ]
 dev = [
     "pytest>=7.0",
@@ -68,6 +78,9 @@ include = ["audiobooker*"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+
+[tool.ruff.lint]
+ignore = ["E402"]
 
 [tool.pyright]
 include = ["audiobooker"]

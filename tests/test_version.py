@@ -1,8 +1,6 @@
 """Tests for version consistency."""
 
 import re
-import subprocess
-import sys
 
 import pytest
 
@@ -23,11 +21,12 @@ def test_version_is_semver():
     assert re.match(r"^\d+\.\d+\.\d+", __version__)
 
 
-def test_cli_version_flag():
+def test_cli_version_flag(capsys):
     """audiobooker --version prints the correct version."""
     from audiobooker import __version__
     from audiobooker.cli import main
 
-    with pytest.raises(SystemExit) as exc_info:
+    with pytest.raises(SystemExit):
         main(["--version"])
-    assert exc_info.value.code == 0
+    captured = capsys.readouterr()
+    assert __version__ in captured.out

@@ -8,8 +8,6 @@ These tests catch the nasty edge cases that bite once real users touch it:
 - Line ending normalization
 """
 
-import pytest
-from pathlib import Path
 
 from audiobooker.models import Chapter, Utterance
 from audiobooker.review import (
@@ -101,9 +99,11 @@ class TestSmartQuotesAndDashes:
         project2.chapters = [Chapter(index=0, title="Chapter 1", raw_text="")]
         import_reviewed(project2, review_path)
 
-        # Smart quotes should be preserved
+        # Smart quotes should be preserved through export/import roundtrip
         text = project2.chapters[0].utterances[0].text
-        assert "\u201c" in text or '"' in text  # Either smart or regular quotes
+        assert "\u201c" in text, (
+            f"Expected unicode left double quote (\\u201c) to be preserved, got: {text!r}"
+        )
 
     def test_em_dashes_preserved(self, tmp_path):
         """Em-dashes should be preserved."""

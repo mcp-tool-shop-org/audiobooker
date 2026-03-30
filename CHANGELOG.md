@@ -5,6 +5,53 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Project diff**: `project.diff(other)` computes structured diffs between projects (added/removed chapters, changed utterances)
+- **Footnote support**: `UtteranceType.FOOTNOTE` enum value and `ProjectConfig.footnote_behavior` (`inline`, `end`, `skip`)
+- **BookNLP chunking**: NLP-powered speaker co-reference via `--booknlp on|off|auto` with graceful fallback
+- **Voice audition**: `audiobooker preview` command renders a short sample from a chapter for voice validation
+- **Emotion management**: `project.list_emotions()` per-chapter summary and `project.override_emotion()` for targeted edits
+- **Pronunciation overrides**: `ProjectConfig.pronunciation_overrides` dict for custom word-to-pronunciation mappings
+- **CLI `chapters` command**: `audiobooker chapters` lists all chapter titles and indices
+- **CLI `cast-export`/`cast-import`**: Export and import casting tables for reuse across projects (via `cast-suggest` / `cast-apply --auto`)
+- **Render dry-run**: `audiobooker render --dry-run` previews what would be rendered without executing
+- **Batch dry-run**: `audiobooker batch --dry-run` shows what files would be processed without rendering
+- **PDF parsing**: Extract text from PDF files via PyMuPDF (`pip install -e '.[pdf]'`)
+- **Text normalization**: Configurable text cleaners pipeline for smart quotes, ligatures, and whitespace
+- **SSML preprocessing**: Speech Synthesis Markup Language support for fine-grained voice control
+- **Batch processing**: `audiobooker batch` command for processing multiple books in one run
+- **Audio normalization**: Consistent volume levels across chapters via post-render normalization
+- **Chapter selection**: `--chapters` flag to render specific chapters by index or range
+- **Desktop notifications**: Optional notification when long renders complete
+- **Language profiles (es/ja)**: Spanish and Japanese language profiles alongside English, French, German
+- **Advanced dialogue detection**: Improved multi-speaker scene handling with conversation turn context
+- **Stage directions**: Detection and handling of bracketed stage directions in script-format text (`UtteranceType.DIRECTION`, `UtteranceType.PAUSE`)
+- **Per-character voice parameters**: Per-speaker speed, pitch, and voice tuning in casting table
+- **Rich progress bars**: Optional rich-powered progress display (`pip install -e '.[rich]'`)
+- **Compile report**: `compile_report()` method for summary statistics after compilation
+- **Parallel rendering**: Multi-worker chapter rendering with `--jobs N` flag
+- **MP3 output**: Direct MP3 export via `--format mp3` (alongside M4B, WAV, OGG, FLAC)
+- **Conversation tracking**: Dialogue turn tracking for multi-speaker scenes
+- **Multi-word speaker names**: Robust parsing of names like "Dr. Sarah Chen" in dialogue attribution
+- **Character aliases**: Map alternate names to a primary character (`Character.aliases`)
+- **Chapter merge/split/exclude**: `merge_chapters()`, `split_chapter()`, `exclude_chapter()` for chapter management
+- **Cover art embedding**: `BookMetadata.cover_art_path` extracted from EPUB or user-provided, embedded in M4B output
+- **Speed control**: Per-character `speed` (0.5-2.0) and global `ProjectConfig.global_speed`
+- **Language profiles (fr/de)**: French and German language profile stubs alongside English
+- **Casting validation**: Pre-render voice ID validation with `validate_voices_on_render` config
+- **Text cleaning**: `ProjectConfig.clean_text` option for normalizing smart quotes and whitespace
+- **Render status & cache CLI**: `audiobooker status` and `audiobooker cache info|clean|clean-failed` commands
+- **Diagnose command**: `audiobooker diagnose` checks environment (deps, voice engine, FFmpeg)
+- **Publish workflow**: `.github/workflows/publish.yml` for PyPI trusted publishing via OIDC
+- **Release template**: `.github/release.yml` for auto-generated release notes from PR labels
+- **Pre-commit config**: `.pre-commit-config.yaml` with ruff check + format hooks
+- **Demo script**: `examples/demo.py` showing parse-compile-review cycle
+- **API reference**: `docs/api-reference.md` documenting the core Python API
+- **Common Issues section**: Top 3 issues in README with quick fixes
+
 ## [1.0.0] - 2026-02-27
 
 ### Added

@@ -18,11 +18,19 @@ This handbook documents how the system works, what each feature does, and how to
 - [6. Casting and Voices](#6-casting-and-voices)
 - [7. Rendering, Cache, and Resume](#7-rendering-cache-and-resume)
 - [8. Language Profiles](#8-language-profiles)
-- [9. Project Files and Data Formats](#9-project-files-and-data-formats)
-- [10. Docker Usage](#10-docker-usage)
-- [11. Troubleshooting](#11-troubleshooting)
-- [12. Development and Testing](#12-development-and-testing)
-- [13. Roadmap](#13-roadmap)
+- [9. PDF Support](#9-pdf-support)
+- [10. Multi-Language Support](#10-multi-language-support)
+- [11. Batch Processing](#11-batch-processing)
+- [12. Audio Quality](#12-audio-quality)
+- [13. Project Files and Data Formats](#13-project-files-and-data-formats)
+- [14. Docker Usage](#14-docker-usage)
+- [15. Troubleshooting](#15-troubleshooting)
+- [16. Development and Testing](#16-development-and-testing)
+- [17. Footnotes & Annotations](#17-footnotes--annotations)
+- [18. Project Diff](#18-project-diff)
+- [19. Emotion Management](#19-emotion-management)
+- [20. Pronunciation Overrides](#20-pronunciation-overrides)
+- [21. Roadmap](#21-roadmap)
 - [ELI5](#eli5)
 
 ---
@@ -165,7 +173,7 @@ Assign a voice to a character.
 
 ```bash
 audiobooker cast narrator bm_george --emotion calm
- a u d i o b o o k e r  cast Alice af_bella --emotion warm
+audiobooker cast Alice af_bella --emotion warm
 ```
 
 Notes:
@@ -212,7 +220,7 @@ List voices available from voice-soundboard.
 audiobooker voices
 # optional filters:
 audiobooker voices --gender female
- a u d i o b o o k e r  voices --search george
+audiobooker voices --search george
 ```
 
 ### 4.8 `info`, `chapters`, `speakers`
@@ -393,7 +401,135 @@ Profiles are implemented under `audiobooker/language/`.
 
 ---
 
-## 9. Project Files and Data Formats
+## 9. PDF Support
+
+Audiobooker can parse PDF files when PyMuPDF is installed.
+
+### 9.1 Installation
+
+```bash
+pip install -e '.[pdf]'
+```
+
+This installs the `pymupdf` package (also known as `fitz`).
+
+### 9.2 Usage
+
+```bash
+# Create project from PDF
+audiobooker new mybook.pdf
+
+# Works the same as EPUB/TXT from here
+audiobooker compile
+audiobooker render
+```
+
+PDF parsing extracts text page-by-page and applies chapter detection heuristics. For best results, use PDFs with a clear chapter structure (headings, page breaks between chapters).
+
+### 9.3 Limitations
+
+- Scanned/image-only PDFs are not supported (no OCR)
+- Complex multi-column layouts may produce garbled text ordering
+- Tables and figures are skipped
+
+---
+
+## 10. Multi-Language Support
+
+Audiobooker ships language profiles that tune dialogue detection, speaker attribution verbs, and chapter heading patterns for each supported language.
+
+### 10.1 Available profiles
+
+| Code | Language | Status |
+|------|----------|--------|
+| `en` | English | Full support (default) |
+| `fr` | French | Dialogue detection + attribution |
+| `de` | German | Dialogue detection + attribution |
+| `es` | Spanish | Dialogue detection + attribution |
+| `ja` | Japanese | Dialogue detection + attribution |
+
+### 10.2 Usage
+
+```bash
+# Set language at project creation
+audiobooker new livre.epub --lang fr
+
+# Or from stdin
+cat texto.txt | audiobooker from-stdin --lang es --title "Mi Libro"
+```
+
+The language profile affects quote-pair recognition, speaker verb patterns (e.g., "dit" for French, "sagte" for German), and chapter heading detection.
+
+---
+
+## 11. Batch Processing
+
+Process multiple books in a single command.
+
+### 11.1 Usage
+
+```bash
+# Process all supported files in a directory
+audiobooker batch ./books/
+
+# With options
+audiobooker batch ./books/ --lang en --format mp3 --jobs 4
+```
+
+Batch mode discovers all `.epub`, `.txt`, `.md`, and `.pdf` files in the target directory and processes each one sequentially (compile + render). Output files are written alongside the source files or to a specified output directory with `--output-dir`.
+
+### 11.2 Error handling
+
+If a single book fails during batch processing, Audiobooker logs the error and continues with the remaining books. A summary report is printed at the end showing successes and failures.
+
+---
+
+## 12. Audio Quality
+
+### 12.1 Audio normalization
+
+Audiobooker can normalize audio levels across chapters so listeners do not need to adjust volume between quiet and loud sections.
+
+Normalization is applied as a post-render step before final assembly. It targets a consistent loudness (LUFS) across all chapter WAVs.
+
+Enable via config:
+
+```python
+config = ProjectConfig(normalize_audio=True)
+```
+
+### 12.2 SSML support
+
+For fine-grained control over speech synthesis, Audiobooker supports SSML (Speech Synthesis Markup Language) preprocessing. SSML tags in your source text are passed through to the TTS engine:
+
+- `<break time="500ms"/>` -- pauses
+- `<emphasis level="strong">` -- stress
+- `<prosody rate="slow">` -- pacing
+
+SSML is stripped during dialogue detection so it does not interfere with speaker attribution, then re-injected for rendering.
+
+### 12.3 Pronunciation overrides
+
+Custom pronunciations for proper nouns, place names, or technical terms:
+
+```python
+config = ProjectConfig(
+    pronunciation_overrides={
+        "Cthulhu": "kuh-THOO-loo",
+        "Hermione": "her-MY-oh-nee",
+    }
+)
+```
+
+Or via CLI:
+
+```bash
+audiobooker new book.epub --pronunciation "Cthulhu=kuh-THOO-loo"
+```
+
+---
+
+## 13. Project Files and Data Formats
 
 ### 9.1 `.audiobooker` project file
 Projects are saved as JSON with a schema version.
@@ -418,7 +554,7 @@ This is the bridge format used for synthesis.
 
 ---
 
-## 10. Docker Usage
+## 14. Docker Usage
 
 A Dockerfile is included for containerized builds. Typical usage patterns:
 
@@ -430,9 +566,9 @@ Because TTS and FFmpeg can involve system dependencies, Docker is often the simp
 
 ---
 
-## 11. Troubleshooting
+## 15. Troubleshooting
 
-### 11.1 “CI passes but render fails locally”
+### 15.1 “CI passes but render fails locally”
 Common causes:
 - voice-soundboard not installed or not on `PYTHONPATH`
 - FFmpeg missing or not in PATH
@@ -443,7 +579,7 @@ Fixes:
 - ensure FFmpeg runs: `ffmpeg -version`
 - enable/keep `validate_voices_on_render=True`
 
-### 11.2 Unknown speakers everywhere
+### 15.2 Unknown speakers everywhere
 Likely causes:
 - dialogue attribution verbs don’t match the writing style
 - missing quotes or unusual formatting
@@ -452,14 +588,14 @@ Fixes:
 - use `review-export` and patch attributions
 - add inline overrides for tricky passages
 
-### 11.3 Chapters missing from EPUB
+### 15.3 Chapters missing from EPUB
 If EPUB sections are very short, Audiobooker may drop them based on `min_chapter_words`.
 
 Fixes:
 - set `ProjectConfig.min_chapter_words` lower
 - keep titled short chapters using `keep_titled_short_chapters=True`
 
-### 11.4 Chapter markers missing in the final file
+### 15.4 Chapter markers missing in the final file
 This typically indicates FFmpeg chapter embedding failed.
 
 Fixes:
@@ -468,9 +604,9 @@ Fixes:
 
 ---
 
-## 12. Development and Testing
+## 16. Development and Testing
 
-### 12.1 Repository structure
+### 16.1 Repository structure
 
 ```
 audiobooker/
@@ -486,7 +622,7 @@ tests/
   ... unit tests and smoke tests
 ```
 
-### 12.2 Test strategy
+### 16.2 Test strategy
 Audiobooker’s tests focus on:
 
 - model serialization/deserialization
@@ -504,13 +640,102 @@ pytest -q
 
 ---
 
-## 13. Roadmap
+## 17. Footnotes & Annotations
+
+Audiobooker detects footnotes in source text and handles them according to `ProjectConfig.footnote_behavior`.
+
+### 17.1 Behavior modes
+
+| Mode | Effect |
+|------|--------|
+| `inline` (default) | Footnotes are read in place, narrated where they appear |
+| `end` | Footnotes are collected and read at the end of the chapter |
+| `skip` | Footnotes are silently removed from the output |
+
+### 17.2 Configuration
+
+```python
+config = ProjectConfig(footnote_behavior="end")
+```
+
+Footnote utterances have `utterance_type=UtteranceType.FOOTNOTE`, making them easy to filter or restyle in the review workflow.
+
+---
+
+## 18. Project Diff
+
+Compare two project versions to see what changed. Useful after re-importing a review file or re-compiling with different settings.
+
+### 18.1 Usage
+
+```python
+old_project = AudiobookProject.load("v1.audiobooker")
+new_project = AudiobookProject.load("v2.audiobooker")
+
+changes = new_project.diff(old_project)
+# Returns:
+#   added_chapters: list of new chapter titles
+#   removed_chapters: list of removed chapter titles
+#   changed_utterances: list of {chapter, index, field, old, new}
+```
+
+Chapters are matched by ID when available, falling back to index-based comparison.
+
+---
+
+## 19. Emotion Management
+
+After compilation, you can inspect and override emotion labels on individual utterances.
+
+### 19.1 Listing emotions
+
+```python
+emotions = project.list_emotions()
+# Returns: {chapter_index: {"angry": 3, "neutral": 15, "whisper": 1}}
+```
+
+### 19.2 Overriding an emotion
+
+```python
+project.override_emotion(chapter_index=2, utterance_index=5, emotion="angry")
+```
+
+This is useful for fine-tuning delivery after the automatic emotion inference pass.
+
+---
+
+## 20. Pronunciation Overrides
+
+Custom pronunciations for proper nouns, place names, or technical terms that the TTS engine mispronounces.
+
+### 20.1 Configuration
+
+```python
+config = ProjectConfig(
+    pronunciation_overrides={
+        "Cthulhu": "kuh-THOO-loo",
+        "Hermione": "her-MY-oh-nee",
+    }
+)
+```
+
+### 20.2 CLI
+
+```bash
+audiobooker new book.epub --pronunciation "Cthulhu=kuh-THOO-loo"
+```
+
+Overrides are applied during rendering and stored in the project file for reproducibility.
+
+---
+
+## 21. Roadmap
 
 Planned milestones:
 
-- **v0.3.x** — BookNLP integration for improved speaker clustering/suggestions
-- **v0.4.x** — Voice suggestions based on character traits
-- **v0.5.x** — Emotion inference from context
+- **v1.1** — BookNLP integration for improved speaker clustering/suggestions
+- **v1.2** — Voice suggestions based on character traits
+- **v1.3** — Emotion inference from context
 
 Design principle: these features should remain **optional layers** on top of the stable pipeline.
 

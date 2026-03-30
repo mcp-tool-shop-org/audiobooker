@@ -12,9 +12,8 @@ Covers:
 import pytest
 
 from audiobooker.language.profile import (
-    LanguageProfile, get_profile, available_profiles, register_profile,
+    get_profile, available_profiles,
 )
-from audiobooker.language.en import ENGLISH
 from audiobooker.models import (
     Chapter, CastingTable, ProjectConfig, UtteranceType,
 )

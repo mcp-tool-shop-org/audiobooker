@@ -12,11 +12,14 @@ On error, writes a structured JSON report with:
 from __future__ import annotations
 
 import json
+import logging
 import traceback
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
+
+logger = logging.getLogger("audiobooker.failure_report")
 
 
 @dataclass
@@ -109,7 +112,12 @@ class RenderFailureReport:
             if self.cache_dir:
                 path = Path(self.cache_dir) / "render_failure_report.json"
             else:
-                path = Path("render_failure_report.json")
+                # F-RENDER-B-018: Log warning and skip when falling back to cwd
+                logger.warning(
+                    "No cache_dir set for failure report — skipping write to cwd. "
+                    "Set cache_dir on the report to persist failure details."
+                )
+                return Path("render_failure_report.json")
 
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)

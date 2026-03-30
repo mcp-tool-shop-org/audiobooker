@@ -39,10 +39,11 @@ if TYPE_CHECKING:
 
 
 # Pattern for speaker tag: @SpeakerName or @SpeakerName (emotion)
-SPEAKER_PATTERN = re.compile(r'^@(\w+)(?:\s*\(([^)]+)\))?$')
+# Supports names with spaces, hyphens, apostrophes, and dots (e.g. "Mary Jane", "O'Brien")
+SPEAKER_PATTERN = re.compile(r"^@([\w .'\-]+?)(?:\s*\(([^)]+)\))?$")
 
-# Pattern for chapter marker: === Chapter Title ===
-CHAPTER_PATTERN = re.compile(r'^===\s*(.+?)\s*===$')
+# Pattern for chapter marker: === Chapter Title === or === Chapter Title === [id:abc123]
+CHAPTER_PATTERN = re.compile(r'^===\s*(.+?)\s*===(?:\s*\[id:([^\]]+)\])?$')
 
 
 def export_for_review(project: "AudiobookProject", output_path: Optional[Path] = None) -> Path:
@@ -79,8 +80,11 @@ def export_for_review(project: "AudiobookProject", output_path: Optional[Path] =
     lines.append("")
 
     for chapter in project.chapters:
-        # Chapter header
-        lines.append(f"=== {chapter.title} ===")
+        # Chapter header — include ID if available for stable matching on import
+        if chapter.id:
+            lines.append(f"=== {chapter.title} === [id:{chapter.id}]")
+        else:
+            lines.append(f"=== {chapter.title} ===")
         lines.append("")
 
         if not chapter.utterances:
@@ -138,6 +142,7 @@ def import_reviewed(project: "AudiobookProject", review_path: Path) -> dict:
     # Parse the review file
     chapters_data = []
     current_chapter_title = None
+    current_chapter_id = None
     current_chapter_utterances = []
     current_speaker = None
     current_emotion = None
@@ -158,14 +163,16 @@ def import_reviewed(project: "AudiobookProject", review_path: Path) -> dict:
 
     def flush_chapter():
         """Save current chapter data."""
-        nonlocal current_chapter_title, current_chapter_utterances
+        nonlocal current_chapter_title, current_chapter_id, current_chapter_utterances
         flush_utterance()
         if current_chapter_title is not None:
             chapters_data.append({
                 "title": current_chapter_title,
+                "id": current_chapter_id,
                 "utterances": current_chapter_utterances,
             })
         current_chapter_utterances = []
+        current_chapter_id = None
 
     for line in lines:
         line_stripped = line.strip()
@@ -183,6 +190,7 @@ def import_reviewed(project: "AudiobookProject", review_path: Path) -> dict:
         if chapter_match:
             flush_chapter()
             current_chapter_title = chapter_match.group(1)
+            current_chapter_id = chapter_match.group(2)  # may be None
             current_speaker = None
             current_emotion = None
             continue
@@ -210,12 +218,21 @@ def import_reviewed(project: "AudiobookProject", review_path: Path) -> dict:
     }
 
     for chapter_data in chapters_data:
-        # Find matching chapter by title
+        # Find matching chapter — prefer ID match, fall back to title match
         matching_chapter = None
-        for chapter in project.chapters:
-            if chapter.title == chapter_data["title"]:
-                matching_chapter = chapter
-                break
+        review_id = chapter_data.get("id")
+        if review_id:
+            for chapter in project.chapters:
+                if getattr(chapter, "id", "") == review_id:
+                    matching_chapter = chapter
+                    break
+
+        if matching_chapter is None:
+            # Fall back to title match
+            for chapter in project.chapters:
+                if chapter.title == chapter_data["title"]:
+                    matching_chapter = chapter
+                    break
 
         if matching_chapter is None:
             continue

@@ -4,23 +4,31 @@ Performance benchmarks for Audiobooker.
 These measure parse, compile, and resume speed on synthetic books.
 Results are printed for CI visibility; no hard-fail thresholds yet.
 
+NOTE ON THRESHOLDS: All `assert result.per_iteration_ms < N` thresholds
+in this file are **hang guards**, not performance regression targets.
+They exist to detect infinite loops or pathological regressions that
+would cause CI to time out. They are deliberately generous (5-60s)
+and should NOT be tightened to track incremental perf changes.
+Use dedicated perf-tracking tools for regression detection.
+
+NOTE ON OUTPUT: Benchmark results use print() for human-readable CI
+output (visible with ``pytest -s``). This is intentional — structured
+reporting (JSON, pytest-benchmark, etc.) is a future enhancement.
+For now, print() provides adequate visibility without adding dependencies.
+
 Run with: pytest tests/perf/ -v -s
 """
 
 from __future__ import annotations
 
-import time
-from pathlib import Path
-
-import pytest
-
 from audiobooker import AudiobookProject
-from audiobooker.models import CastingTable, ProjectConfig, Chapter
+from audiobooker.models import CastingTable, Chapter
 from audiobooker.casting.dialogue import compile_chapter
 from audiobooker.language.profile import get_profile
 from audiobooker.nlp.emotion import EmotionInferencer
+from audiobooker.renderer.cache_manifest import CacheManifest, ChapterCacheEntry
 
-from tests.perf.conftest import generate_book, bench, BenchResult
+from tests.perf.conftest import bench, generate_chapter
 
 
 # ---------------------------------------------------------------------------
@@ -93,7 +101,6 @@ class TestCompileBenchmarks:
         casting.cast("Alice", "af_jessica")
 
         # Generate one big chapter
-        from tests.perf.conftest import generate_chapter
         _, body = generate_chapter(0, paragraphs=200)
         chapter = Chapter(index=0, title="Big Chapter", raw_text=body)
 
@@ -145,8 +152,6 @@ class TestResumeBenchmarks:
 
     def test_cache_lookup_speed(self):
         """Measure manifest cache lookup speed."""
-        from audiobooker.renderer.cache_manifest import CacheManifest, ChapterCacheEntry
-
         # Build a manifest with 200 chapters
         manifest = CacheManifest(book_title="Bench")
         for i in range(200):

@@ -11,9 +11,6 @@ Covers:
 """
 
 import json
-import re
-import tempfile
-from pathlib import Path
 
 import pytest
 
@@ -66,7 +63,7 @@ class TestSpeakerResolver:
 
     def _make_fake_adapter(self, quotes=None):
         """Create a fake NLP adapter for testing."""
-        from audiobooker.nlp.booknlp_adapter import BookNLPResult, QuoteAttribution
+        from audiobooker.nlp.booknlp_adapter import BookNLPResult
 
         class FakeAdapter:
             def is_available(self):
@@ -228,7 +225,7 @@ class TestEmotionInferencer:
             Utterance(speaker="Bob", text="Hello.", emotion="happy"),  # explicit
         ]
 
-        applied = inf.apply_to_utterances(utterances)
+        inf.apply_to_utterances(utterances)
         # Bob's explicit "happy" should be preserved
         assert utterances[2].emotion == "happy"
         # Alice's terrified should get fearful
@@ -248,20 +245,12 @@ class TestVoiceSuggester:
     """Voice suggestion engine tests."""
 
     def _make_fake_registry(self, voices=None):
-        """Create a fake voice registry."""
-        class FakeRegistry:
-            def __init__(self, voice_list):
-                self._voices = voice_list
+        """Create a fake voice registry.
 
-            def list_voices(self):
-                return self._voices
-
-        return FakeRegistry(voices or [
-            "af_heart", "af_jessica", "af_sky",
-            "am_eric", "am_fenrir", "am_onyx",
-            "bf_alice", "bf_emma",
-            "bm_george", "bm_lewis",
-        ])
+        Uses the shared FakeRegistry from tests/fakes/fake_registry.py.
+        """
+        from tests.fakes.fake_registry import make_fake_registry
+        return make_fake_registry(voices)
 
     def test_suggest_for_narrator(self):
         """Narrator gets narrator-tagged voice suggestions."""
@@ -272,8 +261,11 @@ class TestVoiceSuggester:
         result = suggester.suggest_for_speaker("narrator", is_narrator=True)
         assert len(result.suggestions) == 3
         assert result.top is not None
-        # Top suggestion should have "narrator" tag
-        assert "narrator" in result.top.tags or result.top.score > 0
+        # Top suggestion must have "narrator" tag (narrator voices are preferred)
+        assert "narrator" in result.top.tags, (
+            f"Expected top narrator suggestion to have 'narrator' tag, "
+            f"got tags={result.top.tags} voice_id={result.top.voice_id}"
+        )
 
     def test_suggest_deterministic(self):
         """Same inputs produce same rankings."""
@@ -349,9 +341,9 @@ class TestRenderProgressTracker:
 
         tracker.mark_cached(0, "Ch1", 60.0)
         tracker.start_chapter(1, "Ch2", word_count=500)
-        tracker.finish_chapter(1, duration_s=10.0)
+        tracker.finish_chapter(1, render_elapsed_s=10.0)
         tracker.start_chapter(2, "Ch3", word_count=600)
-        tracker.finish_chapter(2, duration_s=12.0)
+        tracker.finish_chapter(2, render_elapsed_s=12.0)
 
         assert tracker.cached_count == 1
         assert tracker.rendered_count == 2
@@ -366,7 +358,7 @@ class TestRenderProgressTracker:
         # Render 3 chapters, 10s each
         for i in range(3):
             tracker.start_chapter(i, f"Ch{i}")
-            tracker.finish_chapter(i, duration_s=10.0)
+            tracker.finish_chapter(i, render_elapsed_s=10.0)
 
         eta = tracker.eta_seconds()
         # 7 remaining * 10s avg = ~70s
@@ -377,10 +369,10 @@ class TestRenderProgressTracker:
         """eta_display returns human-readable string."""
         from audiobooker.renderer.progress import RenderProgressTracker
         tracker = RenderProgressTracker(total_chapters=5)
-        assert tracker.eta_display() == "estimating..."
+        assert "estimating..." in tracker.eta_display()
 
         tracker.start_chapter(0, "Ch1")
-        tracker.finish_chapter(0, duration_s=60.0)
+        tracker.finish_chapter(0, render_elapsed_s=60.0)
         display = tracker.eta_display()
         assert "remaining" in display
 
@@ -390,7 +382,7 @@ class TestRenderProgressTracker:
         tracker = RenderProgressTracker(total_chapters=3)
         tracker.mark_cached(0, "Ch1")
         tracker.start_chapter(1, "Ch2")
-        tracker.finish_chapter(1, duration_s=5.0)
+        tracker.finish_chapter(1, render_elapsed_s=5.0)
 
         summary = tracker.summary()
         assert "67%" in summary
@@ -439,7 +431,9 @@ class TestRenderFailureReport:
         assert fc["chapter_index"] == 7
         assert fc["chapter_title"] == "Chapter 8: The Storm"
         assert "TTS engine crashed" in fc["error_message"]
-        assert fc["stack_trace"]  # not empty
+        assert "ValueError" in fc["stack_trace"], (
+            "Stack trace should contain the original exception type"
+        )
         assert fc["failed_utterance"]["speaker"] == "Alice"
         assert fc["failed_utterance"]["voice_id"] == "af_bella"
 
@@ -536,17 +530,31 @@ class TestCompileWithEmotion:
         # Should have some utterances with inferred emotions
         all_utterances = [u for ch in project.chapters for u in ch.utterances]
         assert len(all_utterances) > 0
-
-    def test_compile_with_emotion_off(self):
-        """emotion_mode='off' leaves emotions as-is."""
-        project = AudiobookProject.from_string(
-            '"Run!" she screamed.',
-            title="No Emotion",
+        # At least one utterance must have an inferred emotion
+        assert any(u.emotion is not None for u in all_utterances), (
+            "Expected at least one utterance with emotion set by rule-based inference"
         )
-        project.config.emotion_mode = "off"
-        project.compile()
 
-        all_utterances = [u for ch in project.chapters for u in ch.utterances]
-        # dialogue detection still works, emotions may come from verb in compile_chapter
-        # but the emotion inferencer is disabled
+    def test_compile_with_emotion_off(self, simple_project):
+        """emotion_mode='off' leaves emotions as-is (only compile-time verb emotions).
+
+        Uses simple_project fixture (FT-TEST-009).
+        """
+        simple_project.config.emotion_mode = "off"
+        simple_project.compile()
+
+        all_utterances = [u for ch in simple_project.chapters for u in ch.utterances]
         assert len(all_utterances) > 0
+        # With emotion_mode='off', the EmotionInferencer is never called.
+        # Emotions may still be set by compile_chapter's verb detection,
+        # but the inferencer pass itself is skipped. Verify no inferencer-
+        # specific labels were applied by checking that any emotion present
+        # comes from the compile step (verb-based), not the inferencer.
+        # Best-effort smoke check: these labels are only produced by the
+        # EmotionInferencer, not by compile_chapter's verb-based detection.
+        inferencer_only_labels = {"fearful", "whisper", "sad", "joyful"}
+        for u in all_utterances:
+            if u.emotion is not None:
+                assert u.emotion not in inferencer_only_labels, (
+                    f"Utterance has inferencer label '{u.emotion}' but emotion_mode='off'"
+                )

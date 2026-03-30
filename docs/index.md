@@ -13,7 +13,7 @@ AI Audiobook Generator — Convert EPUB/TXT books into professionally narrated a
 ## Install
 
 ```bash
-pip install audiobooker
+pip install audiobooker-ai
 ```
 
 ## Links

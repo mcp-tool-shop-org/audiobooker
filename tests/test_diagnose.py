@@ -7,57 +7,30 @@ import json
 from audiobooker.cli import main
 
 
-def test_diagnose_text_output():
+def test_diagnose_text_output(capsys):
     """Diagnose command should produce readable text output."""
-    # main() returns exit code, prints to stdout
-    import io
-    import sys
-
-    captured = io.StringIO()
-    old_stdout = sys.stdout
-    sys.stdout = captured
-    try:
-        code = main(["diagnose"])
-    finally:
-        sys.stdout = old_stdout
-    output = captured.getvalue()
+    code = main(["diagnose"])
+    captured = capsys.readouterr()
     assert code == 0
-    assert "python_version" in output
-    assert "audiobooker_version" in output
+    assert "python_version" in captured.out
+    assert "audiobooker_version" in captured.out
 
 
-def test_diagnose_json_output():
+def test_diagnose_json_output(capsys):
     """Diagnose --json should produce valid JSON."""
-    import io
-    import sys
-
-    captured = io.StringIO()
-    old_stdout = sys.stdout
-    sys.stdout = captured
-    try:
-        code = main(["diagnose", "--json"])
-    finally:
-        sys.stdout = old_stdout
-    output = captured.getvalue()
+    code = main(["diagnose", "--json"])
+    captured = capsys.readouterr()
     assert code == 0
-    data = json.loads(output)
+    data = json.loads(captured.out)
     assert "ok" in data
     assert "checks" in data
     assert isinstance(data["checks"], list)
 
 
-def test_diagnose_checks_ebooklib():
+def test_diagnose_checks_ebooklib(capsys):
     """Diagnose should check ebooklib dependency."""
-    import io
-    import sys
-
-    captured = io.StringIO()
-    old_stdout = sys.stdout
-    sys.stdout = captured
-    try:
-        main(["diagnose", "--json"])
-    finally:
-        sys.stdout = old_stdout
-    data = json.loads(captured.getvalue())
+    main(["diagnose", "--json"])
+    captured = capsys.readouterr()
+    data = json.loads(captured.out)
     check_names = [c["check"] for c in data["checks"]]
     assert "dep.ebooklib" in check_names

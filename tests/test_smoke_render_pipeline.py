@@ -9,7 +9,6 @@ Uses FakeTTS + FakeAssembler — no voice-soundboard, no FFmpeg, no network.
 
 from __future__ import annotations
 
-import tempfile
 from pathlib import Path
 
 import pytest
@@ -18,9 +17,14 @@ from audiobooker import AudiobookProject
 from audiobooker.renderer.engine import render_chapter, render_project
 from tests.fakes.fake_tts import FakeTTSEngine, assert_wav_header_valid
 from tests.fakes.fake_ffmpeg import FakeAssembler
+from tests.conftest import GOLDEN_BOOK_PATH
 
 
-GOLDEN_BOOK = Path(__file__).parent.parent / "examples" / "golden_book.txt"
+GOLDEN_BOOK = GOLDEN_BOOK_PATH
+assert GOLDEN_BOOK.exists(), (
+    f"Golden book fixture not found at {GOLDEN_BOOK}. "
+    f"Ensure examples/golden_book.txt exists in the project root."
+)
 
 
 @pytest.fixture

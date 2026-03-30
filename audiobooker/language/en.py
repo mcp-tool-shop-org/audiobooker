@@ -76,7 +76,20 @@ ENGLISH = LanguageProfile(
         "wonderfully", "terribly", "horribly", "awfully", "incredibly",
     }),
 
-    valid_name_pattern=r"^[A-Z][a-z]{1,14}$",
+    # Multi-word names: "Mr. Holmes", "Captain Ahab", "the Doctor", "Old Tom"
+    # Also single names: Unicode letters, hyphens, apostrophes; 2-50 chars (B-017)
+    valid_name_pattern=r"^(?:(?:Mr\.|Mrs\.|Ms\.|Dr\.|Miss|Captain|Lord|Lady|Sir|the|Old|Young)\s+)?[A-Za-z\u00C0-\u024F][A-Za-z\u00C0-\u024F'\-\s\.]{0,48}[A-Za-z\u00C0-\u024F]$",
+
+    # Gender cue words for voice suggestion (B-013)
+    female_cue_words=frozenset({
+        "she", "her", "hers", "herself", "woman", "girl", "mother",
+        "sister", "daughter", "wife", "queen", "princess", "lady",
+        "madam", "miss", "mrs", "ms",
+    }),
+    male_cue_words=frozenset({
+        "he", "him", "his", "himself", "man", "boy", "father",
+        "brother", "son", "husband", "king", "prince", "lord", "sir", "mr",
+    }),
 
     # --- Chapter parsing ---
     chapter_patterns=(

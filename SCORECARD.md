@@ -6,7 +6,9 @@
 **Date:** 2026-02-27
 **Type tags:** [pypi] [cli] [container]
 
-## Pre-Remediation Assessment
+## Pre-Remediation Assessment (HISTORICAL)
+
+> **Note:** This section is historical. All items below were resolved during the v1.0.0 remediation pass. See Post-Remediation for current scores.
 
 | Category | Score | Notes |
 |----------|-------|-------|

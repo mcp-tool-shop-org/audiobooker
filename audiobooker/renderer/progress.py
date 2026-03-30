@@ -65,13 +65,13 @@ class RenderProgressTracker:
                 return
         self.chapters.append(progress)
 
-    def finish_chapter(self, index: int, duration_s: float = 0.0) -> None:
+    def finish_chapter(self, index: int, render_elapsed_s: float = 0.0) -> None:
         """Mark a chapter as done."""
         for ch in self.chapters:
             if ch.index == index:
                 ch.status = "done"
-                ch.duration_s = duration_s
-                self._render_durations.append(duration_s)
+                ch.duration_s = render_elapsed_s
+                self._render_durations.append(render_elapsed_s)
                 if ch.word_count > 0:
                     self._words_rendered.append(ch.word_count)
                 return
@@ -154,7 +154,9 @@ class RenderProgressTracker:
         """Human-readable ETA string."""
         eta = self.eta_seconds()
         if eta is None:
-            return "estimating..."
+            # F-RENDER-B-015: Show chapter count remaining for context
+            remaining = self.total_chapters - self.completed_count - self.failed_count
+            return f"estimating... ({remaining} chapter{'s' if remaining != 1 else ''} remaining)"
         if eta <= 0:
             return "done"
         minutes = int(eta // 60)

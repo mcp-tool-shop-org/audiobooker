@@ -1,9 +1,8 @@
 """Tests for Phase 1: Correctness + Config Guardrails."""
 
-import json
 import tempfile
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 import pytest
 
@@ -198,13 +197,14 @@ class TestVoiceValidation:
         with patch(
             "audiobooker.casting.voice_registry.get_available_voices",
             return_value={"af_heart", "bm_george"},
-        ):
+        ) as mock_get:
             with pytest.raises(VoiceNotFoundError) as exc_info:
                 project.render()
             assert "nonexistent_voice" in str(exc_info.value)
+            mock_get.assert_called_once()
 
-    def test_project_skip_validation_when_disabled(self):
-        """render() skips validation when validate_voices_on_render=False."""
+    def test_project_skip_validation_flag_checked(self):
+        """validate_voices_on_render=False means get_available_voices is never called."""
         from audiobooker.project import AudiobookProject
 
         project = AudiobookProject(
@@ -220,16 +220,40 @@ class TestVoiceValidation:
             )
         ]
 
-        # Should NOT call get_available_voices at all
+        # Verify get_available_voices is never called when validation is disabled.
         with patch(
             "audiobooker.casting.voice_registry.get_available_voices",
         ) as mock_get:
-            # Will fail at render_project (no voice-soundboard), but
-            # validation should be skipped — we only care that
-            # get_available_voices was never called
-            with pytest.raises(Exception):
+            try:
                 project.render()
+            except (ImportError, RuntimeError):
+                pass  # Expected: no voice-soundboard installed
             mock_get.assert_not_called()
+
+    def test_project_skip_validation_still_renders(self):
+        """render() proceeds past validation when validate_voices_on_render=False,
+        failing later due to missing voice-soundboard (not validation)."""
+        from audiobooker.project import AudiobookProject
+
+        project = AudiobookProject(
+            config=ProjectConfig(validate_voices_on_render=False),
+        )
+        project.cast("narrator", "nonexistent_voice")
+        project.chapters = [
+            Chapter(
+                index=0,
+                title="Test",
+                raw_text="Hello world " * 20,
+                utterances=[Utterance(speaker="narrator", text="Hello")],
+            )
+        ]
+
+        # Should fail with ImportError/RuntimeError (no voice-soundboard),
+        # NOT VoiceNotFoundError — proving validation was skipped.
+        from audiobooker.casting.voice_registry import VoiceNotFoundError
+        with pytest.raises((ImportError, RuntimeError)) as exc_info:
+            project.render()
+        assert not isinstance(exc_info.value, VoiceNotFoundError)
 
 
 # ---------------------------------------------------------------------------

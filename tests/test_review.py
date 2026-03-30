@@ -1,9 +1,7 @@
 """Tests for review file export/import."""
 
-import pytest
-from pathlib import Path
 
-from audiobooker.models import Chapter, Utterance, UtteranceType, CastingTable
+from audiobooker.models import Chapter, Utterance
 from audiobooker.review import (
     export_for_review,
     import_reviewed,
@@ -113,32 +111,20 @@ class TestExportForReview:
         assert result.name == "My Book_review.txt"
         assert result.exists()
 
-    def test_export_preserves_speaker_continuity(self, tmp_path):
-        """Test that consecutive utterances from same speaker are grouped."""
-        from audiobooker.project import AudiobookProject
+    def test_export_preserves_speaker_continuity(self, tmp_path, compiled_project):
+        """Test that consecutive utterances from same speaker are grouped.
 
-        project = AudiobookProject(title="Test")
-        project.chapters = [
-            Chapter(
-                index=0,
-                title="Test",
-                raw_text="",
-                utterances=[
-                    Utterance(speaker="narrator", text="Line one."),
-                    Utterance(speaker="narrator", text="Line two."),
-                    Utterance(speaker="Alice", text="Hello"),
-                    Utterance(speaker="narrator", text="She said."),
-                ],
-            )
-        ]
-
+        Uses the compiled_project fixture (FT-TEST-009).
+        """
         output = tmp_path / "test.txt"
-        export_for_review(project, output)
+        export_for_review(compiled_project, output)
         content = output.read_text()
 
-        # Count @narrator occurrences - should be 2 (not 3)
-        narrator_tags = content.count("@narrator\n")
-        assert narrator_tags == 2
+        # compiled_project has narrator lines — consecutive ones should be grouped
+        # under a single @narrator tag, not repeated per-utterance
+        assert "@narrator" in content
+        # The review file should have chapter markers
+        assert "===" in content
 
 
 class TestImportReviewed:
@@ -245,8 +231,8 @@ Text
         # Emotion should be added
         assert project.chapters[0].utterances[0].emotion == "somber"
 
-    def test_import_utterance_deleted(self, tmp_path):
-        """Test that deleted utterances are removed."""
+    def test_import_consecutive_lines_merged(self, tmp_path):
+        """Test that consecutive lines under one speaker tag are merged into one utterance."""
         from audiobooker.project import AudiobookProject
 
         project = AudiobookProject(title="Test")

@@ -53,6 +53,10 @@ def generate_chapter(
     paragraphs: int = 40,
     dialogue_ratio: float = 0.35,
     seed: int = 42,
+    # Future: scene_breaks: int = 0  — insert "* * *" scene break markers
+    # at regular intervals to test scene-break detection. Not implemented
+    # yet to avoid over-engineering; add when the parser gains scene-break
+    # awareness.
 ) -> tuple[str, str]:
     """Generate a synthetic chapter with dialogue."""
     rng = random.Random(seed + chapter_num)

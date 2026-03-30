@@ -32,6 +32,23 @@ class TTSEngine(Protocol):
         progress_callback: Optional[Callable] = None,
     ) -> SynthesisResult: ...
 
+    # F-RENDER-B-012: Optional capabilities discovery
+    def capabilities(self) -> dict[str, bool]:
+        """Return engine capabilities (optional — defaults provided).
+
+        Known keys:
+            streaming: Whether the engine supports streaming synthesis.
+            emotions: Whether the engine supports emotion tags.
+            ssml: Whether the engine supports SSML input.
+            multi_speaker: Whether the engine supports multiple speakers.
+        """
+        return {
+            "streaming": False,
+            "emotions": False,
+            "ssml": False,
+            "multi_speaker": False,
+        }
+
 
 @dataclass
 class RunResult:
@@ -46,3 +63,18 @@ class FFmpegRunner(Protocol):
     """Interface for running FFmpeg commands."""
 
     def run(self, args: list[str]) -> RunResult: ...
+
+
+# F-RENDER-B-016: Formal AssemblerProtocol
+@runtime_checkable
+class AssemblerProtocol(Protocol):
+    """Interface for audio assembly (chapter WAVs -> final audiobook)."""
+
+    def __call__(
+        self,
+        chapter_files: list[tuple[Path, str, float]],
+        output_path: Path,
+        title: str = "Audiobook",
+        author: str = "",
+        chapter_pause_ms: int = 2000,
+    ) -> "AssemblyResult": ...  # noqa: F821 — forward ref to output.AssemblyResult

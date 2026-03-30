@@ -27,7 +27,19 @@ def sha256_json(obj: dict | list) -> str:
 
 
 def chapter_text_hash(chapter: "Chapter") -> str:
-    """Hash the text content that affects audio output."""
+    """Hash the text content that affects audio output.
+
+    F-RENDER-B-017: Includes compiled utterance data (speaker + text + emotion)
+    when available, since those directly affect the rendered audio.
+    Falls back to raw_text when chapter is not yet compiled.
+    """
+    if chapter.utterances:
+        # Hash the compiled utterance data — this is what actually gets rendered
+        utterance_data = [
+            {"speaker": u.speaker, "text": u.text, "emotion": u.emotion or ""}
+            for u in chapter.utterances
+        ]
+        return sha256_json(utterance_data)
     return sha256_text(chapter.raw_text)
 
 

@@ -11,26 +11,24 @@ Skipped automatically if dependencies are missing.
 """
 
 import logging
-import os
 import pytest
-import shutil
 import subprocess
 import tempfile
 from pathlib import Path
 
-# Configure logging for visibility during test
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-)
+# Use a module-specific logger instead of configuring the root logger,
+# which would pollute other tests' logging state.
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
 
 def has_voice_soundboard() -> bool:
     """Check if voice-soundboard is available."""
     try:
-        from voice_soundboard.dialogue.engine import DialogueEngine
+        from voice_soundboard.dialogue.engine import DialogueEngine  # noqa: F401
         return True
-    except ImportError:
+    except ImportError as exc:
+        logger.info("voice-soundboard not available: %s", exc)
         return False
 
 
@@ -41,6 +39,7 @@ def has_ffmpeg() -> bool:
             ["ffmpeg", "-version"],
             capture_output=True,
             text=True,
+            timeout=5,
         )
         return result.returncode == 0
     except FileNotFoundError:
@@ -58,7 +57,7 @@ requires_ffmpeg = pytest.mark.skipif(
 )
 
 
-GOLDEN_BOOK_PATH = Path(__file__).parent.parent / "examples" / "golden_book.txt"
+from tests.conftest import GOLDEN_BOOK_PATH
 
 
 class TestEndToEndSmoke:
@@ -102,9 +101,9 @@ class TestEndToEndSmoke:
         chapter1_speakers = {u.speaker for u in project.chapters[0].utterances}
         assert "Sarah" in chapter1_speakers, "Inline override [Sarah|worried] not parsed"
 
-        print(f"\nCompiled {total_utterances} utterances")
-        print(f"Chapter 1: {len(project.chapters[0].utterances)} utterances")
-        print(f"Chapter 2: {len(project.chapters[1].utterances)} utterances")
+        logger.info("Compiled %d utterances", total_utterances)
+        logger.info("Chapter 1: %d utterances", len(project.chapters[0].utterances))
+        logger.info("Chapter 2: %d utterances", len(project.chapters[1].utterances))
 
     def test_project_save_load_roundtrip(self):
         """Test project serialization roundtrip."""
@@ -152,10 +151,10 @@ class TestEndToEndSmoke:
             # Check duration was recorded
             assert project.chapters[0].duration_seconds > 0, "Duration not recorded"
 
-            print(f"\nRendered chapter 0:")
-            print(f"  Output: {result_path}")
-            print(f"  Size: {result_path.stat().st_size:,} bytes")
-            print(f"  Duration: {project.chapters[0].duration_seconds:.1f}s")
+            logger.info("Rendered chapter 0:")
+            logger.info("  Output: %s", result_path)
+            logger.info("  Size: %s bytes", f"{result_path.stat().st_size:,}")
+            logger.info("  Duration: %.1fs", project.chapters[0].duration_seconds)
 
     @requires_voice_soundboard
     @requires_ffmpeg
@@ -173,10 +172,10 @@ class TestEndToEndSmoke:
             output_path = Path(temp_dir) / "golden_test.m4b"
 
             def progress(current, total, status):
-                print(f"  [{current}/{total}] {status}")
+                logger.info("  [%d/%d] %s", current, total, status)
 
             # Render full audiobook
-            print("\nRendering full audiobook...")
+            logger.info("Rendering full audiobook...")
             result_path = project.render(output_path, progress_callback=progress)
 
             assert result_path.exists(), f"M4B not created: {result_path}"
@@ -186,10 +185,10 @@ class TestEndToEndSmoke:
             total_duration = sum(c.duration_seconds for c in project.chapters)
             assert total_duration > 0, "Total duration is zero"
 
-            print(f"\nFull audiobook rendered:")
-            print(f"  Output: {result_path}")
-            print(f"  Size: {result_path.stat().st_size:,} bytes")
-            print(f"  Duration: {total_duration:.1f}s ({total_duration/60:.1f} min)")
+            logger.info("Full audiobook rendered:")
+            logger.info("  Output: %s", result_path)
+            logger.info("  Size: %s bytes", f"{result_path.stat().st_size:,}")
+            logger.info("  Duration: %.1fs (%.1f min)", total_duration, total_duration / 60)
 
             # Probe with ffprobe to verify it's valid
             probe_result = subprocess.run(
@@ -204,9 +203,9 @@ class TestEndToEndSmoke:
             )
 
             if probe_result.returncode == 0:
-                print(f"\nFFprobe output:\n{probe_result.stdout[:500]}")
+                logger.info("FFprobe output:\n%s", probe_result.stdout[:500])
             else:
-                print(f"\nFFprobe failed: {probe_result.stderr}")
+                logger.info("FFprobe failed: %s", probe_result.stderr)
 
 
 if __name__ == "__main__":

@@ -12,11 +12,14 @@ User-set explicit emotions are never overridden.
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass
 from typing import Optional, TYPE_CHECKING
 
 from audiobooker.language.profile import LanguageProfile, get_profile
+
+logger = logging.getLogger("audiobooker.nlp.emotion")
 
 if TYPE_CHECKING:
     from audiobooker.models import Utterance
@@ -138,6 +141,15 @@ class EmotionInferencer:
         self.threshold = threshold
         self.profile = profile or get_profile("en")
 
+        # F-CORE-B-011: Log when lexicon won't match non-English text
+        lang = getattr(self.profile, "code", "en")
+        if lang != "en":
+            logger.info(
+                "Emotion lexicon is English-only. Language '%s' will rely on "
+                "punctuation cues and verb hints; lexicon matches may be less accurate.",
+                lang,
+            )
+
     def infer(
         self,
         utterance_text: str,
@@ -241,11 +253,23 @@ class EmotionInferencer:
             Number of emotions applied.
         """
         applied = 0
+        context_window = 200  # chars around the utterance position
+
         for utt in utterances:
             if utt.emotion:
                 continue  # Already has emotion — don't override
 
-            result = self.infer(utt.text, context=chapter_text)
+            # Scope context to a narrow window around the utterance
+            # to avoid false-positive emotion tagging from distant text.
+            context = ""
+            if chapter_text and utt.text:
+                pos = chapter_text.find(utt.text)
+                if pos >= 0:
+                    start = max(0, pos - context_window)
+                    end = min(len(chapter_text), pos + len(utt.text) + context_window)
+                    context = chapter_text[start:end]
+
+            result = self.infer(utt.text, context=context)
             if result.label != "neutral" and result.confidence >= self.threshold:
                 utt.emotion = result.label
                 applied += 1

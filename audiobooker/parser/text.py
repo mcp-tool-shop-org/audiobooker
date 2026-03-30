@@ -8,12 +8,18 @@ Chapter heading and scene-break patterns are drawn from a LanguageProfile.
 Default is English.
 """
 
+import logging
 import re
 from pathlib import Path
 from typing import Optional
 
 from audiobooker.models import Chapter
 from audiobooker.language.profile import LanguageProfile, get_profile
+
+logger = logging.getLogger("audiobooker.parser")
+
+# Maximum file size for parse_text (100 MB)
+_MAX_TEXT_FILE_BYTES = 100 * 1024 * 1024
 
 
 def _get_chapter_patterns(profile: Optional[LanguageProfile] = None) -> list[str]:
@@ -52,6 +58,8 @@ def detect_chapter_pattern(
                 pattern_counts[pattern] += 1
 
     # Return pattern with most matches (if > 1)
+    if not pattern_counts:  # Defensive: empty when custom profiles provide no patterns
+        return None
     best_pattern = max(pattern_counts, key=pattern_counts.get)
     if pattern_counts[best_pattern] > 1:
         return re.compile(best_pattern, re.MULTILINE)
@@ -83,7 +91,7 @@ def extract_frontmatter(text: str) -> tuple[dict, str]:
 
     # Check for YAML frontmatter
     if text.startswith("---"):
-        end_match = re.search(r"\n---\s*\n", text[3:])
+        end_match = re.search(r"\n---\s*(?:\n|$)", text[3:])
         if end_match:
             frontmatter = text[3:end_match.start() + 3]
             remaining = text[end_match.end() + 3:]
@@ -119,7 +127,14 @@ def split_into_chapters(
         List of (title, content) tuples
     """
     if delimiter_pattern:
-        pattern = re.compile(delimiter_pattern, re.MULTILINE)
+        try:
+            pattern = re.compile(delimiter_pattern, re.MULTILINE)
+        except re.error as e:
+            raise ValueError(
+                f"Invalid chapter delimiter regex: {delimiter_pattern!r} — {e}. "
+                "Check your pattern for unbalanced parentheses, bad escapes, "
+                "or unsupported syntax."
+            ) from e
     else:
         pattern = detect_chapter_pattern(text, profile=profile)
 
@@ -190,9 +205,29 @@ def parse_text(
     if not path.exists():
         raise FileNotFoundError(f"Text file not found: {path}")
 
-    # Read file
-    with open(path, "r", encoding="utf-8") as f:
-        text = f.read()
+    # F-CORE-B-001: Reject files larger than 100 MB
+    file_size = path.stat().st_size
+    if file_size > _MAX_TEXT_FILE_BYTES:
+        size_mb = file_size / (1024 * 1024)
+        raise ValueError(
+            f"Text file is too large ({size_mb:.1f} MB, limit is 100 MB). "
+            "Consider splitting the file into smaller parts — most text editors "
+            "have a split-by-size or split-by-chapter feature. You can then "
+            "process each part separately."
+        )
+
+    # F-CORE-B-002: Catch encoding errors with helpful message
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            text = f.read()
+    except UnicodeDecodeError as e:
+        raise ValueError(
+            f"Cannot read '{path.name}' — the file is not valid UTF-8 (error at byte {e.start}). "
+            "Please convert it to UTF-8 first. Common tools:\n"
+            "  - Notepad++: Encoding → Convert to UTF-8\n"
+            "  - VS Code: click the encoding in the status bar → 'Reopen with Encoding' / 'Save with Encoding'\n"
+            "  - CLI: iconv -f LATIN1 -t UTF-8 input.txt > output.txt"
+        ) from e
 
     # Extract frontmatter if present
     metadata, text = extract_frontmatter(text)

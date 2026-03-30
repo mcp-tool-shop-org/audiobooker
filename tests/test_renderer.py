@@ -6,8 +6,8 @@ All tests are hermetic: no voice-soundboard, no FFmpeg, no network.
 
 from __future__ import annotations
 
-import tempfile
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -16,11 +16,9 @@ from audiobooker.models import (
     CastingTable,
     Utterance,
     UtteranceType,
-    ProjectConfig,
 )
 from audiobooker.renderer.engine import render_chapter, render_project, RenderLog
 from audiobooker.renderer.output import generate_chapter_metadata, AssemblyResult
-from audiobooker.renderer.protocols import SynthesisResult
 
 from tests.fakes.fake_tts import FakeTTSEngine, write_silence_wav, assert_wav_header_valid
 from tests.fakes.fake_ffmpeg import FakeAssembler
@@ -140,7 +138,15 @@ class TestRenderChapter:
         assert "narrator" in engine.calls[0].voices
         assert engine.calls[0].voices["narrator"] == "af_heart"
 
-    def test_progress_callback_invoked(self, tmp_path: Path):
+    def test_progress_callback_passthrough_no_crash(self, tmp_path: Path):
+        """Verify render_chapter accepts a progress_callback without crashing.
+
+        NOTE: FakeTTSEngine does not invoke the progress_callback internally,
+        so this test only verifies that render_chapter correctly passes the
+        callback through to engine.synthesize without error. It does NOT
+        test that the callback is actually invoked — that requires a real
+        TTS engine or a fake that calls the callback.
+        """
         chapter = _make_chapter()
         casting = _make_casting()
         engine = FakeTTSEngine()
@@ -149,14 +155,14 @@ class TestRenderChapter:
         def on_progress(current, total):
             progress_calls.append((current, total))
 
-        # FakeTTS doesn't call progress_callback internally,
-        # but render_chapter passes it through to engine.synthesize.
-        # We just verify no crash.
         render_chapter(
             chapter, casting, tmp_path / "ch.wav",
             progress_callback=on_progress, engine=engine,
         )
         assert chapter.audio_path is not None
+        # FakeTTSEngine does not invoke progress_callback, so no calls recorded.
+        # This assertion documents that limitation explicitly.
+        assert len(progress_calls) == 0, "FakeTTSEngine should not call progress_callback"
 
 
 # ---------------------------------------------------------------------------
@@ -351,3 +357,49 @@ class TestRenderLog:
         j = log.to_json()
         assert '"error_message": "boom"' in j
         assert '"error_speaker": "Alice"' in j
+
+
+# ---------------------------------------------------------------------------
+# F-TEST-020: RealFFmpegRunner when ffmpeg not on PATH
+# ---------------------------------------------------------------------------
+
+class TestRealFFmpegRunnerMissing:
+    """Tests for RealFFmpegRunner.run() when ffmpeg is not available."""
+
+    def test_run_returns_error_when_ffmpeg_missing(self):
+        """RealFFmpegRunner.run() returns error RunResult when ffmpeg not found."""
+        from audiobooker.renderer.ffmpeg_runner import RealFFmpegRunner
+
+        runner = RealFFmpegRunner()
+        with patch("subprocess.run", side_effect=FileNotFoundError("ffmpeg")):
+            result = runner.run(["ffmpeg", "-version"])
+            assert result.returncode == -1
+            assert "not found" in result.stderr
+
+    def test_available_returns_false_when_missing(self):
+        """RealFFmpegRunner.available() returns False when ffmpeg not found."""
+        from audiobooker.renderer.ffmpeg_runner import RealFFmpegRunner
+
+        runner = RealFFmpegRunner()
+        with patch("subprocess.run", side_effect=FileNotFoundError("ffmpeg")):
+            assert runner.available() is False
+
+
+# ---------------------------------------------------------------------------
+# F-TEST-024: _VoiceSoundboardEngine import error handling
+# ---------------------------------------------------------------------------
+
+class TestVoiceSoundboardEngineImport:
+    """Tests for _VoiceSoundboardEngine import error handling."""
+
+    def test_raises_import_error_without_soundboard(self):
+        """_VoiceSoundboardEngine raises ImportError when voice-soundboard missing."""
+        from audiobooker.renderer.engine import _VoiceSoundboardEngine
+
+        with patch.dict("sys.modules", {
+            "voice_soundboard": None,
+            "voice_soundboard.dialogue": None,
+            "voice_soundboard.dialogue.engine": None,
+        }):
+            with pytest.raises(ImportError, match="voice-soundboard"):
+                _VoiceSoundboardEngine()

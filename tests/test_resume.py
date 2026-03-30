@@ -13,7 +13,6 @@ Covers:
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pytest
@@ -22,10 +21,10 @@ from audiobooker.models import (
     Chapter, CastingTable, Utterance, UtteranceType, ProjectConfig,
 )
 from audiobooker.project import AudiobookProject
-from audiobooker.renderer.engine import render_chapter, render_project, RenderError, RenderSummary
+from audiobooker.renderer.engine import render_project, RenderError
 from audiobooker.renderer.cache_manifest import (
     CacheManifest, ChapterCacheEntry, load_manifest, save_manifest,
-    get_cache_root, get_chapter_wav_path, get_manifest_path,
+    get_chapter_wav_path, get_manifest_path,
 )
 from audiobooker.renderer.hash_utils import (
     sha256_text, sha256_json, chapter_text_hash, casting_hash, render_params_hash,
@@ -67,6 +66,8 @@ def _make_project(num_chapters: int = 3, title: str = "Resume Test") -> Audioboo
 # ---------------------------------------------------------------------------
 
 class TestHashUtils:
+    """Tests for hash utility functions used by the render cache."""
+
     def test_sha256_text_deterministic(self):
         assert sha256_text("hello") == sha256_text("hello")
         assert sha256_text("hello") != sha256_text("world")
@@ -77,9 +78,18 @@ class TestHashUtils:
         assert a == b
 
     def test_chapter_text_hash_changes_on_edit(self):
+        """Hash changes when chapter content is modified.
+
+        chapter_text_hash uses utterance data when compiled, so we must
+        also update utterances to see a hash change.
+        """
         ch = _make_chapter(text="original text")
         h1 = chapter_text_hash(ch)
         ch.raw_text = "modified text"
+        # Also update the utterance text — chapter_text_hash uses utterances
+        # when they exist (see hash_utils.py F-RENDER-B-017).
+        for u in ch.utterances:
+            u.text = "modified text"
         h2 = chapter_text_hash(ch)
         assert h1 != h2
 
@@ -147,10 +157,11 @@ class TestCacheManifest:
         assert not entry.is_valid("aaa", "CHANGED", "ccc")
         assert not entry.is_valid("aaa", "bbb", "CHANGED")
 
-    def test_entry_invalid_if_wav_missing(self):
+    def test_entry_invalid_if_wav_missing(self, tmp_path: Path):
+        nonexistent = tmp_path / "nonexistent" / "ch.wav"
         entry = ChapterCacheEntry(
             chapter_index=0, text_hash="a", casting_hash="b",
-            render_params_hash="c", wav_path="/nonexistent/ch.wav",
+            render_params_hash="c", wav_path=str(nonexistent),
             duration_s=1.0, status="ok",
         )
         assert not entry.is_valid("a", "b", "c")
@@ -214,7 +225,11 @@ class TestResumeSkipsUnchanged:
         assert len(engine2.calls) == 0
 
     def test_changed_chapter_text_rerenders_only_that_chapter(self, tmp_path: Path):
-        """Change chapter 1's text → only chapter 1 re-rendered."""
+        """Change chapter 1's text + utterances → only chapter 1 re-rendered.
+
+        chapter_text_hash uses utterance data when compiled (F-RENDER-B-017),
+        so we must also update utterances to invalidate the cache entry.
+        """
         project = _make_project(num_chapters=3)
         cache = tmp_path / "cache"
 
@@ -222,8 +237,10 @@ class TestResumeSkipsUnchanged:
         render_project(project, tmp_path / "book1.m4b", engine=engine1, assembler=FakeAssembler(), cache_root=cache)
         assert len(engine1.calls) == 3
 
-        # Change chapter 1's text (invalidates its text_hash)
+        # Change chapter 1's text AND utterances (invalidates its text_hash)
         project.chapters[1].raw_text = "Completely different text content now."
+        for u in project.chapters[1].utterances:
+            u.text = "Completely different text content now."
 
         engine2 = FakeTTSEngine(duration_per_call=0.5)
         render_project(project, tmp_path / "book2.m4b", engine=engine2, assembler=FakeAssembler(), cache_root=cache)

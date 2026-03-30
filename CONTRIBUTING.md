@@ -8,7 +8,7 @@ Thank you for your interest in contributing to audiobooker! This is an AI audiob
 
 If you find a bug or have a suggestion:
 
-1. Check if the issue already exists in [GitHub Issues](https://github.com/mcp-tool-shop/audiobooker/issues)
+1. Check if the issue already exists in [GitHub Issues](https://github.com/mcp-tool-shop-org/audiobooker/issues)
 2. If not, create a new issue with:
    - A clear, descriptive title
    - Steps to reproduce (for bugs)
@@ -38,7 +38,7 @@ If you find a bug or have a suggestion:
 
 ```bash
 # Clone the repository
-git clone https://github.com/mcp-tool-shop/audiobooker.git
+git clone https://github.com/mcp-tool-shop-org/audiobooker.git
 cd audiobooker
 
 # Create a virtual environment
@@ -48,7 +48,12 @@ source .venv/bin/activate  # Windows: .venv\Scripts\activate
 # Install with dev dependencies
 pip install -e ".[dev]"
 
-# Install voice-soundboard (required)
+# Optional extras
+pip install -e ".[pdf]"    # PDF input support (pymupdf)
+pip install -e ".[rich]"   # Rich progress bars
+pip install -e ".[nlp]"    # BookNLP speaker resolution
+
+# Install voice-soundboard (required for rendering)
 pip install -e ../voice-soundboard
 
 # Run tests
@@ -109,9 +114,10 @@ When testing with real books:
 
 1. Update version in `pyproject.toml`
 2. Update CHANGELOG.md
-3. Create git tag: `git tag v0.x.x`
-4. Push tag: `git push origin v0.x.x`
-5. GitHub Actions will publish to PyPI
+3. Create git tag: `git tag v1.x.x`
+4. Push tag: `git push origin v1.x.x`
+5. GitHub Actions publishes to PyPI via trusted publishing (`.github/workflows/publish.yml`)
+6. Docker image is built and pushed to GHCR (`.github/workflows/docker.yml`)
 
 ## Code of Conduct
 
@@ -123,6 +129,6 @@ Open an issue or start a discussion. We're here to help!
 
 ## Related Projects
 
-- [voice-soundboard](https://github.com/mcp-tool-shop/voice-soundboard) - AI-powered voice synthesis engine
-- [a11y-lint](https://github.com/mcp-tool-shop/a11y-lint) - Accessibility linter for CLI output
-- [a11y-assist](https://github.com/mcp-tool-shop/a11y-assist) - Low-vision-first CLI assistant
+- [voice-soundboard](https://github.com/mcp-tool-shop-org/voice-soundboard) - AI-powered voice synthesis engine
+- [a11y-lint](https://github.com/mcp-tool-shop-org/a11y-lint) - Accessibility linter for CLI output
+- [a11y-assist](https://github.com/mcp-tool-shop-org/a11y-assist) - Low-vision-first CLI assistant

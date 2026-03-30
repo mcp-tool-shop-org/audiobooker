@@ -47,7 +47,7 @@ def get_available_voices() -> set[str]:
     except ImportError:
         raise ImportError(
             "voice-soundboard is required for voice validation. "
-            "Install with: pip install -e F:/AI/voice-soundboard"
+            "Install with: pip install voice-soundboard"
         )
 
 
@@ -64,7 +64,22 @@ def validate_voices(
 
     Returns:
         List of missing voice IDs (empty if all valid).
+        Returns empty list with warning if voice-soundboard is not installed.
     """
     if available is None:
-        available = get_available_voices()
+        try:
+            available = get_available_voices()
+        except ImportError:
+            logger.warning(
+                "voice-soundboard not installed — skipping voice validation"
+            )
+            return []
+
+    # Filter out empty/whitespace-only voice IDs and log affected characters
+    empty_ids = {v for v in voice_ids if not v or not v.strip()}
+    if empty_ids:
+        logger.warning(
+            "Filtered %d empty/whitespace voice IDs during validation", len(empty_ids),
+        )
+    voice_ids = {v for v in voice_ids if v and v.strip()}
     return sorted(voice_ids - available)

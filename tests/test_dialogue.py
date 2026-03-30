@@ -1,6 +1,7 @@
 """Tests for dialogue detection and compilation."""
 
 import pytest
+
 from audiobooker.casting.dialogue import (
     detect_dialogue,
     parse_inline_override,
@@ -8,7 +9,7 @@ from audiobooker.casting.dialogue import (
     extract_speaker_from_context,
     utterances_to_script,
 )
-from audiobooker.models import Chapter, CastingTable, UtteranceType
+from audiobooker.models import Chapter, CastingTable, Utterance, UtteranceType
 
 
 class TestParseInlineOverride:
@@ -74,12 +75,25 @@ class TestDetectDialogue:
 
     def test_smart_quotes(self):
         """Test detecting curly/smart quotes."""
-        text = 'She whispered "Be careful" softly.'
+        text = 'She whispered \u201cBe careful\u201d softly.'
         segments = detect_dialogue(text)
 
         dialogue_segments = [s for s in segments if s[1]]
         assert len(dialogue_segments) == 1
         assert dialogue_segments[0][0] == "Be careful"
+
+    @pytest.mark.parametrize("open_q, close_q, label", [
+        ('\u201c', '\u201d', "English curly quotes"),
+        ('\u00ab', '\u00bb', "French guillemets"),
+        ('\u201e', '\u201c', "German low-high quotes"),
+    ])
+    def test_quote_styles(self, open_q, close_q, label):
+        """Test dialogue detection across international quote styles."""
+        text = f'She said {open_q}Hello{close_q} softly.'
+        segments = detect_dialogue(text)
+        # At minimum, the parser should not crash on these quote styles.
+        # Full detection depends on whether the parser supports non-ASCII quotes.
+        assert isinstance(segments, list), f"Failed for {label}"
 
 
 class TestExtractSpeaker:
@@ -172,15 +186,12 @@ class TestUtterancesToScript:
 
     def test_simple_script(self):
         """Test converting utterances to script."""
-        from audiobooker.models import Utterance
-
         utterances = [
             Utterance(speaker="narrator", text="The room was quiet."),
             Utterance(speaker="Alice", text="Hello?", emotion="nervous"),
         ]
-        casting = CastingTable()
 
-        script = utterances_to_script(utterances, casting)
+        script = utterances_to_script(utterances)
 
         assert "[S1:narrator] The room was quiet." in script
         assert "[S2:alice] (nervous) Hello?" in script

@@ -16,6 +16,7 @@ Example:
 __version__ = "1.0.0"
 
 from audiobooker.models import (
+    BookMetadata,
     Chapter,
     Utterance,
     Character,
@@ -26,6 +27,7 @@ from audiobooker.project import AudiobookProject
 
 __all__ = [
     "AudiobookProject",
+    "BookMetadata",
     "Chapter",
     "Utterance",
     "Character",

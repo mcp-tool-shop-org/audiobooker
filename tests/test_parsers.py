@@ -1,8 +1,6 @@
 """Tests for text parsers."""
 
 import pytest
-import tempfile
-from pathlib import Path
 
 from audiobooker.parser.text import (
     parse_text,
@@ -115,6 +113,9 @@ Chapter 3
 """
         pattern = detect_chapter_pattern(text)
         assert pattern is not None
+        # Pattern should match "Chapter N" format
+        assert pattern.search("Chapter 1") is not None
+        assert pattern.search("Chapter 2") is not None
 
     def test_markdown_h1_pattern(self):
         """Test detecting markdown H1 pattern."""
@@ -131,6 +132,8 @@ More content.
 """
         pattern = detect_chapter_pattern(text)
         assert pattern is not None
+        # Pattern should match markdown H1 headings
+        assert pattern.search("# Introduction") is not None
 
     def test_no_pattern(self):
         """Test when no chapter pattern found."""
@@ -171,7 +174,7 @@ Second chapter content."""
 class TestParseText:
     """Tests for full text parsing."""
 
-    def test_parse_simple_text(self):
+    def test_parse_simple_text(self, tmp_path):
         """Test parsing a simple text file."""
         content = """---
 title: Test Book
@@ -186,28 +189,18 @@ Chapter 2
 
 This is the second chapter."""
 
-        with tempfile.NamedTemporaryFile(
-            mode="w",
-            suffix=".txt",
-            delete=False,
-            encoding="utf-8",
-        ) as f:
-            f.write(content)
-            temp_path = Path(f.name)
+        temp_path = tmp_path / "book.txt"
+        temp_path.write_text(content, encoding="utf-8")
 
-        try:
-            metadata, chapters = parse_text(temp_path)
+        metadata, chapters = parse_text(temp_path)
 
-            assert metadata["title"] == "Test Book"
-            assert metadata["author"] == "Test Author"
-            assert len(chapters) == 2
-            assert "first chapter" in chapters[0].raw_text
-            assert "second chapter" in chapters[1].raw_text
+        assert metadata["title"] == "Test Book"
+        assert metadata["author"] == "Test Author"
+        assert len(chapters) == 2
+        assert "first chapter" in chapters[0].raw_text
+        assert "second chapter" in chapters[1].raw_text
 
-        finally:
-            temp_path.unlink()
-
-    def test_parse_markdown(self):
+    def test_parse_markdown(self, tmp_path):
         """Test parsing markdown file."""
         content = """# My Story
 
@@ -217,19 +210,35 @@ Once upon a time...
 
 The adventure begins."""
 
-        with tempfile.NamedTemporaryFile(
-            mode="w",
-            suffix=".md",
-            delete=False,
-            encoding="utf-8",
-        ) as f:
-            f.write(content)
-            temp_path = Path(f.name)
+        temp_path = tmp_path / "story.md"
+        temp_path.write_text(content, encoding="utf-8")
 
-        try:
-            metadata, chapters = parse_text(temp_path)
+        metadata, chapters = parse_text(temp_path)
 
-            assert len(chapters) >= 1
+        assert len(chapters) == 2
+        assert chapters[0].title == "My Story"
+        assert chapters[1].title == "Chapter One"
 
-        finally:
-            temp_path.unlink()
+
+# ---------------------------------------------------------------------------
+# FT-TEST-006: Encoding error tests
+# ---------------------------------------------------------------------------
+
+class TestEncodingErrors:
+    """Tests that non-UTF-8 files produce a helpful error."""
+
+    def test_latin1_file_raises_with_utf8_hint(self, tmp_path):
+        """parse_text() raises ValueError mentioning UTF-8 for Latin-1 files."""
+        latin1_file = tmp_path / "latin1.txt"
+        # Write bytes that are valid Latin-1 but invalid UTF-8
+        # 0xe9 = 'é' in Latin-1, but invalid as a standalone UTF-8 byte
+        latin1_file.write_bytes(b"Caf\xe9 au lait\n")
+        with pytest.raises(ValueError, match="UTF-8"):
+            parse_text(latin1_file)
+
+    def test_utf8_file_accepted(self, tmp_path):
+        """parse_text() accepts valid UTF-8 files with Unicode."""
+        utf8_file = tmp_path / "utf8.txt"
+        utf8_file.write_text("Caf\u00e9 au lait\n", encoding="utf-8")
+        metadata, chapters = parse_text(utf8_file)
+        assert len(chapters) >= 1
