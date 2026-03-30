@@ -13,7 +13,7 @@ test-full:
 
 audit:
 	@command -v pip-audit >/dev/null 2>&1 || { echo "pip-audit not installed — skipping"; exit 0; }
-	pip-audit --strict --desc
+	pip-audit --strict --desc --skip-editable
 
 cov:
 	python -m pytest tests/ -v --tb=short --ignore=tests/test_e2e_smoke.py \
