@@ -123,5 +123,5 @@ jobs:
           cache: 'pip'
       - run: |
           pip install pip-audit
-          pip install -e .
-      - run: pip-audit --strict --desc --skip-editable
+          pip install .
+      - run: pip-audit --strict --desc
