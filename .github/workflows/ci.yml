@@ -124,4 +124,6 @@ jobs:
       - run: |
           pip install pip-audit
           pip install .
-      - run: pip-audit --strict --desc
+      # --desc for descriptions, no --strict because audiobooker-ai
+      # is not on PyPI yet and pip-audit treats that as a strict error
+      - run: pip-audit --desc
