@@ -931,9 +931,35 @@ def _handle_chapter_failure(
 class RenderError(RuntimeError):
     """Rendering failed with recoverable context."""
 
-    def __init__(self, message: str, summary: Optional[RenderSummary] = None):
+    def __init__(
+        self,
+        message: str,
+        summary: Optional[RenderSummary] = None,
+        *,
+        code: str = "RUNTIME_RENDER",
+        hint: str = "Check render_failure_report.json for details. Retry with --from-chapter to resume.",
+        cause: Optional[str] = None,
+        retryable: bool = True,
+    ):
         super().__init__(message)
         self.summary = summary
+        # Structured error shape (code/message/hint/cause/retryable)
+        self.code = code
+        self.hint = hint
+        self.cause = cause
+        self.retryable = retryable
+
+    def structured(self) -> dict:
+        """Return the canonical error shape as a dict."""
+        d: dict = {
+            "code": self.code,
+            "message": str(self),
+            "hint": self.hint,
+            "retryable": self.retryable,
+        }
+        if self.cause:
+            d["cause"] = self.cause
+        return d
 
 
 def _resolve_project_dir(project: "AudiobookProject") -> Path:

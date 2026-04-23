@@ -218,6 +218,12 @@ Every command supports `-h` / `--help` for detailed usage. Key flags:
 - **`voices`**: `--gender <male|female>`, `--search <query>`
 - **`info`**: `--verbose`
 
+**Global flags** (before any command):
+- `--silent` — suppress all output except errors
+- `--debug` — enable debug logging and stack traces
+
+**Exit codes:** `0` success · `1` user error · `2` runtime error · `3` partial success (batch)
+
 ## Architecture
 
 ```

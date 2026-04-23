@@ -36,6 +36,8 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import logging as _logging_mod
+import re
 import sys
 from typing import TYPE_CHECKING
 
@@ -43,6 +45,22 @@ if TYPE_CHECKING:
     from audiobooker.renderer.engine import RenderError
 from pathlib import Path
 from typing import Optional
+
+
+# Patterns that look like secrets/tokens — redacted in all log output
+_SECRET_PATTERNS = re.compile(
+    r"((?:token|key|secret|password|credential|auth)[=:\s]+)\S+",
+    re.IGNORECASE,
+)
+
+
+class _SecretRedactFilter(_logging_mod.Filter):
+    """Redact anything that looks like a secret from log records."""
+
+    def filter(self, record: _logging_mod.LogRecord) -> bool:
+        if isinstance(record.msg, str):
+            record.msg = _SECRET_PATTERNS.sub(r"\1[REDACTED]", record.msg)
+        return True
 
 
 def create_parser() -> argparse.ArgumentParser:
@@ -55,6 +73,16 @@ def create_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--version", action="version", version=f"audiobooker {__version__}"
+    )
+
+    # Global logging-level flags (silent < normal < verbose < debug)
+    log_group = parser.add_mutually_exclusive_group()
+    log_group.add_argument(
+        "--silent", action="store_true", help="Suppress all output except errors"
+    )
+    log_group.add_argument(
+        "--debug", action="store_true",
+        help="Enable debug output including stack traces",
     )
 
     subparsers = parser.add_subparsers(dest="command", help="Commands")
@@ -857,15 +885,15 @@ def cmd_render(args) -> int:
 
     except Exception as e:
         print(f"Error: {e}")
-        import traceback
-
-        traceback.print_exc()
+        if getattr(args, "debug", False):
+            import traceback
+            traceback.print_exc()
         if getattr(args, "notify", False):
             _send_notification(
                 title="Audiobooker",
                 message=f"Render error: {e}",
             )
-        return 1
+        return 2
 
 
 def _print_render_failure(e: "RenderError") -> None:
@@ -1222,10 +1250,10 @@ def cmd_review_export(args) -> int:
 
     except Exception as e:
         print(f"Error: {e}")
-        import traceback
-
-        traceback.print_exc()
-        return 1
+        if getattr(args, "debug", False):
+            import traceback
+            traceback.print_exc()
+        return 2
 
 
 def cmd_review_import(args) -> int:
@@ -1256,10 +1284,10 @@ def cmd_review_import(args) -> int:
 
     except Exception as e:
         print(f"Error: {e}")
-        import traceback
-
-        traceback.print_exc()
-        return 1
+        if getattr(args, "debug", False):
+            import traceback
+            traceback.print_exc()
+        return 2
 
 
 def cmd_cast_suggest(args) -> int:
@@ -1999,7 +2027,12 @@ def cmd_batch(args) -> int:
         print(f"  {idx:<4} {status:<10} {dur:<10} {name:<28} {out}")
     print(f"{'='*72}")
 
-    return 0 if failed == 0 else 1
+    if failed == 0:
+        return 0
+    elif success > 0:
+        return 3  # partial success
+    else:
+        return 1
 
 
 def cmd_preview(args) -> int:
@@ -2080,9 +2113,10 @@ def cmd_preview(args) -> int:
 
     except Exception as e:
         print(f"Error: {e}")
-        import traceback
-        traceback.print_exc()
-        return 1
+        if getattr(args, "debug", False):
+            import traceback
+            traceback.print_exc()
+        return 2
 
 
 def main(argv: Optional[list[str]] = None) -> int:
@@ -2093,6 +2127,20 @@ def main(argv: Optional[list[str]] = None) -> int:
     if args.command is None:
         parser.print_help()
         return 0
+
+    # --- Configure logging levels (silent < normal < verbose < debug) ---
+    import logging as _logging
+
+    if getattr(args, "silent", False):
+        _logging.basicConfig(level=_logging.CRITICAL)
+    elif getattr(args, "debug", False):
+        _logging.basicConfig(level=_logging.DEBUG, format="%(name)s %(levelname)s: %(message)s")
+    else:
+        _logging.basicConfig(level=_logging.WARNING)
+
+    # Redact secrets in all log output
+    for handler in _logging.root.handlers:
+        handler.addFilter(_SecretRedactFilter())
 
     commands = {
         "new": cmd_new,
@@ -2121,7 +2169,18 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     handler = commands.get(args.command)
     if handler:
-        return handler(args)
+        try:
+            return handler(args)
+        except KeyboardInterrupt:
+            print("\nInterrupted.")
+            return 1
+        except Exception as e:
+            # Unexpected runtime error — exit code 2
+            print(f"Error: {e}")
+            if getattr(args, "debug", False):
+                import traceback
+                traceback.print_exc()
+            return 2
     else:
         print(f"Unknown command: {args.command}")
         return 1

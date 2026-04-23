@@ -23,9 +23,9 @@
 
 ## B. Error Handling
 
-- [x] `[all]` Errors follow the Structured Error Shape: `code`, `message`, `hint`, `cause?`, `retryable?` (2026-02-27) — RenderError, RenderFailureReport with structured output
-- [x] `[cli]` Exit codes: 0 ok · 1 user error · 2 runtime error · 3 partial success (2026-02-27)
-- [x] `[cli]` No raw stack traces without `--debug` (2026-02-27) — user-friendly error messages with hints
+- [x] `[all]` Errors follow the Structured Error Shape: `code`, `message`, `hint`, `cause?`, `retryable?` (2026-04-23) — RenderError, VoiceNotFoundError, AudiobookerError base with .structured()
+- [x] `[cli]` Exit codes: 0 ok · 1 user error · 2 runtime error · 3 partial success (2026-04-23) — batch returns 3 on partial success
+- [x] `[cli]` No raw stack traces without `--debug` (2026-04-23) — all tracebacks gated behind --debug flag
 - [ ] `[mcp]` SKIP: not an MCP server
 - [ ] `[mcp]` SKIP: not an MCP server
 - [ ] `[desktop]` SKIP: not a desktop application
@@ -37,16 +37,16 @@
 - [x] `[all]` CHANGELOG.md (Keep a Changelog format) (2026-02-27)
 - [x] `[all]` LICENSE file present and repo states support status (2026-02-27)
 - [x] `[cli]` `--help` output accurate for all commands and flags (2026-02-27) — verified in CI
-- [x] `[cli|mcp|desktop]` Logging levels defined: silent / normal / verbose / debug — secrets redacted at all levels (2026-02-27)
+- [x] `[cli|mcp|desktop]` Logging levels defined: silent / normal / verbose / debug — secrets redacted at all levels (2026-04-23) — --silent/--debug global flags, _SecretRedactFilter on all handlers
 - [ ] `[mcp]` SKIP: not an MCP server
 - [ ] `[complex]` SKIP: CLI tool with comprehensive README — not complex enough for HANDBOOK
 
 ## D. Shipping Hygiene
 
 - [x] `[all]` `verify` script exists (test + build + smoke in one command) (2026-02-27) — Makefile verify target
-- [x] `[all]` Version in manifest matches git tag (2026-02-27)
+- [x] `[all]` Version in manifest matches git tag (2026-04-23) — v2.0.0 tag pending
 - [x] `[all]` Dependency scanning runs in CI (ecosystem-appropriate) (2026-02-27) — dep-audit job
-- [x] `[all]` Automated dependency update mechanism exists (2026-02-27)
+- [x] `[all]` Automated dependency update mechanism exists (2026-04-23) — .github/dependabot.yml (pip + github-actions)
 - [ ] `[npm]` SKIP: not an npm package
 - [x] `[npm]` `engines.node` set · `[pypi]` `python_requires` set (2026-02-27) — >=3.10
 - [x] `[npm]` Lockfile committed · `[pypi]` Clean wheel + sdist build (2026-02-27) — setuptools build

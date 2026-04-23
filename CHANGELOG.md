@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.1] - 2026-04-23
+
+### Fixed
+
+- **Structured error shape**: `RenderError`, `VoiceNotFoundError` now carry `code`/`message`/`hint`/`cause`/`retryable` fields with `.structured()` method. New `AudiobookerError` base class in `audiobooker.errors`.
+- **Exit codes**: CLI now uses exit code 2 for runtime errors and 3 for partial success (batch). Previously only 0 and 1.
+- **Stack trace gating**: All `traceback.print_exc()` calls gated behind `--debug` flag. No raw stacks in normal mode.
+- **Logging levels**: Global `--silent` and `--debug` flags configure logging (silent=CRITICAL, debug=DEBUG, default=WARNING). Secret-pattern redaction filter on all log handlers.
+- **Dependency updates**: Added `.github/dependabot.yml` for automated pip + GitHub Actions updates.
+
 ## [2.0.0] - 2026-03-30
 
 ### Added

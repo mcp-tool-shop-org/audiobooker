@@ -23,12 +23,27 @@ class VoiceNotFoundError(Exception):
         self.missing = missing
         self.available_count = available_count
         names = ", ".join(missing)
-        super().__init__(
+        msg = (
             f"Voice IDs not found: {names}\n"
             f"  {available_count} voices available. "
             f"Run 'audiobooker voices' to list them.\n"
             f"  To skip validation, set validate_voices_on_render=false in project config."
         )
+        super().__init__(msg)
+        # Structured error shape (code/message/hint/cause/retryable)
+        self.code = "INPUT_VOICE_NOT_FOUND"
+        self.hint = "Run 'audiobooker voices' to list available IDs, or set validate_voices_on_render=false."
+        self.cause = None
+        self.retryable = False
+
+    def structured(self) -> dict:
+        """Return the canonical error shape as a dict."""
+        return {
+            "code": self.code,
+            "message": str(self),
+            "hint": self.hint,
+            "retryable": self.retryable,
+        }
 
 
 def get_available_voices() -> set[str]:
