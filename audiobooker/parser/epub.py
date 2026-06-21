@@ -254,12 +254,178 @@ def extract_title_from_html(html_content: str) -> Optional[str]:
     return None
 
 
+def _flatten_toc(toc) -> list[tuple[str, str]]:
+    """Flatten a (possibly nested) ebooklib TOC into ordered (title, href) pairs.
+
+    ebooklib's ``book.toc`` is a list whose entries are either ``epub.Link``
+    objects or ``(epub.Section, [children])`` tuples. Sections are containers;
+    we descend into their children and only emit leaf links that point at a
+    document href. Order is preserved (depth-first, document order).
+    """
+    flat: list[tuple[str, str]] = []
+
+    def _walk(entries) -> None:
+        for entry in entries:
+            # (Section, children) tuple — descend into children.
+            if isinstance(entry, tuple):
+                section, children = entry[0], entry[1] if len(entry) > 1 else []
+                # A Section may itself carry an href (rare); emit it if present.
+                href = getattr(section, "href", None)
+                title = getattr(section, "title", None)
+                if href:
+                    flat.append(((title or "").strip(), href))
+                if children:
+                    _walk(children)
+            else:
+                href = getattr(entry, "href", None)
+                title = getattr(entry, "title", None)
+                if href:
+                    flat.append(((title or "").strip(), href))
+
+    try:
+        _walk(toc or [])
+    except Exception as e:  # defensive: malformed TOC must not crash parsing
+        logger.debug("TOC flattening failed: %s", e)
+        return []
+    return flat
+
+
+def _split_href(href: str) -> tuple[str, Optional[str]]:
+    """Split an EPUB href into (document path, anchor) — anchor is None if absent."""
+    if "#" in href:
+        doc, anchor = href.split("#", 1)
+        return doc, (anchor or None)
+    return href, None
+
+
+# Match an element bearing id="X" or name="X" (anchor targets) in raw HTML.
+def _anchor_pos(html_content: str, anchor: str) -> Optional[int]:
+    """Return the character offset of an anchor's element in HTML, or None."""
+    # id="anchor" or name="anchor" (single or double quoted)
+    pat = re.compile(
+        r"""<[^>]*\b(?:id|name)\s*=\s*['"]""" + re.escape(anchor) + r"""['"]""",
+        re.IGNORECASE,
+    )
+    m = pat.search(html_content)
+    return m.start() if m else None
+
+
+def _chapters_from_toc(
+    toc_entries: list[tuple[str, str]],
+    *,
+    min_chapter_words: int,
+    keep_titled_short_chapters: bool,
+    docs_by_name: dict,
+) -> Optional[list[Chapter]]:
+    """Build chapters from flattened TOC entries (FT-PARSE-003).
+
+    For each TOC entry, resolve its document + optional anchor, slice the
+    document's HTML between consecutive anchors that target the same document,
+    convert each slice to text, and use the TOC title. Returns None if the TOC
+    does not resolve to at least two usable chapters (caller falls back to
+    spine splitting).
+    """
+    # Resolve each entry to (title, doc_name, anchor). Drop entries whose
+    # document isn't a known document item.
+    resolved: list[tuple[str, str, Optional[str]]] = []
+    for title, href in toc_entries:
+        doc_name, anchor = _split_href(href)
+        # Normalize: hrefs may be relative with directories; match by suffix.
+        item = docs_by_name.get(doc_name)
+        if item is None:
+            # Try matching on the basename / any doc whose name ends with href.
+            for name, it in docs_by_name.items():
+                if name.endswith(doc_name) or doc_name.endswith(name):
+                    item = it
+                    doc_name = name
+                    break
+        if item is None:
+            continue
+        resolved.append((title, doc_name, anchor))
+
+    if len(resolved) < 2:
+        return None
+
+    chapters: list[Chapter] = []
+    chapter_index = 0
+
+    # Group consecutive entries by document so we can slice multi-anchor docs.
+    i = 0
+    n = len(resolved)
+    while i < n:
+        title, doc_name, anchor = resolved[i]
+        item = docs_by_name[doc_name]
+        content = item.get_content()
+        if isinstance(content, bytes):
+            content = _decode_item_content(content, doc_name)
+
+        # Collect all consecutive entries that point at THIS same document.
+        same_doc: list[tuple[str, Optional[str]]] = [(title, anchor)]
+        j = i + 1
+        while j < n and resolved[j][1] == doc_name:
+            same_doc.append((resolved[j][0], resolved[j][2]))
+            j += 1
+
+        # Compute slice boundaries within the HTML for each entry.
+        # An entry with an anchor starts at that anchor's position; the first
+        # entry (no anchor or anchor missing) starts at 0. Each slice ends where
+        # the next same-doc anchor begins, or at end of document.
+        positions: list[int] = []
+        for k, (_t, a) in enumerate(same_doc):
+            pos = 0
+            if a:
+                found = _anchor_pos(content, a)
+                if found is not None:
+                    pos = found
+                elif k > 0:
+                    # Anchor not found mid-document — abandon TOC slicing for
+                    # safety; fall back to spine (return None).
+                    return None
+            positions.append(pos)
+
+        for k, (entry_title, _a) in enumerate(same_doc):
+            start = positions[k]
+            end = positions[k + 1] if k + 1 < len(positions) else len(content)
+            slice_html = content[start:end]
+            text = html_to_text(slice_html)
+            word_count = len(text.split())
+
+            if word_count < min_chapter_words:
+                if entry_title and keep_titled_short_chapters:
+                    logger.info(
+                        "Keeping short titled TOC section: %r (%d words < %d)",
+                        entry_title, word_count, min_chapter_words,
+                    )
+                else:
+                    logger.info(
+                        "Skipping short TOC section: %r (%d words < %d)",
+                        entry_title or doc_name, word_count, min_chapter_words,
+                    )
+                    continue
+
+            chap_title = entry_title or f"Chapter {chapter_index + 1}"
+            chapters.append(Chapter(
+                index=chapter_index,
+                title=chap_title,
+                raw_text=text,
+                source_file=doc_name,
+            ))
+            chapter_index += 1
+
+        i = j
+
+    if len(chapters) < 2:
+        return None
+    return chapters
+
+
 def parse_epub(
     path: Path,
     min_chapter_words: int = 50,
     keep_titled_short_chapters: bool = True,
     *,
     profile: Optional[LanguageProfile] = None,
+    use_toc: str = "auto",
 ) -> tuple[dict, list[Chapter]]:
     """
     Parse an EPUB file into chapters.
@@ -271,6 +437,16 @@ def parse_epub(
         profile: Language profile (used for the parse summary; EPUB chapter
             boundaries come from the book's own spine/document structure rather
             than heading-pattern detection, so this does not change splitting).
+        use_toc: How to use the EPUB's table of contents for chapter
+            boundaries (FT-PARSE-003). One of:
+            - ``"auto"`` (default): use the TOC when it yields at least two
+              usable chapters; otherwise fall back to spine/document splitting.
+            - ``"on"``: same as auto — prefer the TOC, fall back to spine if it
+              is unusable.
+            - ``"off"``: ignore the TOC and always split on spine documents
+              (the historical behavior).
+            The spine fallback is byte-for-byte identical to the pre-FT-PARSE-003
+            behavior, so the no-usable-TOC case is unchanged.
 
     Returns:
         Tuple of (metadata dict, list of Chapters)
@@ -286,6 +462,12 @@ def parse_epub(
         raise ImportError(
             "ebooklib is required for EPUB parsing. "
             "Install with: pip install ebooklib"
+        )
+
+    _VALID_USE_TOC = ("auto", "on", "off")
+    if use_toc not in _VALID_USE_TOC:
+        raise ValueError(
+            f"Invalid use_toc: {use_toc!r}. Must be one of: {', '.join(_VALID_USE_TOC)}"
         )
 
     path = Path(path)
@@ -392,11 +574,47 @@ def parse_epub(
         except OSError as e:
             logger.warning("Could not save cover art: %s", e)
 
-    # Extract chapters from spine (reading order)
-    chapters = []
+    # FT-PARSE-003: TOC-driven splitting. When use_toc is 'auto'/'on' and the
+    # book's TOC resolves to >= 2 usable chapters, build chapters from the TOC
+    # (titles + anchor-sliced text). Otherwise fall back to the spine/document
+    # splitting below, which is byte-for-byte identical to the historical
+    # behavior. 'off' skips the TOC entirely.
+    chapters: list[Chapter] = []
     chapter_index = 0
+    split_pattern = "spine/structure"
 
-    for item in book.get_items_of_type(ebooklib.ITEM_DOCUMENT):
+    if use_toc in ("auto", "on"):
+        toc_entries = _flatten_toc(getattr(book, "toc", None))
+        if len(toc_entries) >= 2:
+            docs_by_name = {
+                it.get_name(): it
+                for it in book.get_items_of_type(ebooklib.ITEM_DOCUMENT)
+            }
+            toc_chapters = _chapters_from_toc(
+                toc_entries,
+                min_chapter_words=min_chapter_words,
+                keep_titled_short_chapters=keep_titled_short_chapters,
+                docs_by_name=docs_by_name,
+            )
+            if toc_chapters:
+                chapters = toc_chapters
+                split_pattern = "toc"
+                logger.info(
+                    "Using EPUB table of contents for chapter boundaries "
+                    "(%d entries -> %d chapters).",
+                    len(toc_entries), len(chapters),
+                )
+            else:
+                logger.info(
+                    "EPUB table of contents was not usable for splitting "
+                    "(too few resolvable entries) — falling back to spine/document "
+                    "structure.",
+                )
+
+    # Extract chapters from spine (reading order) — runs when TOC splitting was
+    # off, absent, or unusable. This block is byte-for-byte identical to the
+    # pre-FT-PARSE-003 behavior.
+    for item in book.get_items_of_type(ebooklib.ITEM_DOCUMENT) if not chapters else ():
         # Get HTML content
         content = item.get_content()
         if isinstance(content, bytes):
@@ -500,12 +718,14 @@ def parse_epub(
             path.name,
         )
 
-    # Parse-observability summary (PARSER-C). EPUB splits on document structure,
-    # so there is no heading 'pattern' to report.
+    # Parse-observability summary (PARSER-C). EPUB splits on either the table of
+    # contents (pattern=toc) or document/spine structure (pattern=spine/structure),
+    # so the reported pattern reflects which path produced the chapters
+    # (FT-PARSE-003).
     profile_code = profile.code if profile is not None else "en"
     logger.info(
-        "Parsed EPUB '%s': %d chapter(s), profile=%s, pattern=spine/structure",
-        path.name, len(chapters), profile_code,
+        "Parsed EPUB '%s': %d chapter(s), profile=%s, pattern=%s",
+        path.name, len(chapters), profile_code, split_pattern,
     )
 
     return metadata, chapters

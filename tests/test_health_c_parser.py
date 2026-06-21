@@ -215,8 +215,10 @@ class TestScannedPdfSoftenOverride:
         # Softened: heuristic wording, not a flat "appears to be a scanned PDF".
         assert "usually a scanned" in msg.lower()
         assert "words total" in msg.lower()
-        # The override is documented in the error itself.
-        assert "force_text" in msg
+        # The override is documented in the error itself. The message now points
+        # at the --force-text CLI flag (added by integration) rather than the
+        # Python-API phrasing.
+        assert "--force-text" in msg
 
     def test_force_text_overrides_scanned_rejection(self, tmp_path, monkeypatch, caplog):
         # One sparse page with just enough words to form a chapter.

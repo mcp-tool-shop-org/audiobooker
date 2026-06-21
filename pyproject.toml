@@ -20,6 +20,7 @@ keywords = [
     "narration",
     "epub",
     "pdf",
+    "docx",
     "multi-voice",
     "dialogue-detection",
     "ssml",
@@ -51,6 +52,9 @@ nlp = [
 ]
 pdf = [
     "pymupdf>=1.23",
+]
+docx = [
+    "python-docx>=1.1",
 ]
 rich = [
     "rich>=13.0",

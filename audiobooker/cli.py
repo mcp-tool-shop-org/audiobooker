@@ -3,8 +3,12 @@ Command-Line Interface for Audiobooker.
 
 Usage:
     audiobooker new book.epub              # Create project from EPUB
+    audiobooker new book.docx              # Create project from Word (.docx)
     audiobooker new book.pdf               # Create project from PDF
     audiobooker new book.txt               # Create project from text
+    audiobooker new chapters/              # Create project from a folder of chapter files
+    audiobooker new book.pdf --force-text  # Force text extraction (scanned PDFs)
+    audiobooker new book.txt --chapter-delimiter "^Scene [0-9]+"  # Custom chapter split
     audiobooker cast narrator af_bella     # Assign voice to character
     audiobooker cast-export cast.json      # Export casting table
     audiobooker cast-import cast.json      # Import casting table
@@ -30,6 +34,8 @@ Usage:
     audiobooker pronunciation add word rep # Add pronunciation override
     audiobooker pronunciation remove word  # Remove pronunciation override
     audiobooker pronunciation list         # List all overrides
+    audiobooker pronunciation import lex.csv  # Import a pronunciation lexicon
+    audiobooker pronunciation export lex.csv  # Export overrides to a lexicon file
     audiobooker status                     # Show render/cache status
     audiobooker cache info                 # Show cache statistics
     audiobooker cache clean                # Delete all cached audio
@@ -171,7 +177,9 @@ def create_parser() -> argparse.ArgumentParser:
     new_parser = subparsers.add_parser(
         "new", help="Create new project from source file"
     )
-    new_parser.add_argument("source", help="Source file (EPUB, TXT, MD, PDF)")
+    new_parser.add_argument(
+        "source", help="Source file (EPUB, DOCX, TXT, MD, PDF) or a folder of chapter files"
+    )
     new_parser.add_argument("-o", "--output", help="Output project file path")
     new_parser.add_argument(
         "--lang", default="en", metavar="CODE", help="Language code (default: en)"
@@ -181,6 +189,20 @@ def create_parser() -> argparse.ArgumentParser:
         default="auto",
         choices=["on", "off", "auto"],
         help="BookNLP speaker resolution (default: auto)",
+    )
+    # INPUT (v2.1): custom chapter-split regex for TXT/MD sources.
+    new_parser.add_argument(
+        "--chapter-delimiter",
+        metavar="REGEX",
+        dest="chapter_delimiter",
+        help="Custom regex to split chapters (TXT/MD sources)",
+    )
+    # INPUT (v2.1): force plain-text extraction for image-only/scanned PDFs.
+    new_parser.add_argument(
+        "--force-text",
+        action="store_true",
+        dest="force_text",
+        help="Force text extraction for PDFs that look scanned/image-only",
     )
 
     # --- load ---
@@ -382,6 +404,13 @@ def create_parser() -> argparse.ArgumentParser:
     stdin_parser.add_argument(
         "--lang", default="en", metavar="CODE", help="Language code (default: en)"
     )
+    # INPUT (v2.1): custom chapter-split regex for piped text.
+    stdin_parser.add_argument(
+        "--chapter-delimiter",
+        metavar="REGEX",
+        dest="chapter_delimiter",
+        help="Custom regex to split chapters",
+    )
     stdin_parser.add_argument("-o", "--output", help="Output project file path")
 
     # --- review-export ---
@@ -448,7 +477,7 @@ def create_parser() -> argparse.ArgumentParser:
     # --- FT-RENDER-012: batch ---
     batch_parser = subparsers.add_parser(
         "batch",
-        help="Batch process multiple source files (EPUB/TXT/PDF)",
+        help="Batch process multiple source files (EPUB/DOCX/TXT/PDF or chapter folders)",
     )
     batch_parser.add_argument(
         "files",
@@ -683,6 +712,19 @@ def create_parser() -> argparse.ArgumentParser:
     )
     pron_list_parser.add_argument("-p", "--project", help="Project file")
 
+    # INPUT (v2.1): import/export a pronunciation lexicon (CSV or JSON).
+    pron_import_parser = pronunciation_sub.add_parser(
+        "import", help="Import a pronunciation lexicon (CSV or JSON)"
+    )
+    pron_import_parser.add_argument("file", help="Lexicon file to import (.csv or .json)")
+    pron_import_parser.add_argument("-p", "--project", help="Project file")
+
+    pron_export_parser = pronunciation_sub.add_parser(
+        "export", help="Export pronunciation overrides to a lexicon file"
+    )
+    pron_export_parser.add_argument("file", help="Output lexicon file (.csv or .json)")
+    pron_export_parser.add_argument("-p", "--project", help="Project file")
+
     return parser
 
 
@@ -731,6 +773,7 @@ def cmd_new(args) -> int:
         return 1
 
     suffix = source.suffix.lower()
+    is_dir = source.is_dir()
 
     _out(f"Creating project from: {source}")
 
@@ -749,19 +792,38 @@ def cmd_new(args) -> int:
         booknlp_mode = getattr(args, "booknlp", "auto")
         config = ProjectConfig(language_code=lang, booknlp_mode=booknlp_mode)
 
-        if suffix == ".epub":
+        # INPUT (v2.1): custom chapter delimiter (TXT/MD/stdin) + force-text (PDF).
+        chapter_delimiter = getattr(args, "chapter_delimiter", None)
+        force_text = getattr(args, "force_text", False)
+
+        if is_dir:
+            # INPUT (v2.1): a folder of per-chapter text files.
+            project = AudiobookProject.from_folder(source, config=config)
+        elif suffix == ".epub":
             project = AudiobookProject.from_epub(source, config=config)
+        elif suffix == ".docx":
+            project = AudiobookProject.from_docx(source, config=config)
         elif suffix == ".pdf":
-            project = AudiobookProject.from_pdf(source, config=config)
+            project = AudiobookProject.from_pdf(
+                source, config=config, force_text=force_text
+            )
         elif suffix in (".txt", ".md", ".markdown"):
-            project = AudiobookProject.from_text(source, config=config)
+            project = AudiobookProject.from_text(
+                source, config=config, chapter_delimiter=chapter_delimiter
+            )
         else:
             print(f"Error: Unsupported file format: {suffix}")
-            print("Supported: .epub, .txt, .md, .pdf")
+            print("Supported: .epub, .docx, .txt, .md, .pdf, or a folder of chapter files")
             return 1
 
-        # Save project
-        output_path = args.output or source.with_suffix(".audiobooker")
+        # Save project. For a folder source there is no source file to derive
+        # the project path from, so default to <folder-name>.audiobooker.
+        if args.output:
+            output_path = args.output
+        elif is_dir:
+            output_path = source.parent / f"{source.name}.audiobooker"
+        else:
+            output_path = source.with_suffix(".audiobooker")
         project.save(output_path)
 
         _out(f"\nProject created: {output_path}")
@@ -1869,7 +1931,7 @@ def cmd_pronunciation(args) -> int:
 
     pronunciation_command = getattr(args, "pronunciation_command", None)
     if pronunciation_command is None:
-        print("Usage: audiobooker pronunciation {add|remove|list}")
+        print("Usage: audiobooker pronunciation {add|remove|list|import|export}")
         return 1
 
     try:
@@ -1904,12 +1966,39 @@ def cmd_pronunciation(args) -> int:
 
         elif pronunciation_command == "list":
             overrides = project.config.pronunciation_overrides
-            if not overrides:
+            phonemes = getattr(project.config, "phoneme_overrides", {}) or {}
+            if not overrides and not phonemes:
                 _out("No pronunciation overrides configured.")
                 return 0
-            _out(f"Pronunciation overrides ({len(overrides)}):\n")
-            for word, replacement in sorted(overrides.items()):
-                _out(f"  '{word}' -> '{replacement}'")
+            if overrides:
+                _out(f"Pronunciation overrides ({len(overrides)}):\n")
+                for word, replacement in sorted(overrides.items()):
+                    _out(f"  '{word}' -> '{replacement}'")
+            if phonemes:
+                _out(f"\nPhoneme overrides ({len(phonemes)}):\n")
+                for word, replacement in sorted(phonemes.items()):
+                    _out(f"  '{word}' -> '{replacement}' [phoneme]")
+            return 0
+
+        elif pronunciation_command == "import":
+            # INPUT (v2.1): merge a lexicon file (CSV/JSON) into the project.
+            lexicon_path = Path(args.file)
+            project.import_lexicon(lexicon_path)
+            project.save()
+            spelling = len(project.config.pronunciation_overrides)
+            phoneme = len(getattr(project.config, "phoneme_overrides", {}) or {})
+            _out(f"Imported lexicon from {lexicon_path}")
+            _out(f"  Total overrides: {spelling} spelling, {phoneme} phoneme")
+            return 0
+
+        elif pronunciation_command == "export":
+            # INPUT (v2.1): write current overrides to a lexicon file (CSV/JSON).
+            lexicon_path = Path(args.file)
+            project.export_lexicon(lexicon_path)
+            project.save()
+            spelling = len(project.config.pronunciation_overrides)
+            phoneme = len(getattr(project.config, "phoneme_overrides", {}) or {})
+            _out(f"Exported {spelling + phoneme} override(s) to {lexicon_path}")
             return 0
 
     except USER_ERROR_TYPES as e:
@@ -1939,6 +2028,7 @@ def cmd_from_stdin(args) -> int:
             title=args.title,
             author=args.author,
             lang=args.lang,
+            chapter_delimiter=getattr(args, "chapter_delimiter", None),
         )
 
         # Route the title through the filename sanitizer so titles with
@@ -2286,6 +2376,29 @@ def cmd_diagnose(args: argparse.Namespace) -> int:
             }
         )
 
+    # Optional: python-docx (DOCX sources)
+    try:
+        import docx  # noqa: F401  (python-docx)
+
+        checks.append(
+            {
+                "check": "dep.python-docx",
+                "status": "ok",
+                "value": "installed",
+                "hint": None,
+            }
+        )
+    except ImportError:
+        checks.append(
+            {
+                "check": "dep.python-docx",
+                "status": "info",
+                "value": "not installed",
+                "hint": "pip install python-docx — required for DOCX sources "
+                        "(or: pip install 'audiobooker-ai[docx]')",
+            }
+        )
+
     # Optional: voice-soundboard
     # Narrowed: a missing package is "info"/not installed, but an unexpected
     # error (broken install, model load failure) should report the ACTUAL
@@ -2413,13 +2526,19 @@ def cmd_batch(args) -> int:
         print("No source files found.")
         return 1
 
-    # Deduplicate and filter to supported extensions
-    supported = {".epub", ".txt", ".md", ".markdown", ".pdf"}
+    # Deduplicate and filter to supported extensions. INPUT (v2.1): .docx is
+    # supported, and a directory entry is treated as a single book (a folder of
+    # per-chapter text files), so directories pass the filter regardless of
+    # suffix.
+    supported = {".epub", ".docx", ".txt", ".md", ".markdown", ".pdf"}
     source_files = list(dict.fromkeys(source_files))  # deduplicate preserving order
-    source_files = [f for f in source_files if f.suffix.lower() in supported and f.exists()]
+    source_files = [
+        f for f in source_files
+        if f.exists() and (f.is_dir() or f.suffix.lower() in supported)
+    ]
 
     if not source_files:
-        print("No supported source files found (EPUB/TXT/MD/PDF).")
+        print("No supported source files found (EPUB/DOCX/TXT/MD/PDF or a chapter folder).")
         return 1
 
     json_output = getattr(args, "json_output", False)
@@ -2461,8 +2580,13 @@ def cmd_batch(args) -> int:
             config = ProjectConfig(language_code=lang)
 
             suffix = source.suffix.lower()
-            if suffix == ".epub":
+            if source.is_dir():
+                # INPUT (v2.1): a folder of per-chapter text files = one book.
+                project = AudiobookProject.from_folder(source, config=config)
+            elif suffix == ".epub":
                 project = AudiobookProject.from_epub(source, config=config)
+            elif suffix == ".docx":
+                project = AudiobookProject.from_docx(source, config=config)
             elif suffix == ".pdf":
                 project = AudiobookProject.from_pdf(source, config=config)
             elif suffix in (".txt", ".md", ".markdown"):
@@ -2494,8 +2618,12 @@ def cmd_batch(args) -> int:
                 except Exception as cast_err:
                     _out(f"  Warning: Auto-cast failed ({cast_err}), using fallback voices")
 
-            # Step 4: Save project
-            project_path = source.with_suffix(".audiobooker")
+            # Step 4: Save project. A directory source has no file suffix to
+            # swap, so place the project file alongside the folder.
+            if source.is_dir():
+                project_path = source.parent / f"{source.name}.audiobooker"
+            else:
+                project_path = source.with_suffix(".audiobooker")
             project.save(project_path)
 
             # Step 5: Render

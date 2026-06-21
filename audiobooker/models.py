@@ -522,6 +522,12 @@ class ProjectConfig:
             None uses the assembler default (128k, or 192k under the acx profile).
         mp3_bitrate: Override MP3/Opus bitrate (e.g. "192k"). None uses the
             assembler default.
+        use_toc: EPUB table-of-contents driven chapter splitting:
+            "auto" (default, use TOC when usable else spine-split), "on", or
+            "off" (always spine-split, legacy behavior).
+        phoneme_overrides: Phoneme-typed pronunciation entries, kept distinct
+            from plain spelling replacements (pronunciation_overrides). Filled
+            by import_lexicon from lexicon entries marked type=phoneme.
     """
     chapter_pause_ms: int = 2000
     narrator_pause_ms: int = 600
@@ -548,12 +554,23 @@ class ProjectConfig:
     output_profile: str = "podcast"
     aac_bitrate: Optional[str] = None
     mp3_bitrate: Optional[str] = None
+    # INPUT (v2.1): EPUB table-of-contents driven chapter splitting.
+    #   "auto" — use the EPUB's TOC when a usable one exists, otherwise fall
+    #            back to the current spine-splitting behavior (default).
+    #   "on"   — require/prefer TOC-based splitting.
+    #   "off"  — always use spine-splitting (legacy behavior).
+    use_toc: str = "auto"
+    # INPUT (v2.1): phoneme-typed pronunciation entries kept distinct from
+    #   plain spelling replacements (config.pronunciation_overrides). Populated
+    #   by import_lexicon from entries whose type column is "phoneme".
+    phoneme_overrides: dict[str, str] = field(default_factory=dict)
 
     _VALID_OUTPUT_FORMATS = ("m4b", "mp3", "wav", "ogg", "flac")
     _VALID_BOOKNLP_MODES = ("on", "off", "auto")
     _VALID_EMOTION_MODES = ("off", "rule", "auto")
     _VALID_FOOTNOTE_BEHAVIORS = ("inline", "end", "skip")
     _VALID_OUTPUT_PROFILES = ("podcast", "acx")
+    _VALID_USE_TOC = ("auto", "on", "off")
 
     def __post_init__(self):
         """F-CORE-B-015: Validate enum-like string fields."""
@@ -587,6 +604,11 @@ class ProjectConfig:
                 f"Invalid output_profile: {self.output_profile!r}. "
                 f"Must be one of: {', '.join(self._VALID_OUTPUT_PROFILES)}"
             )
+        if self.use_toc not in self._VALID_USE_TOC:
+            raise ValueError(
+                f"Invalid use_toc: {self.use_toc!r}. "
+                f"Must be one of: {', '.join(self._VALID_USE_TOC)}"
+            )
 
     def to_dict(self) -> dict:
         """Serialize to dictionary."""
@@ -616,6 +638,8 @@ class ProjectConfig:
             "output_profile": self.output_profile,
             "aac_bitrate": self.aac_bitrate,
             "mp3_bitrate": self.mp3_bitrate,
+            "use_toc": self.use_toc,
+            "phoneme_overrides": self.phoneme_overrides,
         }
 
     @classmethod
@@ -647,6 +671,8 @@ class ProjectConfig:
             output_profile=data.get("output_profile", "podcast"),
             aac_bitrate=data.get("aac_bitrate"),
             mp3_bitrate=data.get("mp3_bitrate"),
+            use_toc=data.get("use_toc", "auto"),
+            phoneme_overrides=data.get("phoneme_overrides", {}),
         )
 
 

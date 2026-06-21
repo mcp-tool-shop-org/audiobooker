@@ -199,19 +199,32 @@ class AudiobookProject:
         # tokenization/heading rules apply. parse_epub accepts profile= once
         # the parser exposes it; fall back gracefully if it doesn't yet.
         profile = get_profile(config.language_code)
+        # INPUT (v2.1): thread config.use_toc so the parser can split on the
+        # EPUB's table of contents when available. parse_epub gains use_toc=
+        # in the parser module; call defensively so an older parser signature
+        # (no use_toc / no profile) still works and preserves spine-splitting.
         try:
             metadata, chapters = parse_epub(
                 path,
                 min_chapter_words=config.min_chapter_words,
                 keep_titled_short_chapters=config.keep_titled_short_chapters,
                 profile=profile,
+                use_toc=config.use_toc,
             )
         except TypeError:
-            metadata, chapters = parse_epub(
-                path,
-                min_chapter_words=config.min_chapter_words,
-                keep_titled_short_chapters=config.keep_titled_short_chapters,
-            )
+            try:
+                metadata, chapters = parse_epub(
+                    path,
+                    min_chapter_words=config.min_chapter_words,
+                    keep_titled_short_chapters=config.keep_titled_short_chapters,
+                    profile=profile,
+                )
+            except TypeError:
+                metadata, chapters = parse_epub(
+                    path,
+                    min_chapter_words=config.min_chapter_words,
+                    keep_titled_short_chapters=config.keep_titled_short_chapters,
+                )
 
         # Reconcile the EPUB's declared language. If the EPUB declares a
         # language and the caller did NOT explicitly request one (config still
@@ -293,31 +306,185 @@ class AudiobookProject:
         if not path.exists():
             raise FileNotFoundError(f"PDF not found: {path}")
 
+        # INPUT (v2.1): force plain text extraction even when the PDF looks
+        # scanned/image-only (skips the OCR-rejection guard). Pop before kwargs
+        # validation since it is a parse option, not an AudiobookProject field.
+        force_text = kwargs.pop("force_text", False)
+
         # F-CORE-B-020: Validate kwargs
         cls._validate_kwargs({k: v for k, v in kwargs.items() if k != "config"})
 
         config = kwargs.pop("config", ProjectConfig())
 
         # Thread the language profile into the parser. parse_pdf accepts
-        # profile= once the parser exposes it; fall back if it doesn't yet.
+        # profile= and force_text=; fall back if an older parser lacks them.
         profile = get_profile(config.language_code)
         try:
             metadata, chapters = parse_pdf(
                 path,
                 min_chapter_words=config.min_chapter_words,
                 profile=profile,
+                force_text=force_text,
             )
         except TypeError:
-            metadata, chapters = parse_pdf(
-                path,
-                min_chapter_words=config.min_chapter_words,
-            )
+            try:
+                metadata, chapters = parse_pdf(
+                    path,
+                    min_chapter_words=config.min_chapter_words,
+                    force_text=force_text,
+                )
+            except TypeError:
+                metadata, chapters = parse_pdf(
+                    path,
+                    min_chapter_words=config.min_chapter_words,
+                )
 
         project = cls(
             title=metadata.get("title", path.stem),
             author=metadata.get("author", ""),
             source_path=path,
             chapters=chapters,
+            config=config,
+            **kwargs,
+        )
+
+        # Auto-add narrator to casting
+        project.cast("narrator", "af_heart", emotion="calm", description="Default narrator")
+
+        return project
+
+    @classmethod
+    def from_docx(cls, path: str | Path, **kwargs) -> "AudiobookProject":
+        """
+        Create project from a Word (.docx) file (INPUT v2.1).
+
+        Mirrors from_epub: parser.docx.parse_docx returns the same
+        (metadata dict, list[Chapter]) shape, so the metadata reconciliation
+        and BookMetadata population below are identical to the EPUB path.
+
+        Args:
+            path: Path to the .docx file.
+            **kwargs: Forwarded to AudiobookProject dataclass fields.
+                Accepted keys: title, author, config (ProjectConfig),
+                casting (CastingTable), and any other AudiobookProject field.
+
+        Returns:
+            Initialized AudiobookProject.
+
+        Raises:
+            ImportError: If python-docx is not installed.
+            FileNotFoundError: If the file doesn't exist.
+            ValueError: If the document is empty or unreadable.
+        """
+        from audiobooker.parser.docx import parse_docx
+        from audiobooker.language.profile import get_profile
+
+        path = Path(path)
+        if not path.exists():
+            raise FileNotFoundError(f"DOCX not found: {path}")
+
+        # F-CORE-B-020: Validate kwargs before using them
+        cls._validate_kwargs({k: v for k, v in kwargs.items() if k != "config"})
+
+        config = kwargs.pop("config", ProjectConfig())
+
+        # Thread the language profile into the parser. parse_docx accepts
+        # profile= per the contract; fall back gracefully if it doesn't yet.
+        profile = get_profile(config.language_code)
+        try:
+            metadata, chapters = parse_docx(
+                path,
+                min_chapter_words=config.min_chapter_words,
+                profile=profile,
+            )
+        except TypeError:
+            metadata, chapters = parse_docx(
+                path,
+                min_chapter_words=config.min_chapter_words,
+            )
+
+        # Build BookMetadata from the parsed metadata (mirror from_epub).
+        book_metadata = kwargs.pop("metadata", BookMetadata())
+        cover_path_str = metadata.get("cover_art_path")
+        if cover_path_str:
+            book_metadata.cover_art_path = Path(cover_path_str)
+        if metadata.get("publisher"):
+            book_metadata.publisher = metadata["publisher"]
+        if metadata.get("year"):
+            book_metadata.year = metadata["year"]
+
+        project = cls(
+            title=metadata.get("title", path.stem),
+            author=metadata.get("author", ""),
+            source_path=path,
+            chapters=chapters,
+            config=config,
+            metadata=book_metadata,
+            **kwargs,
+        )
+
+        # Auto-add narrator to casting
+        project.cast("narrator", "af_heart", emotion="calm", description="Default narrator")
+
+        return project
+
+    @classmethod
+    def from_folder(cls, directory: str | Path, **kwargs) -> "AudiobookProject":
+        """
+        Create project from a folder of per-chapter text files (INPUT v2.1).
+
+        Each .txt/.md file in the folder becomes one chapter, naturally sorted
+        by filename (so 01_, 1., and bare numeric prefixes order correctly).
+        parser.text.read_folder_chapters returns a list of (title, text) pairs,
+        which we build into a project via from_chapters semantics.
+
+        Args:
+            directory: Path to the folder of chapter files.
+            **kwargs: Forwarded to AudiobookProject dataclass fields.
+                Accepted keys: title, author, config (ProjectConfig),
+                casting (CastingTable), and any other AudiobookProject field.
+
+        Returns:
+            Initialized AudiobookProject.
+
+        Raises:
+            FileNotFoundError: If the directory doesn't exist.
+            ValueError: If the folder contains no usable chapter files.
+        """
+        from audiobooker.parser.text import read_folder_chapters
+        from audiobooker.language.profile import get_profile
+
+        directory = Path(directory)
+        if not directory.exists() or not directory.is_dir():
+            raise FileNotFoundError(f"Folder not found: {directory}")
+
+        # F-CORE-B-020: Validate kwargs before using them
+        cls._validate_kwargs({k: v for k, v in kwargs.items() if k != "config"})
+
+        config = kwargs.pop("config", ProjectConfig())
+        profile = get_profile(config.language_code)
+
+        try:
+            chapter_pairs = read_folder_chapters(directory, profile=profile)
+        except TypeError:
+            chapter_pairs = read_folder_chapters(directory)
+
+        if not chapter_pairs:
+            raise ValueError(
+                f"No chapter files (.txt/.md) found in folder: {directory}. "
+                "Add one text file per chapter, e.g. 01_intro.txt, 02_rising.txt."
+            )
+
+        chapter_objects = [
+            Chapter(index=i, title=ch_title, raw_text=content)
+            for i, (ch_title, content) in enumerate(chapter_pairs)
+        ]
+
+        project = cls(
+            title=kwargs.pop("title", directory.name),
+            author=kwargs.pop("author", ""),
+            source_path=directory,
+            chapters=chapter_objects,
             config=config,
             **kwargs,
         )
@@ -348,13 +515,20 @@ class AudiobookProject:
         if not path.exists():
             raise FileNotFoundError(f"Text file not found: {path}")
 
+        # INPUT (v2.1): optional custom chapter-delimiter regex from the CLI.
+        # Pop it before kwargs validation since it is a parse option, not an
+        # AudiobookProject field.
+        chapter_delimiter = kwargs.pop("chapter_delimiter", None)
+
         # F-CORE-B-020: Validate kwargs
         cls._validate_kwargs({k: v for k, v in kwargs.items() if k != "config"})
 
         config = kwargs.pop("config", ProjectConfig())
         profile = get_profile(config.language_code)
 
-        metadata, chapters = parse_text(path, profile=profile)
+        metadata, chapters = parse_text(
+            path, chapter_delimiter=chapter_delimiter, profile=profile
+        )
 
         project = cls(
             title=metadata.get("title", path.stem),
@@ -395,6 +569,10 @@ class AudiobookProject:
         from audiobooker.parser.text import split_into_chapters, extract_frontmatter
         from audiobooker.language.profile import get_profile
 
+        # INPUT (v2.1): optional custom chapter-delimiter regex. Pop before
+        # kwargs validation since it is a parse option, not a project field.
+        chapter_delimiter = kwargs.pop("chapter_delimiter", None)
+
         # F-CORE-B-020: Validate kwargs
         cls._validate_kwargs({k: v for k, v in kwargs.items() if k != "config"})
 
@@ -403,7 +581,9 @@ class AudiobookProject:
         profile = get_profile(lang)
 
         metadata, body = extract_frontmatter(text)
-        chapter_data = split_into_chapters(body, profile=profile)
+        chapter_data = split_into_chapters(
+            body, delimiter_pattern=chapter_delimiter, profile=profile
+        )
 
         chapters = [
             Chapter(index=i, title=ch_title, raw_text=content)
@@ -1012,6 +1192,103 @@ class AudiobookProject:
 
         self.modified_at = datetime.now().isoformat()
         logger.info("Imported %d characters from %s", imported, path)
+
+    # -------------------------------------------------------------------------
+    # Pronunciation Lexicon Import/Export (INPUT v2.1)
+    # -------------------------------------------------------------------------
+
+    def export_lexicon(self, path: Path) -> None:
+        """
+        Export pronunciation overrides to a lexicon file (INPUT v2.1).
+
+        Writes both plain spelling replacements (pronunciation_overrides) and
+        phoneme-typed entries (phoneme_overrides) through the parser's
+        save_lexicon, which picks CSV vs JSON from the file extension and tags
+        phoneme entries with type=phoneme so a later import keeps them distinct.
+
+        Args:
+            path: Output file path (.csv or .json).
+        """
+        from audiobooker.parser.text_cleaners import save_lexicon
+
+        path = Path(path)
+        # Build the merged override map. Plain entries carry no type; phoneme
+        # entries are tagged so save_lexicon can round-trip the distinction.
+        # Prefer the rich {word: {"replacement", "type"}} shape; if the parser's
+        # save_lexicon only accepts a flat {word: replacement} map, fall back to
+        # that (the phoneme/spelling distinction then lives only in the file's
+        # type column when the parser writes one).
+        rich: dict[str, dict[str, str]] = {}
+        for word, replacement in self.config.pronunciation_overrides.items():
+            rich[word] = {"replacement": replacement}
+        for word, replacement in self.config.phoneme_overrides.items():
+            rich[word] = {"replacement": replacement, "type": "phoneme"}
+
+        try:
+            save_lexicon(path, rich)
+        except (TypeError, ValueError, AttributeError):
+            flat = dict(self.config.pronunciation_overrides)
+            flat.update(self.config.phoneme_overrides)
+            save_lexicon(path, flat)
+        logger.info(
+            "Exported lexicon (%d spelling, %d phoneme) to %s",
+            len(self.config.pronunciation_overrides),
+            len(self.config.phoneme_overrides),
+            path,
+        )
+
+    def import_lexicon(self, path: Path) -> None:
+        """
+        Import a pronunciation lexicon, merging into the project's overrides.
+
+        Uses the parser's load_lexicon (CSV columns word,replacement[,type] or
+        JSON). Entries marked type=phoneme are merged into config.phoneme_overrides;
+        all others merge into config.pronunciation_overrides. On conflicts the
+        imported entry overwrites the existing one.
+
+        Args:
+            path: Path to lexicon file (.csv or .json).
+
+        Raises:
+            FileNotFoundError: If the file doesn't exist.
+            ValueError: If the lexicon format is invalid.
+        """
+        from audiobooker.parser.text_cleaners import load_lexicon
+
+        path = Path(path)
+        if not path.exists():
+            raise FileNotFoundError(f"Lexicon file not found: {path}")
+
+        entries = load_lexicon(path)
+
+        spelling_count = 0
+        phoneme_count = 0
+        for word, value in entries.items():
+            # load_lexicon may return either a plain "replacement" string or a
+            # dict carrying a "type"/"replacement". Handle both so phoneme-typed
+            # entries land in phoneme_overrides and stay distinct.
+            if isinstance(value, dict):
+                replacement = value.get("replacement", "")
+                entry_type = value.get("type", "")
+            else:
+                replacement = value
+                entry_type = ""
+
+            if not word or not str(word).strip() or not str(replacement).strip():
+                continue
+
+            if entry_type == "phoneme":
+                self.config.phoneme_overrides[str(word).strip()] = str(replacement).strip()
+                phoneme_count += 1
+            else:
+                self.config.pronunciation_overrides[str(word).strip()] = str(replacement).strip()
+                spelling_count += 1
+
+        self.modified_at = datetime.now().isoformat()
+        logger.info(
+            "Imported lexicon (%d spelling, %d phoneme) from %s",
+            spelling_count, phoneme_count, path,
+        )
 
     # -------------------------------------------------------------------------
     # Chapter Management (FT-CORE-002, FT-CORE-003)

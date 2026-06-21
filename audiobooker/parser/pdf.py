@@ -232,8 +232,7 @@ def parse_pdf(
             "  - Adobe Acrobat: File → Save As Other → Searchable PDF\n"
             "  - Google Drive: upload PDF, open as Google Doc, download as PDF\n"
             "If the PDF is just sparse (mostly blank or figure pages) but has "
-            "real text, the Python API accepts parse_pdf(..., force_text=True) "
-            "to parse it anyway."
+            "real text, pass --force-text to parse it anyway."
         )
 
     # Split into chapters using heading detection
