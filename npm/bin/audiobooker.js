@@ -22,7 +22,7 @@ const os = require("os");
 
 const TOOL = "audiobooker";          // CLI entry name inside the venv
 const PKG = "audiobooker-ai";        // PyPI distribution name
-const VERSION = "2.1.0";             // pinned PyPI version (kept in lockstep with the package)
+const VERSION = "2.1.1";             // pinned PyPI version (kept in lockstep with the package)
 const IS_WIN = process.platform === "win32";
 
 // XDG / LOCALAPPDATA-compliant install root, overridable for testing.
