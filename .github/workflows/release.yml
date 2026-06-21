@@ -1,4 +1,4 @@
-name: Publish to PyPI
+name: Release
 
 on:
   release:
@@ -34,13 +34,11 @@ jobs:
         with:
           print-hash: true
 
-  # npm launcher (@mcptoolshop/audiobooker). Dormant until the package name is
-  # reserved (placeholder publish) and a Trusted Publisher is configured on
-  # npmjs.com bound to this workflow file. Then set repo variable
-  # NPM_PUBLISH_ENABLED=true to activate it on the next release.
+  # npm launcher (@mcptoolshop/audiobooker). Publishes via the Trusted Publisher
+  # configured on npmjs.com (GitHub Actions, this repo, workflow release.yml).
+  # The tag-vs-package.json check below guards against version drift.
   publish-npm:
     name: Publish npm launcher
-    if: ${{ vars.NPM_PUBLISH_ENABLED == 'true' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read

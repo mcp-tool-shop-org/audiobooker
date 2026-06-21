@@ -116,7 +116,7 @@ When testing with real books:
 2. Update CHANGELOG.md
 3. Create git tag: `git tag v2.x.x`
 4. Push tag: `git push origin v2.x.x`
-5. GitHub Actions publishes to PyPI via trusted publishing (`.github/workflows/publish.yml`)
+5. GitHub Actions publishes to PyPI + npm via trusted publishing (`.github/workflows/release.yml`)
 6. Docker image is built and pushed to GHCR (`.github/workflows/docker.yml`)
 
 ## Code of Conduct
