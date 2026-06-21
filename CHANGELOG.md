@@ -5,6 +5,74 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.1.0] - 2026-06-21
+
+A full dogfood-swarm pass: a four-stage health audit (bug/security/data-loss +
+proactive + humanization), then a feature pass. Tests 650 → 1231. Every
+CRITICAL/HIGH finding was cross-verified by an independent (non-Claude) model.
+
+### Added
+
+- **Inputs**: DOCX parsing (Word `Heading 1/2`/`Title` styles); folder-of-files
+  input (one file per chapter); TOC/nav-driven EPUB chapter splitting;
+  `--chapter-delimiter` and `--force-text` flags; reusable pronunciation
+  **lexicon** files (`pronunciation import/export`, CSV/JSON, phoneme passthrough);
+  Markdown-aware text cleaning; Italian + Portuguese language profiles (now 7).
+- **Casting**: `audition` command (A/B candidate voices per character);
+  `cast --interactive`; bulk `cast-fill` by gender/role; named cast **presets**
+  (`cast-preset`, reusable across a series); CSV cast sheets; emotion **intensity**,
+  scene-level mood spans, and genre emotion **preset packs**; alias auto-discovery
+  (`speakers --suggest-aliases`).
+- **Output**: full metadata tags (narrator/genre/series/year); auto-embedded EPUB
+  cover; **Opus** and **FLAC** formats; per-chapter `--split`; `--bitrate`;
+  **ACX/Audible** mastering (`render --acx`) + `master-check`; retail `sample`;
+  `export-chapters` (ffmetadata/cue/json); `podcast` RSS feed; utterance-level
+  incremental cache.
+- **Workflow**: `make` one-shot pipeline; **config file** (`.audiobookerrc` /
+  `[tool.audiobooker]`); `--watch`; manifest-driven `batch`; shell `completion`;
+  `chapters rename/reorder`; `report` (compile quality); `--json` on info/status/
+  batch/report; observability surfaced from compile (speakers/emotions/NLP errors).
+- **Ecosystem**: pluggable TTS-engine registry (`--engine`, `AUDIOBOOKER_ENGINE`,
+  `audiobooker.tts_engines` entry-points); **npm launcher** (`npx
+  @mcptoolshop/audiobooker`, venv-bootstrap); `pipx`/`uvx` install path.
+
+### Changed
+
+- `--lang` is now honored for EPUB **and** PDF (localized chapter patterns), not
+  text only.
+- `strip_page_numbers` no longer deletes bare standalone numbers (countdowns,
+  years, verse numbers); only prefixed/centered page markers are stripped.
+- Ambiguous abbreviations `St.`/`Co.` are no longer auto-expanded by default.
+- ffmpeg is now checked **before** the render loop, not at assembly time.
+- The upfront render estimate is relabeled "Audiobook length" (it was playback
+  length, not wall-clock).
+
+### Fixed
+
+- **CRITICAL** `render --chapters` permanently deleted the unselected chapters
+  from the saved project file.
+- **HIGH** command injection via an untrusted book title in `--notify`
+  (PowerShell / osascript).
+- **HIGH** review round-trip collapsed `PAUSE`/`DIRECTION` utterance types.
+- Review-import now warns on edited blocks that match no chapter (was a silent
+  drop); review text starting with `#`/`@`/`===` survives the round-trip.
+- Ordinal narration: "101st" → "one hundred first" (was "...oneth").
+- EPUB zip-bomb size guard; PyMuPDF document handle closed on mid-parse errors;
+  UTF-16 EPUB/TXT BOM handling; cover-art extension allowlist.
+- Manifest crash-recovery now consults the `.bak`; render summary counters are
+  lock-guarded; SSML output is XML-escaped.
+- Error messages surface a `.hint` and honor `--debug` everywhere; `--silent`
+  actually suppresses output; exit-code taxonomy made consistent.
+- Removed the leaked developer path from install hints; one canonical
+  `pip install voice-soundboard`.
+- `load` subcommand wired; non-dict project files raise a clear error;
+  German speaker-blacklist typo `nervos` → `nervös`.
+
+### Security
+
+- `publish.yml` gains a protected `pypi` GitHub Environment for OIDC publishing.
+- GitHub Actions on Node-24-compatible releases; `docker/login-action` v4.
+
 ## [2.0.1] - 2026-04-23
 
 ### Fixed
