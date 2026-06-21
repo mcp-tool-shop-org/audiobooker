@@ -14,6 +14,7 @@
   "files": [
     "bin/",
     "README.md",
+    "README.*.md",
     "LICENSE"
   ],
   "repository": {

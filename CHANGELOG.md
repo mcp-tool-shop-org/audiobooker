@@ -70,7 +70,7 @@ CRITICAL/HIGH finding was cross-verified by an independent (non-Claude) model.
 
 ### Security
 
-- `publish.yml` gains a protected `pypi` GitHub Environment for OIDC publishing.
+- Release workflow (`release.yml`, renamed from `publish.yml`) publishes both PyPI (`audiobooker-ai`, protected `pypi` environment) and the npm launcher via OIDC Trusted Publishing.
 - GitHub Actions on Node-24-compatible releases; `docker/login-action` v4.
 
 ## [2.0.1] - 2026-04-23
