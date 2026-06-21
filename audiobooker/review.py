@@ -45,6 +45,26 @@ SPEAKER_PATTERN = re.compile(r"^@([\w .'\-]+?)(?:\s*\(([^)]+)\))?$")
 # Pattern for chapter marker: === Chapter Title === or === Chapter Title === [id:abc123]
 CHAPTER_PATTERN = re.compile(r'^===\s*(.+?)\s*===(?:\s*\[id:([^\]]+)\])?$')
 
+# REVIEW-A-002: Control tokens that begin a structural line. Body text that
+# coincidentally starts with one of these is escaped with a leading backslash
+# on export and unescaped on import so it survives a round-trip.
+_CONTROL_PREFIXES = ("#", "@", "===")
+
+
+def _escape_body_line(text: str) -> str:
+    """Escape a body line whose first char would otherwise be parsed as a control token."""
+    stripped = text.lstrip()
+    if stripped.startswith("\\") or any(stripped.startswith(p) for p in _CONTROL_PREFIXES):
+        return "\\" + text
+    return text
+
+
+def _unescape_body_line(text: str) -> str:
+    """Reverse _escape_body_line: drop a single leading backslash if present."""
+    if text.startswith("\\"):
+        return text[1:]
+    return text
+
 
 def export_for_review(project: "AudiobookProject", output_path: Optional[Path] = None) -> Path:
     """
@@ -111,8 +131,10 @@ def export_for_review(project: "AudiobookProject", output_path: Optional[Path] =
                 current_speaker = utterance.speaker
                 current_emotion = utterance.emotion
 
-            # Text content (indent for readability)
-            lines.append(utterance.text)
+            # Text content. REVIEW-A-002: escape body lines that would otherwise
+            # be parsed as control tokens (#, @, ===) so they round-trip.
+            for body_line in utterance.text.split("\n"):
+                lines.append(_escape_body_line(body_line))
 
         lines.append("")  # Blank line after chapter
 
@@ -177,6 +199,14 @@ def import_reviewed(project: "AudiobookProject", review_path: Path) -> dict:
     for line in lines:
         line_stripped = line.strip()
 
+        # REVIEW-A-002: A leading backslash marks an escaped body line whose
+        # text coincidentally starts with a control token (#, @, ===). Treat it
+        # as body and unescape — never as a comment/speaker/chapter marker.
+        if line_stripped.startswith("\\"):
+            if current_speaker:
+                current_text_lines.append(_unescape_body_line(line_stripped))
+            continue
+
         # Skip comments
         if line_stripped.startswith("#"):
             continue
@@ -237,13 +267,29 @@ def import_reviewed(project: "AudiobookProject", review_path: Path) -> dict:
         if matching_chapter is None:
             continue
 
+        # REVIEW-A-001: If the block count is unchanged, the user only edited
+        # speakers/emotions/text in place — preserve each original utterance's
+        # UtteranceType by index so PAUSE/DIRECTION/FOOTNOTE don't collapse to
+        # NARRATION on round-trip. If blocks were added/removed, fall back to the
+        # quote heuristic (we can no longer line up types by position).
+        original_utterances = matching_chapter.utterances
+        preserve_types = len(original_utterances) == len(chapter_data["utterances"])
+
         # Rebuild utterances
         new_utterances = []
         for i, utt_data in enumerate(chapter_data["utterances"]):
+            if preserve_types:
+                utterance_type = original_utterances[i].utterance_type
+            else:
+                utterance_type = (
+                    UtteranceType.DIALOGUE
+                    if utt_data["text"].startswith('"')
+                    else UtteranceType.NARRATION
+                )
             utterance = Utterance(
                 speaker=utt_data["speaker"],
                 text=utt_data["text"],
-                utterance_type=UtteranceType.DIALOGUE if utt_data["text"].startswith('"') else UtteranceType.NARRATION,
+                utterance_type=utterance_type,
                 emotion=utt_data["emotion"],
                 chapter_index=matching_chapter.index,
                 line_index=i,

@@ -71,7 +71,7 @@ GERMAN = LanguageProfile(
         "sich",
         # Adverbs of manner
         "leise", "laut", "langsam", "schnell", "ruhig", "sanft",
-        "traurig", "fr\u00f6hlich", "nervos", "w\u00fctend", "kalt",
+        "traurig", "fr\u00f6hlich", "nerv\u00f6s", "w\u00fctend", "kalt",
         "warm", "pl\u00f6tzlich", "sofort", "schlie\u00dflich", "dann",
         "endlich", "jedoch", "dennoch", "trotzdem", "au\u00dferdem",
     }),

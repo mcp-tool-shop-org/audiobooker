@@ -460,6 +460,14 @@ def assemble_m4b(
               "-disposition:v", "attached_pic",
           ])
       else:
+          # OUTPUT-A-006: surface the silent no-op when a cover was requested but
+          # the path is missing — otherwise the user just gets no cover with no
+          # explanation.
+          if cover_art:
+              logger.warning(
+                  f"Cover art not embedded — file not found: {cover_art}. "
+                  f"Output will have no cover image."
+              )
           metadata_cmd.extend([
               "-map", "0:a",
               "-map_metadata", "1",

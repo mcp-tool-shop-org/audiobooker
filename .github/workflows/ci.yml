@@ -73,7 +73,6 @@ jobs:
       - name: Run tests with coverage
         run: |
           pytest tests/ -v --tb=short --ignore=tests/test_e2e_smoke.py \
-            -k "not requires_voice_soundboard and not requires_ffmpeg" \
             --cov=audiobooker --cov-report=xml --cov-report=term-missing
 
       - name: Test CLI

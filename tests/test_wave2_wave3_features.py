@@ -57,10 +57,13 @@ class TestStripPageNumbers:
     """Tests for strip_page_numbers cleaner."""
 
     def test_bare_page_number(self):
-        """Standalone digits on their own line are stripped."""
+        """Bare standalone digits are PRESERVED (PARSER-A-003): a lone number on
+        its own line is ambiguous content (a countdown, a year, a verse number),
+        not necessarily a page number, so it must not be silently deleted from
+        the narrated text. Only prefixed/centered page markers are stripped."""
         text = "Some text.\n42\nMore text."
         result = strip_page_numbers(text)
-        assert "42" not in result
+        assert "42" in result
         assert "Some text." in result
         assert "More text." in result
 
@@ -84,10 +87,11 @@ class TestStripPageNumbers:
         assert "42" in result
 
     def test_multi_digit_page_numbers(self):
-        """Multi-digit standalone numbers are stripped."""
+        """Bare multi-digit numbers are PRESERVED (PARSER-A-003) — only prefixed
+        ('Page N') or centered ('- N -') page markers are stripped."""
         text = "Line one.\n12345\nLine two."
         result = strip_page_numbers(text)
-        assert "12345" not in result
+        assert "12345" in result
 
     def test_no_page_numbers(self):
         """Text without page numbers is unchanged."""
@@ -197,11 +201,11 @@ class TestCleanTextPipeline:
 
     def test_custom_cleaner_list(self):
         """Custom cleaner list only applies specified cleaners."""
-        text = "Mr. Smith said hello.\n42\n"
+        text = "Mr. Smith said hello.\nPage 42\n"
         # Only strip page numbers
         result = clean_text(text, cleaners=[strip_page_numbers])
         assert "Mr." in result  # abbreviation NOT expanded
-        assert "42" not in result  # page number stripped
+        assert "Page 42" not in result  # prefixed page marker stripped (PARSER-A-003)
 
 
 # =========================================================================
@@ -744,12 +748,18 @@ class TestTextNormalization:
         assert "Incorporated" in result
 
     def test_abbreviation_expansion_co(self):
+        # PARSER-A-006: 'Co.' is ambiguous (Company vs County vs Colorado) and is
+        # no longer expanded by default, to avoid mispronouncing 'Co. Cork' etc.
         result = expand_common_abbreviations("Smith Co. merged.")
-        assert "Company" in result
+        assert "Company" not in result
+        assert "Co." in result
 
     def test_abbreviation_expansion_st(self):
+        # PARSER-A-006: 'St.' is ambiguous (Saint vs Street) and is no longer
+        # expanded by default, to avoid narrating 'Main St.' as 'Main Saint'.
         result = expand_common_abbreviations("St. Louis was cold.")
-        assert "Saint" in result
+        assert "Saint" not in result
+        assert "St." in result
 
 
 # =========================================================================

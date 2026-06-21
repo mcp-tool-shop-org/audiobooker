@@ -16,6 +16,43 @@ from audiobooker.models import Chapter
 
 logger = logging.getLogger("audiobooker.parser")
 
+# Maximum EPUB file size (200 MB). EPUBs are zip archives that can decompress
+# to far more, but the on-disk file is a cheap first guard (PARSER-A-001).
+_MAX_EPUB_FILE_BYTES = 200 * 1024 * 1024
+
+# Allowed cover-image extensions. The internal item name is attacker-controlled,
+# so its suffix is validated against this allowlist before being used to build
+# the on-disk cover path (PARSER-A-005).
+_ALLOWED_COVER_EXTS = frozenset({".jpg", ".jpeg", ".png", ".gif", ".webp"})
+
+
+def _safe_cover_ext(name: str) -> str:
+    """Return the cover image extension if allowlisted, else '.jpg' (PARSER-A-005)."""
+    ext = Path(name).suffix.lower()
+    return ext if ext in _ALLOWED_COVER_EXTS else ".jpg"
+
+
+def _decode_item_content(content: bytes, name: str) -> str:
+    """
+    Decode EPUB item bytes to text, honoring a UTF-16/UTF-8 BOM (PARSER-A-008).
+
+    ebooklib returns raw bytes; blindly decoding as UTF-8 mojibakes UTF-16
+    documents. Sniff a BOM first; otherwise default to UTF-8 with replacement,
+    logging a warning when replacement characters are introduced.
+    """
+    if content.startswith((b"\xff\xfe", b"\xfe\xff")):
+        # "utf-16" consumes the BOM and infers LE/BE from it.
+        return content.decode("utf-16")
+    if content.startswith(b"\xef\xbb\xbf"):
+        return content.decode("utf-8-sig")
+    text = content.decode("utf-8", errors="replace")
+    if "�" in text:
+        logger.warning(
+            "Replacement characters introduced while decoding %r as UTF-8 — "
+            "the document may use a non-UTF-8 encoding.", name,
+        )
+    return text
+
 
 class HTMLTextExtractor(HTMLParser):
     """
@@ -249,6 +286,15 @@ def parse_epub(
     if not path.exists():
         raise FileNotFoundError(f"EPUB not found: {path}")
 
+    # Size guard (PARSER-A-001): mirror the PDF/text parsers.
+    file_size = path.stat().st_size
+    if file_size > _MAX_EPUB_FILE_BYTES:
+        size_mb = file_size / (1024 * 1024)
+        raise ValueError(
+            f"EPUB file is too large ({size_mb:.1f} MB, limit is 200 MB). "
+            "Consider splitting the EPUB into smaller parts."
+        )
+
     # F-CORE-B-003: Wrap read_epub with error handling for corrupt/DRM files
     from zipfile import BadZipFile
     try:
@@ -312,8 +358,7 @@ def parse_epub(
         cover_items = list(book.get_items_of_type(ebooklib.ITEM_COVER))
         if cover_items:
             cover_image_data = cover_items[0].get_content()
-            cover_name = cover_items[0].get_name()
-            cover_image_ext = Path(cover_name).suffix or ".jpg"
+            cover_image_ext = _safe_cover_ext(cover_items[0].get_name())
         else:
             # Fall back to first image item
             image_items = list(book.get_items_of_type(ebooklib.ITEM_IMAGE))
@@ -322,12 +367,12 @@ def parse_epub(
                 name_lower = img.get_name().lower()
                 if "cover" in name_lower:
                     cover_image_data = img.get_content()
-                    cover_image_ext = Path(img.get_name()).suffix or ".jpg"
+                    cover_image_ext = _safe_cover_ext(img.get_name())
                     break
             # If no cover-named image, use the first image as fallback
             if cover_image_data is None and image_items:
                 cover_image_data = image_items[0].get_content()
-                cover_image_ext = Path(image_items[0].get_name()).suffix or ".jpg"
+                cover_image_ext = _safe_cover_ext(image_items[0].get_name())
     except Exception as e:
         logger.warning("Failed to extract cover art: %s", e)
 
@@ -349,7 +394,7 @@ def parse_epub(
         # Get HTML content
         content = item.get_content()
         if isinstance(content, bytes):
-            content = content.decode("utf-8", errors="replace")
+            content = _decode_item_content(content, item.get_name())
 
         # Convert to plain text
         text = html_to_text(content)
@@ -396,7 +441,7 @@ def parse_epub(
 
             content = item.get_content()
             if isinstance(content, bytes):
-                content = content.decode("utf-8", errors="replace")
+                content = _decode_item_content(content, item.get_name())
 
             text = html_to_text(content)
             word_count = len(text.split())

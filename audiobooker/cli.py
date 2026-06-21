@@ -721,7 +721,19 @@ def cmd_render(args) -> int:
                         print(f"  Cast {result.speaker} as {result.top.voice_id}")
                 project.save()
 
-        # FT-RENDER-017: Chapter selection filtering
+        # OUTPUT-A-006: Validate cover path early so a typo doesn't silently
+        # produce a coverless book.
+        cover_flag = getattr(args, "cover", None)
+        if cover_flag and not Path(cover_flag).exists():
+            print(f"Error: Cover art file not found: {cover_flag}")
+            return 1
+
+        # FT-RENDER-017: Chapter selection filtering.
+        # CLI-A-001: --chapters/--exclude-chapters is a TRANSIENT render filter.
+        # We must never persist a reduced chapter list back to the source
+        # project file. Keep the full list on `project` and only swap in the
+        # filtered subset for the render call; restore before any save().
+        full_chapters = project.chapters
         chapters_flag = getattr(args, "chapters", None)
         exclude_chapters_flag = getattr(args, "exclude_chapters", None)
         if chapters_flag or exclude_chapters_flag:
@@ -859,6 +871,9 @@ def cmd_render(args) -> int:
                 if progress_bar is not None:
                     progress_bar.stop()
 
+            # CLI-A-001: Restore the full chapter list before persisting so a
+            # transient render filter never deletes chapters from the saved file.
+            project.chapters = full_chapters
             project.save()
 
             print(f"\nAudiobook created: {path}")
@@ -942,6 +957,42 @@ def _print_render_failure(e: "RenderError") -> None:
     print("To force:  audiobooker render --no-resume")
 
 
+def _sanitize_notification_text(text: str) -> str:
+    """
+    CLI-A-002: Strip control characters from untrusted notification text.
+
+    Project titles come from EPUB/PDF metadata and must never carry newlines,
+    carriage returns, or other control characters into a shell/notification
+    command. Removing them closes the most common injection avenues before any
+    per-target quoting is applied.
+    """
+    return "".join(ch for ch in text if ch.isprintable())
+
+
+def _ps_single_quote(text: str) -> str:
+    """
+    CLI-A-002: Quote untrusted text as a PowerShell single-quoted literal.
+
+    In PowerShell a single-quoted string is literal: the only character with
+    special meaning is the single quote, which is escaped by doubling. The
+    returned value INCLUDES the surrounding quotes, so the text is never
+    interpreted as code.
+    """
+    return "'" + _sanitize_notification_text(text).replace("'", "''") + "'"
+
+
+def _osascript_double_quote(text: str) -> str:
+    """
+    CLI-A-002: Quote untrusted text as an AppleScript double-quoted literal.
+
+    Backslashes and double quotes are escaped so the text cannot break out of
+    the string literal in the osascript source. The returned value INCLUDES the
+    surrounding quotes.
+    """
+    cleaned = _sanitize_notification_text(text).replace("\\", "\\\\").replace('"', '\\"')
+    return '"' + cleaned + '"'
+
+
 def _send_notification(title: str, message: str) -> None:
     """
     FT-RENDER-020: Send desktop notification.
@@ -965,13 +1016,17 @@ def _send_notification(title: str, message: str) -> None:
     # Attempt 2: Windows-specific
     if sys.platform == "win32":
         import subprocess
-        # Try BurntToast
+        # Try BurntToast.
+        # CLI-A-002: title/message are untrusted (EPUB/PDF metadata). Embed
+        # them as PowerShell single-quoted literals so they are treated as
+        # data, never as code.
         try:
+            ps_command = (
+                f"New-BurntToastNotification -Text "
+                f"{_ps_single_quote(title)}, {_ps_single_quote(message)}"
+            )
             subprocess.run(
-                [
-                    "powershell", "-Command",
-                    f'New-BurntToastNotification -Text "{title}", "{message}"',
-                ],
+                ["powershell", "-Command", ps_command],
                 capture_output=True,
                 timeout=10,
             )
@@ -995,9 +1050,15 @@ def _send_notification(title: str, message: str) -> None:
     # On macOS/Linux, try notify-send or osascript
     if sys.platform == "darwin":
         import subprocess
+        # CLI-A-002: escape untrusted title/message as AppleScript string
+        # literals so they cannot break out of the osascript source.
         try:
+            script = (
+                f"display notification {_osascript_double_quote(message)} "
+                f"with title {_osascript_double_quote(title)}"
+            )
             subprocess.run(
-                ["osascript", "-e", f'display notification "{message}" with title "{title}"'],
+                ["osascript", "-e", script],
                 capture_output=True,
                 timeout=10,
             )
@@ -1049,6 +1110,45 @@ def cmd_info(args) -> int:
             print("\nCasting:")
             for name, char in project.casting.characters.items():
                 print(f"  {char.name}: {char.voice} ({char.line_count} lines)")
+
+        return 0
+
+    except Exception as e:
+        print(f"Error: {e}")
+        return 1
+
+
+def cmd_load(args) -> int:
+    """
+    Load an existing project and show its info.
+
+    CLI-A-003: The `load` subcommand was registered in the parser but never
+    wired into the dispatch table, so it printed "Unknown command: load".
+    It behaves like `info` on the explicitly given project file.
+    """
+    from audiobooker import AudiobookProject
+
+    try:
+        project_path = find_project_file(args.project)
+        project = AudiobookProject.load(project_path)
+
+        info = project.info()
+        print(f"Loaded project: {project_path}")
+        print(f"Title: {info['title']}")
+        if info["author"]:
+            print(f"Author: {info['author']}")
+        print(f"Source: {info['source']}")
+        print(f"Chapters: {info['chapters']}")
+        print(f"Words: ~{info['total_words']:,}")
+        print(
+            f"Estimated duration: ~{info['estimated_duration_minutes']:.0f} min (varies by voice)"
+        )
+        print(f"Characters cast: {info['characters_cast']}")
+        print(f"Compiled: {'Yes' if info['compiled'] else 'No'}")
+        print(f"Rendered: {'Yes' if info['rendered'] else 'No'}")
+
+        if info["uncast_speakers"]:
+            print(f"\nUncast speakers: {', '.join(info['uncast_speakers'])}")
 
         return 0
 
@@ -1494,9 +1594,15 @@ def cmd_pronunciation(args) -> int:
         project = AudiobookProject.load(project_path)
 
         if pronunciation_command == "add":
-            project.config.pronunciation_overrides[args.word] = args.replacement
+            # CLI-A-008: Go through add_pronunciation() so empty input is
+            # rejected and surrounding whitespace is stripped (validation that
+            # writing to the dict directly would bypass).
+            project.add_pronunciation(args.word, args.replacement)
             project.save()
-            print(f"Added pronunciation override: '{args.word}' -> '{args.replacement}'")
+            print(
+                f"Added pronunciation override: "
+                f"'{args.word.strip()}' -> '{args.replacement.strip()}'"
+            )
             return 0
 
         elif pronunciation_command == "remove":
@@ -2144,6 +2250,7 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     commands = {
         "new": cmd_new,
+        "load": cmd_load,
         "cast": cmd_cast,
         "cast-suggest": cmd_cast_suggest,
         "cast-apply": cmd_cast_apply,

@@ -388,9 +388,14 @@ def compile_chapter(
     Character offsets (start_pos, end_pos) are recorded on each Utterance
     for downstream context windowing and review matching.
 
-    This function does NOT mutate the CastingTable (safe for parallel use).
-    Callers who need per-character line counts should tally from the
-    returned utterances.
+    Side effect (CAST-DIAL-A-003): for backward compatibility this updates
+    ``casting.characters[key].line_count`` for any cast speaker, setting it to
+    this chapter's line count for that speaker. Because the mutation happens
+    on whatever CastingTable object is passed in, it is observable in the
+    SEQUENTIAL compile path but LOST in the parallel path (where each worker
+    receives a pickled copy of the table). Callers who need authoritative,
+    cross-chapter line counts should NOT rely on this side effect and should
+    instead tally from the returned utterances.
 
     Args:
         chapter: Chapter to compile
@@ -456,6 +461,11 @@ def compile_chapter(
             para_start = para_offset
         para_offset = para_start + len(para)
 
+        # CAST-DIAL-A-002: para_start points at the UN-stripped paragraph.
+        # Capture the leading whitespace that strip() removes so absolute
+        # offsets line up with the original raw_text (preserving the invariant
+        # raw_text[start_pos:end_pos] == utterance text for indented paragraphs).
+        para_lead = len(para) - len(para.lstrip())
         para = para.strip()
         if not para:
             continue
@@ -493,8 +503,8 @@ def compile_chapter(
 
             # Create special utterances for each tag
             for _ts, _te, tag_type, tag_content in tag_items:
-                abs_start = para_start + _ts
-                abs_end = para_start + _te
+                abs_start = para_start + para_lead + _ts
+                abs_end = para_start + para_lead + _te
                 utt_type = UtteranceType.PAUSE if tag_type == 'pause' else UtteranceType.DIRECTION
                 utterances.append(Utterance(
                     speaker="narrator",
@@ -539,8 +549,8 @@ def compile_chapter(
                 emotion=override_emotion,
                 chapter_index=chapter.index,
                 line_index=line_index,
-                start_pos=para_start,
-                end_pos=para_start + len(para),
+                start_pos=para_start + para_lead,
+                end_pos=para_start + para_lead + len(para),
             )
             utterances.append(utterance)
             line_index += 1
@@ -555,8 +565,8 @@ def compile_chapter(
                 continue
 
             # FT-CAST-012: Compute absolute character offsets
-            abs_start = para_start + start
-            abs_end = para_start + end
+            abs_start = para_start + para_lead + start
+            abs_end = para_start + para_lead + end
 
             if is_dialogue:
                 # Try to attribute speaker
@@ -632,7 +642,11 @@ def compile_chapter(
         if utterance.speaker == "unknown":
             unknown_count += 1
 
-    # Update casting table line counts from computed dict (backward compat)
+    # CAST-DIAL-A-003: Update casting table line counts from the computed dict.
+    # Kept for backward compatibility (CLI `info`/`speakers` display and the
+    # existing line-count contract). Observable in the sequential compile path
+    # only; the parallel path operates on a pickled copy where this is lost.
+    # See the docstring caveat; authoritative counts come from the utterances.
     for key, count in line_counts.items():
         if key in casting.characters:
             casting.characters[key].line_count = count

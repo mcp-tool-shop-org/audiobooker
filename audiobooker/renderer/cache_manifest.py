@@ -125,7 +125,22 @@ class CacheManifest:
 def load_manifest(manifest_path: Path) -> Optional[CacheManifest]:
     """Load manifest from disk. Returns None if missing or corrupt."""
     if not manifest_path.exists():
-        return None
+        # CACHE-A-003: save_manifest moves the live manifest to <name>.json.bak
+        # before renaming the new tmp into place. A hard crash between those two
+        # renames leaves the live manifest missing but the .bak intact. Recover
+        # from it so the whole cache isn't orphaned.
+        bak_path = manifest_path.with_suffix(".json.bak")
+        if bak_path.exists():
+            try:
+                os.rename(str(bak_path), str(manifest_path))
+                logger.warning(
+                    f"Recovered manifest from backup after interrupted save: {bak_path}"
+                )
+            except OSError as e:
+                logger.warning(f"Failed to recover manifest from {bak_path}: {e}")
+                return None
+        else:
+            return None
     try:
         data = json.loads(manifest_path.read_text(encoding="utf-8"))
         manifest = CacheManifest.from_dict(data)

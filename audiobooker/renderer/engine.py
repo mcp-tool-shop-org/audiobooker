@@ -13,6 +13,7 @@ import os
 import shutil
 import threading
 import time
+from xml.sax.saxutils import escape as _xml_escape
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, asdict, field
 from datetime import datetime, timezone
@@ -78,8 +79,10 @@ def preprocess_ssml(utterances: list["Utterance"]) -> str:
         is_narrator = utt.speaker.lower() in ("narrator", "narration")
         rate = _NARRATOR_RATE if is_narrator else _DIALOGUE_RATE
 
-        # Build the inner text with optional emphasis
-        text = utt.text
+        # Build the inner text with optional emphasis.
+        # ENGINE-A-004: escape XML metacharacters (&, <, >) so utterance text
+        # containing them produces well-formed SSML.
+        text = _xml_escape(utt.text)
         if utt.emotion:
             level = _EMOTION_EMPHASIS.get(utt.emotion.lower(), "moderate")
             text = f'<emphasis level="{level}">{text}</emphasis>'
@@ -711,11 +714,14 @@ def render_project(
                     status="ok",
                     created_at=datetime.now(timezone.utc).isoformat(),
                 )
+                # FT-RENDER-001 / ENGINE-A-005: counter increment must be under
+                # the lock — parallel workers otherwise lose increments via the
+                # read-modify-write race on summary.rendered.
                 with manifest_lock:
                     manifest.set_entry(entry)
                     save_manifest(manifest, manifest_path)
+                    summary.rendered += 1
 
-                summary.rendered += 1
                 logger.info(
                     f"RENDER_OK: chapter={i} title={chapter.title!r} "
                     f"elapsed={elapsed:.1f}s duration={chapter.duration_seconds:.1f}s"
@@ -724,6 +730,9 @@ def render_project(
             except OSError as e:
                 if e.errno in (28, 39, 112):
                     logger.error(f"RENDER_DISK_FULL: chapter={i} — {e}")
+                    # ENGINE-A-007: don't leave the partial .wav.tmp behind on a
+                    # disk-full abort — it wastes the little space that remains.
+                    tmp_path.unlink(missing_ok=True)
                     raise RenderError(
                         f"Disk full while rendering chapter {i} ({chapter.title!r}). "
                         f"Free up space and re-run with: audiobooker render",
@@ -897,23 +906,26 @@ def _handle_chapter_failure(
         error_summary=str(error)[:200],
         created_at=datetime.now(timezone.utc).isoformat(),
     )
+    # ENGINE-A-005: all shared-state mutations (manifest, failure report, and
+    # summary counters) must happen under the lock so parallel workers don't
+    # lose increments or corrupt the shared lists via concurrent appends.
     with manifest_lock:
         manifest.set_entry(entry)
         from audiobooker.renderer.cache_manifest import save_manifest
         save_manifest(manifest, manifest_path)
 
-    failure_report.add_failure(
-        chapter_index=i,
-        chapter_title=chapter.title,
-        error=error,
-    )
+        failure_report.add_failure(
+            chapter_index=i,
+            chapter_title=chapter.title,
+            error=error,
+        )
 
-    summary.failed += 1
-    summary.failed_chapters.append({
-        "index": i,
-        "title": chapter.title,
-        "error": str(error),
-    })
+        summary.failed += 1
+        summary.failed_chapters.append({
+            "index": i,
+            "title": chapter.title,
+            "error": str(error),
+        })
 
     logger.error(f"RENDER_CHAPTER_FAIL: chapter={i} error={error}")
 

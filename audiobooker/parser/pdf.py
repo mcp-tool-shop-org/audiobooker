@@ -2,10 +2,9 @@
 PDF Parser for Audiobooker (FT-CORE-001).
 
 Extracts chapters from PDF files using PyMuPDF (fitz).
-Detects chapter boundaries using heading heuristics:
-- All-caps lines
-- "Chapter N" patterns
-- Font-size changes (when available)
+Detects chapter boundaries using text heading heuristics:
+- "Chapter N" / "Part N" / "Book N" / "Prologue" / "Epilogue" patterns
+- All-caps lines that look like titles
 
 Scanned PDFs are detected and rejected with a clear OCR suggestion.
 """
@@ -73,54 +72,6 @@ def _is_chapter_heading(line: str) -> Optional[str]:
     return None
 
 
-def _detect_font_headings(page) -> list[tuple[str, float]]:
-    """
-    Detect headings by font size on a PDF page.
-
-    Returns list of (text, font_size) for lines with font sizes
-    significantly larger than the body text.
-    """
-    try:
-        blocks = page.get_text("dict", flags=0)["blocks"]
-    except Exception:
-        return []
-
-    # Collect all font sizes and their text
-    text_sizes: list[tuple[str, float]] = []
-    all_sizes: list[float] = []
-
-    for block in blocks:
-        if block.get("type") != 0:  # text block
-            continue
-        for line_data in block.get("lines", []):
-            line_text = ""
-            line_size = 0.0
-            for span in line_data.get("spans", []):
-                line_text += span.get("text", "")
-                line_size = max(line_size, span.get("size", 0.0))
-            line_text = line_text.strip()
-            if line_text and line_size > 0:
-                text_sizes.append((line_text, line_size))
-                all_sizes.append(line_size)
-
-    if not all_sizes:
-        return []
-
-    # Find the most common (body) font size
-    from collections import Counter
-    size_counts = Counter(round(s, 1) for s in all_sizes)
-    body_size = size_counts.most_common(1)[0][0]
-
-    # Return lines significantly larger than body text (>= 1.3x)
-    headings = [
-        (text, size)
-        for text, size in text_sizes
-        if round(size, 1) > body_size * 1.3 and len(text.strip()) > 1
-    ]
-
-    return headings
-
-
 def parse_pdf(
     path: Path,
     min_chapter_words: int = 50,
@@ -129,9 +80,9 @@ def parse_pdf(
     Parse a PDF file into chapters.
 
     Uses PyMuPDF (fitz) for text extraction with lazy import.
-    Detects chapter boundaries using heading heuristics and font-size
-    changes when available. Scanned PDFs are detected and rejected
-    with a clear OCR suggestion.
+    Detects chapter boundaries using text heading heuristics
+    ("Chapter N"/"Part N"/"Prologue" patterns and all-caps title lines).
+    Scanned PDFs are detected and rejected with a clear OCR suggestion.
 
     Args:
         path: Path to PDF file.
@@ -174,28 +125,38 @@ def parse_pdf(
             "The file may be corrupted, password-protected, or not a valid PDF."
         ) from e
 
-    # Extract metadata
+    # Extract metadata and page text. Use try/finally so the document handle
+    # is always closed even if extraction raises mid-loop — otherwise a leaked
+    # handle keeps a file lock on Windows (PARSER-A-002).
     metadata: dict = {}
-    pdf_meta = doc.metadata or {}
-    if pdf_meta.get("title"):
-        metadata["title"] = pdf_meta["title"]
-    if pdf_meta.get("author"):
-        metadata["author"] = pdf_meta["author"]
-    if pdf_meta.get("subject"):
-        metadata["subject"] = pdf_meta["subject"]
-
-    # Extract text from all pages
     page_texts: list[str] = []
     pages_with_text = 0
+    try:
+        pdf_meta = doc.metadata or {}
+        if pdf_meta.get("title"):
+            metadata["title"] = pdf_meta["title"]
+        if pdf_meta.get("author"):
+            metadata["author"] = pdf_meta["author"]
+        if pdf_meta.get("subject"):
+            metadata["subject"] = pdf_meta["subject"]
 
-    for page_num in range(len(doc)):
-        page = doc[page_num]
-        text = page.get_text("text")
-        page_texts.append(text)
-        if len(text.split()) >= _MIN_TEXT_WORDS_PER_PAGE:
-            pages_with_text += 1
-
-    doc.close()
+        # Extract text from all pages
+        for page_num in range(len(doc)):
+            try:
+                page = doc[page_num]
+                text = page.get_text("text")
+            except Exception as e:
+                # Skip the bad page rather than aborting the whole document.
+                logger.warning(
+                    "Skipping page %d of '%s' — text extraction failed: %s",
+                    page_num + 1, path.name, e,
+                )
+                text = ""
+            page_texts.append(text)
+            if len(text.split()) >= _MIN_TEXT_WORDS_PER_PAGE:
+                pages_with_text += 1
+    finally:
+        doc.close()
 
     # Detect scanned PDFs
     total_pages = len(page_texts)

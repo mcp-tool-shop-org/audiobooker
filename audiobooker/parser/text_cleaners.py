@@ -20,17 +20,23 @@ TextCleaner = Callable[[str], str]
 # ---------------------------------------------------------------------------
 
 _PAGE_NUMBER_RE = re.compile(
-    r"(?m)"                       # multiline
+    r"(?m)"                                 # multiline
     r"(?:"
-    r"^\s*(?:Page\s+)?\d{1,5}\s*$"  # "Page 42" or bare "42" on its own line
+    r"^\s*(?:Page\s+|p\.\s*)\d{1,5}\s*$"   # "Page 42" or "p. 42" on its own line
     r"|"
-    r"^\s*-\s*\d{1,5}\s*-\s*$"      # "- 42 -" centered page numbers
+    r"^\s*-\s*\d{1,5}\s*-\s*$"              # "- 42 -" centered page numbers
     r")"
 )
 
 
 def strip_page_numbers(text: str) -> str:
-    """Remove standalone page numbers (e.g., 'Page 42', bare '42', '- 42 -')."""
+    """Remove standalone page numbers (e.g., 'Page 42', 'p. 42', '- 42 -').
+
+    Bare numeric lines (e.g. '3', '2021') are intentionally NOT stripped:
+    they are often real narrated content (countdowns, years, verse numbers),
+    so removal requires an explicit 'Page '/'p.' prefix or a centered '- N -'
+    form (PARSER-A-003).
+    """
     return _PAGE_NUMBER_RE.sub("", text)
 
 
@@ -50,13 +56,15 @@ _ABBREVIATIONS: dict[str, str] = {
     r"\bMr\.": "Mister",
     r"\bMrs\.": "Missus",
     r"\bDr\.": "Doctor",
-    r"\bSt\.": "Saint",
+    # NOTE: 'St.' (Saint/Street) and 'Co.' (Company/County) are inherently
+    # ambiguous and were dropped from the default map — they mispronounced
+    # 'Main St.' and 'Co. Cork' (PARSER-A-006). Callers wanting them can add
+    # custom cleaners.
     r"\bProf\.": "Professor",
     r"\bSgt\.": "Sergeant",
     r"\bCpt\.": "Captain",
     r"\bGen\.": "General",
     r"\bLt\.": "Lieutenant",
-    r"\bCo\.": "Company",
     r"\bInc\.": "Incorporated",
     r"\betc\.": "etcetera",
     r"\bvs\.": "versus",

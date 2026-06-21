@@ -438,6 +438,15 @@ class AudiobookProject:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
 
+        # CLI-A-007: A valid-JSON-but-wrong-shape file (e.g. a top-level array)
+        # would raise a raw AttributeError on data.get(...) below. Reject it
+        # with a clear message instead, mirroring the checks in import_casting.
+        if not isinstance(data, dict):
+            raise ValueError(
+                "Project file is not a valid audiobooker project "
+                f"(expected a JSON object, got {type(data).__name__})."
+            )
+
         # Check schema version
         schema_version = data.get("schema_version", 1)
         if schema_version > SCHEMA_VERSION:
