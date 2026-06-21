@@ -1,261 +1,75 @@
 ---
 title: Reference
-description: Full CLI and Python API reference for Audiobooker.
+description: Full CLI reference for Audiobooker.
 sidebar:
   order: 5
 ---
 
-## CLI reference
+Every command supports `-h`/`--help`. Global flags (before or after the subcommand): `--silent`, `--debug`. **Exit codes:** `0` success · `1` user error · `2` runtime error · `3` partial success (batch).
 
-### `audiobooker new <file>`
+## Create & inspect
 
-Create a new project from a source file.
+| Command | Description |
+|---------|-------------|
+| `make <file>` | One-shot: `new` → `compile` → auto-cast → `render`. Flags: `--format`, `--acx`, `--bitrate`, `--lang`, `--cover`, `-j N`, `--watch`, `-o`. |
+| `new <file\|folder>` | Create a project from EPUB/PDF/DOCX/TXT/MD or a folder of chapter files. Flags: `--lang`, `--booknlp`, `--chapter-delimiter <regex>`, `--force-text`, `-o`. |
+| `from-stdin` | Create a project from piped text (`--title`). |
+| `load <project>` | Load and summarize an existing `.audiobooker` project. |
+| `info` · `status` | Project details · render/cache status (`--json`). |
+| `chapters` · `chapters rename\|reorder` | List / rename / reorder chapters. |
+| `speakers` · `speakers --suggest-aliases` | List speakers · propose epithet/honorific aliases (`--apply`). |
+| `voices` | List the engine's voices (`--gender`, `--search`, `--engine`). |
+| `diagnose` | Check Python, dependencies, voice engine, FFmpeg, ffprobe. |
 
-```bash
-audiobooker new book.epub
-audiobooker new book.txt --lang en -o book.audiobooker
-```
+## Casting
 
-Supported formats: `.epub`, `.txt`, `.md`.
+| Command | Description |
+|---------|-------------|
+| `cast <char> <voice>` | Assign a voice (`--emotion`, `--speed`). |
+| `cast --interactive` | Guided per-uncast-speaker casting. |
+| `cast-suggest` · `cast-apply --auto` | Ranked suggestions · auto-apply the top pick. |
+| `cast-fill` | Bulk-assign by gender/role: `--gender`, `--voices a,b,c`, `--narrator`, `--minor-voice`, `--minor-threshold`. |
+| `audition <char>` | A/B ranked candidate voices for one character (`-n`, `--render`, `--line`, `--json`). |
+| `cast-preset save\|list\|apply\|delete` | Named, reusable cast presets (across a series). |
+| `cast-export` · `cast-import` | Move a cast table to/from a file (`--format json\|csv`). |
 
-### `audiobooker from-stdin`
+## Compile, review & emotion
 
-Create a project from text piped via stdin.
+| Command | Description |
+|---------|-------------|
+| `compile` | Detect dialogue, attribute speakers, infer emotion. `--booknlp`, `--emotion-preset`. |
+| `report` | Compile quality: unknown-attribution rate, top weak lines, emotion mix (`--json`). |
+| `review-export` · `review-import <file>` | Human-editable review round-trip. |
+| `emotions` | List/override emotions; `emotions presets`; `emotions mood-span`. |
+| `pronunciation add\|remove\|list\|import\|export` | Pronunciation overrides + lexicon files (CSV/JSON, phoneme passthrough). |
 
-```bash
-cat book.txt | audiobooker from-stdin --title "My Book" --author "Me" -o mybook.audiobooker
-```
+## Render & output
 
-### `audiobooker cast <character> <voice>`
+| Command | Description |
+|---------|-------------|
+| `render` | Render the audiobook. Flags: `--format m4b\|mp3\|opus\|flac`, `--acx`, `--split`, `--bitrate`, `--engine`, `--cover`, `--narrator/--genre/--series`, `-j N`, `--from-chapter N`, `--no-resume`, `--allow-partial`, `--clean-cache`, `--watch`, `--chapters`, `-o`. |
+| `sample` | A mastered retail sample clip (`--from-chapter`, `--start-seconds`, `--duration`, `--acx`). |
+| `master-check <file>` | Measure a file vs ACX loudness/peak/noise-floor limits (`--json`). |
+| `export-chapters` | Chapter cue sheet: `--format ffmetadata\|cue\|json`. |
+| `podcast` | Per-chapter render + iTunes RSS feed (`--base-url`, `-o`). |
+| `preview` | Short voice-QA clip in the cast voices (`--chapter`, `--seconds`). |
+| `batch <files…>` | Batch-process books or a `--manifest <toml\|json>` (per-book metadata/cast). |
+| `cache info\|clean\|clean-failed` | Manage the render cache. |
+| `completion bash\|zsh\|fish` | Print a shell-completion script. |
 
-Assign a voice to a character. Character names are stored with a canonical lookup key (case-insensitive via `casefold()`), but the display name is preserved.
+## Engines & configuration
 
-```bash
-audiobooker cast narrator bm_george --emotion calm
-audiobooker cast Alice af_bella --emotion warm
-```
+- **`--engine NAME`** (render/batch/preview/make/voices) selects a TTS backend resolved from `--engine` > `AUDIOBOOKER_ENGINE` > config > the built-in `voice-soundboard`. Plugins register via the `audiobooker.tts_engines` entry-point group.
+- **Config file** — `.audiobookerrc` (TOML) or `[tool.audiobooker]` in `pyproject.toml`, merged under explicit CLI flags. Common keys: `output_format`, `output_profile`, `lang`, `jobs`, `booknlp_mode`, `emotion_mode`, `chapter_pause_ms`.
 
-### `audiobooker cast-suggest`
-
-Suggest voices for all uncast speakers. Returns ranked, explainable recommendations.
-
-### `audiobooker cast-apply --auto`
-
-Auto-apply the top voice suggestion for each uncast speaker.
-
-### `audiobooker compile`
-
-Compile chapters into utterances (dialogue detection + speaker attribution). Prints uncast speakers after compilation so you can assign voices.
-
-### `audiobooker review-export`
-
-Export the compiled script to a human-editable review format.
-
-### `audiobooker review-import <file>`
-
-Import an edited review file back into the project.
-
-### `audiobooker render`
-
-Render audio and assemble the final audiobook.
-
-| Flag | Description |
-|------|-------------|
-| `-o/--output <path>` | Output filename |
-| `-c/--chapter <index>` | Render a single chapter (0-indexed) |
-| `--no-resume` | Ignore cache and re-render everything |
-| `--from-chapter N` | Start rendering at chapter N |
-| `--allow-partial` | Assemble even if some chapters failed |
-| `--clean-cache` | Delete render cache before starting |
-
-### `audiobooker voices`
-
-List voices available from voice-soundboard.
-
-```bash
-audiobooker voices
-audiobooker voices --gender female
-audiobooker voices --search george
-```
-
-### `audiobooker info`
-
-Show project details. Use `--verbose` for additional output.
-
-### `audiobooker chapters`
-
-List chapter titles.
-
-### `audiobooker speakers`
-
-List detected speakers.
-
-### `audiobooker load <project>`
-
-Load an existing `.audiobooker` project file.
-
-```bash
-audiobooker load mybook.audiobooker
-```
-
-### `audiobooker diagnose`
-
-Check environment: Python version, ebooklib, voice-soundboard, FFmpeg, and Audiobooker version. Useful for debugging installation problems before rendering.
-
-```bash
-audiobooker diagnose
-audiobooker diagnose --json
-```
-
-## Python API reference
-
-### Creating projects
+## Python API
 
 ```python
 from audiobooker import AudiobookProject
 
-# From EPUB
-project = AudiobookProject.from_epub("mybook.epub")
-
-# From text file (TXT or Markdown)
-project = AudiobookProject.from_text("mybook.txt")
-
-# From raw text string (no file needed)
-project = AudiobookProject.from_string(
-    "Chapter 1\n\nHello world.",
-    title="My Book",
-    author="Author Name",
-    lang="en",
-)
-
-# From pre-split chapters
-project = AudiobookProject.from_chapters(
-    [("Chapter 1", "Chapter text..."), ("Chapter 2", "More text...")],
-    title="My Book",
-)
-```
-
-All factory methods accept an optional `config` keyword argument to pass a custom `ProjectConfig`.
-
-### Casting voices
-
-```python
-project.cast("narrator", "bm_george", emotion="calm")
-project.cast("Alice", "af_bella", emotion="warm")
-```
-
-### Compiling
-
-```python
+project = AudiobookProject.from_epub("book.epub")   # from_docx / from_pdf / from_folder / from_string
 project.compile()
+project.render("book.m4b", output_profile="acx")
 ```
 
-### Review workflow
-
-```python
-review_path = project.export_for_review()
-# ... edit the file ...
-project.import_reviewed(review_path)
-```
-
-### Rendering
-
-```python
-# Full render with defaults (resume enabled)
-project.render("mybook.m4b")
-
-# Force full re-render
-project.render("mybook.m4b", resume=False)
-
-# Start from a specific chapter
-project.render("mybook.m4b", from_chapter=5)
-
-# Allow partial assembly even if some chapters failed
-project.render("mybook.m4b", allow_partial=True)
-```
-
-### Saving and loading
-
-```python
-# Save project state
-project.save("mybook.audiobooker")
-
-# Load an existing project
-project = AudiobookProject.load("mybook.audiobooker")
-```
-
-Projects are saved as JSON with a schema version, containing config, chapters, utterances, and casting data. Calling `save()` with no arguments writes to the last-used path.
-
-### Inspecting a project
-
-```python
-# Project summary dict
-project.info()
-
-# Total word count
-project.total_words
-
-# Estimated duration in minutes (based on estimated_wpm)
-project.estimated_duration_minutes
-
-# Speakers detected after compilation
-project.get_detected_speakers()
-
-# Speakers not yet assigned a voice
-project.get_uncast_speakers()
-
-# List all cast character names
-project.list_characters()
-```
-
-## Project configuration
-
-Key settings in `ProjectConfig`:
-
-| Setting | Default | Description |
-|---------|---------|-------------|
-| `fallback_voice_id` | `"af_heart"` | Voice used when no cast entry matches |
-| `validate_voices_on_render` | `True` | Verify all voice IDs exist before rendering |
-| `min_chapter_words` | `50` | Minimum words to keep a chapter |
-| `keep_titled_short_chapters` | `True` | Keep short chapters if they have titles |
-| `chapter_pause_ms` | `2000` | Silence between chapters (ms) |
-| `narrator_pause_ms` | `600` | Extra pause after narrator lines (ms) |
-| `dialogue_pause_ms` | `400` | Pause between dialogue lines (ms) |
-| `sample_rate` | `24000` | Audio sample rate (Hz) |
-| `output_format` | `"m4b"` | Default output format |
-| `estimated_wpm` | `150` | Words-per-minute for duration estimates |
-| `language_code` | `"en"` | ISO language code for profile selection |
-| `booknlp_mode` | `"auto"` | NLP speaker resolution: `on`, `off`, `auto` |
-| `emotion_mode` | `"rule"` | Emotion inference: `off`, `rule`, `auto` |
-| `emotion_confidence_threshold` | `0.75` | Minimum confidence to apply inferred emotion |
-
-## Data formats
-
-### `.audiobooker` project file
-
-JSON file containing config, chapters, utterances, and casting. Portable and scriptable.
-
-### Review file format
-
-Plain text with chapter headers and speaker tags:
-
-```
-=== Chapter 1 ===
-
-@narrator
-The door creaked open.
-
-@Unknown
-"Hello?" he whispered.
-
-@Sarah (worried)
-"Is anyone there?"
-```
-
-### Voice-soundboard script format
-
-Bridge format for synthesis:
-
-```
-[S1:Alice] (angry) How dare you!
-```
+See the [Usage](../usage/) page for the full API walkthrough, and [Architecture](../architecture/) for how the pieces fit together.
