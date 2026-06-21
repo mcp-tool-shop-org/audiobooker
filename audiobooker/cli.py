@@ -1,3 +1,4 @@
+# PYTHON_ARGCOMPLETE_OK
 """
 Command-Line Interface for Audiobooker.
 
@@ -50,6 +51,7 @@ import argparse
 import logging as _logging_mod
 import re
 import sys
+import time
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -103,19 +105,51 @@ def _report_error(e: BaseException, args: "argparse.Namespace | None" = None) ->
         traceback.print_exc()
 
 
-# Patterns that look like secrets/tokens — redacted in all log output
+def _audiobooker_file_completer(prefix, **kwargs):
+    """FT-CLI-004: argcomplete completer suggesting *.audiobooker files.
+
+    Returns project files in the current directory whose name starts with the
+    typed prefix. Imported lazily / used only when argcomplete is installed.
+    """
+    try:
+        return [
+            str(p)
+            for p in Path(".").glob("*.audiobooker")
+            if str(p).startswith(prefix)
+        ]
+    except OSError:
+        return []
+
+
+# Patterns that look like secrets/tokens — redacted in all log output.
+# Require an explicit "=" or ":" assignment separator (e.g. token=abc,
+# api_key: xyz) so ordinary prose like "unknown config key 'foo'" — a bare word
+# followed by whitespace — is NOT mistaken for a secret. Matching on whitespace
+# alone produced false positives that clobbered legitimate log messages.
 _SECRET_PATTERNS = re.compile(
-    r"((?:token|key|secret|password|credential|auth)[=:\s]+)\S+",
+    r"((?:token|key|secret|password|credential|auth)\s*[=:]\s*)\S+",
     re.IGNORECASE,
 )
 
 
 class _SecretRedactFilter(_logging_mod.Filter):
-    """Redact anything that looks like a secret from log records."""
+    """Redact anything that looks like a secret from log records.
+
+    Redacts the FULLY-RENDERED message (after %-arg substitution) and clears
+    ``record.args`` so the logging machinery does not re-apply %-formatting.
+    Redacting the raw format string instead would corrupt %-placeholders when a
+    secret-like word (e.g. "key %r") sits next to one, raising a TypeError at
+    format time — so always render first, then redact.
+    """
 
     def filter(self, record: _logging_mod.LogRecord) -> bool:
-        if isinstance(record.msg, str):
-            record.msg = _SECRET_PATTERNS.sub(r"\1[REDACTED]", record.msg)
+        try:
+            rendered = record.getMessage()
+        except Exception:
+            # Never let redaction break logging; pass the record through.
+            return True
+        record.msg = _SECRET_PATTERNS.sub(r"\1[REDACTED]", rendered)
+        record.args = None
         return True
 
 
@@ -211,12 +245,22 @@ def create_parser() -> argparse.ArgumentParser:
 
     # --- cast ---
     cast_parser = subparsers.add_parser("cast", help="Assign voice to character")
-    cast_parser.add_argument("character", help="Character name")
-    cast_parser.add_argument("voice", help="Voice ID (e.g., af_bella, bm_george)")
+    # FT-CLI-003: with --interactive, character/voice are optional (the command
+    # walks every uncast speaker), so make the positionals nargs="?".
+    cast_parser.add_argument("character", nargs="?", help="Character name")
+    cast_parser.add_argument(
+        "voice", nargs="?", help="Voice ID (e.g., af_bella, bm_george)"
+    )
     cast_parser.add_argument("-e", "--emotion", help="Default emotion")
     cast_parser.add_argument("-d", "--description", help="Character description")
     cast_parser.add_argument(
         "-p", "--project", help="Project file (auto-detected if omitted)"
+    )
+    # FT-CLI-003: interactive casting walkthrough for uncast speakers.
+    cast_parser.add_argument(
+        "-i", "--interactive",
+        action="store_true",
+        help="Interactively cast each uncast speaker (prompts per speaker)",
     )
 
     # --- cast-suggest ---
@@ -370,6 +414,12 @@ def create_parser() -> argparse.ArgumentParser:
         metavar="NAME",
         help="Set the series name embedded in the output",
     )
+    # FT-CLI-008: watch mode — re-render on source-file change.
+    render_parser.add_argument(
+        "--watch",
+        action="store_true",
+        help="Watch the source file and re-render (resume) whenever it changes",
+    )
 
     # --- info ---
     info_parser = subparsers.add_parser("info", help="Show project information")
@@ -481,8 +531,14 @@ def create_parser() -> argparse.ArgumentParser:
     )
     batch_parser.add_argument(
         "files",
-        nargs="+",
+        nargs="*",
         help="Source files or glob patterns (e.g. '*.epub')",
+    )
+    # FT-CLI-006: manifest-driven batch (per-book title/author/cover/cast/...).
+    batch_parser.add_argument(
+        "--manifest",
+        metavar="FILE",
+        help="Manifest file (.toml or .json) describing per-book metadata + casting",
     )
     batch_parser.add_argument(
         "--format",
@@ -686,6 +742,24 @@ def create_parser() -> argparse.ArgumentParser:
     ch_include_parser.add_argument("index", type=int, help="Chapter index (0-based)")
     ch_include_parser.add_argument("-p", "--project", help="Project file")
 
+    # FT-PARSE-006: rename / reorder chapters.
+    ch_rename_parser = chapters_sub.add_parser(
+        "rename", help="Rename a chapter by index"
+    )
+    ch_rename_parser.add_argument("index", type=int, help="Chapter index (0-based)")
+    ch_rename_parser.add_argument("title", help="New chapter title")
+    ch_rename_parser.add_argument("-p", "--project", help="Project file")
+
+    ch_reorder_parser = chapters_sub.add_parser(
+        "reorder", help="Reorder chapters by a comma-separated permutation"
+    )
+    ch_reorder_parser.add_argument(
+        "order",
+        help="New order as comma-separated 0-based indices, e.g. '2,0,1' "
+             "(must be a permutation of all chapters)",
+    )
+    ch_reorder_parser.add_argument("-p", "--project", help="Project file")
+
     # --- pronunciation ---
     pronunciation_parser = subparsers.add_parser(
         "pronunciation", help="Pronunciation override management"
@@ -725,7 +799,158 @@ def create_parser() -> argparse.ArgumentParser:
     pron_export_parser.add_argument("file", help="Output lexicon file (.csv or .json)")
     pron_export_parser.add_argument("-p", "--project", help="Project file")
 
+    # --- FT-CLI-001: make (one-command new -> compile -> auto-cast -> render) ---
+    make_parser = subparsers.add_parser(
+        "make",
+        help="One command: create + compile + auto-cast + render a source file",
+    )
+    make_parser.add_argument(
+        "source",
+        help="Source file (EPUB/DOCX/TXT/MD/PDF) or a folder of chapter files",
+    )
+    make_parser.add_argument(
+        "--format",
+        choices=["m4b", "mp3", "wav"],
+        default=None,
+        dest="output_format",
+        help="Output format (default: from config, usually m4b)",
+    )
+    make_parser.add_argument(
+        "-j", "--jobs", "--parallel",
+        type=int,
+        default=1,
+        metavar="N",
+        help="Number of parallel render workers (default: 1)",
+    )
+    make_parser.add_argument(
+        "--lang", default="en", metavar="CODE", help="Language code (default: en)"
+    )
+    make_parser.add_argument(
+        "--cover", metavar="PATH", help="Cover art image to embed (JPG/PNG)"
+    )
+    make_parser.add_argument(
+        "--normalize",
+        action="store_true",
+        help="Apply EBU R128 loudness normalization to the final audio",
+    )
+    make_parser.add_argument(
+        "--acx",
+        action="store_true",
+        help="Master for ACX/audiobook retail (sets output_profile=acx)",
+    )
+    make_parser.add_argument(
+        "--bitrate", metavar="RATE", help="Encoder bitrate override, e.g. 192k"
+    )
+    make_parser.add_argument("-o", "--output", help="Output audio file path")
+    make_parser.add_argument(
+        "--chapter-delimiter",
+        metavar="REGEX",
+        dest="chapter_delimiter",
+        help="Custom regex to split chapters (TXT/MD sources)",
+    )
+    make_parser.add_argument(
+        "--force-text",
+        action="store_true",
+        dest="force_text",
+        help="Force text extraction for scanned/image-only PDFs",
+    )
+    # FT-CLI-008: watch mode also available on make.
+    make_parser.add_argument(
+        "--watch",
+        action="store_true",
+        help="Watch the source file and re-render (resume) whenever it changes",
+    )
+
+    # --- FT-CAST-019: audition (rank candidate voices for one speaker) ---
+    audition_parser = subparsers.add_parser(
+        "audition",
+        help="Show ranked candidate voices for a speaker (optionally render samples)",
+    )
+    audition_parser.add_argument("character", help="Speaker/character name to audition")
+    audition_parser.add_argument("-p", "--project", help="Project file")
+    audition_parser.add_argument(
+        "-n", "--top", type=int, default=5, help="Show top N candidate voices (default: 5)"
+    )
+    audition_parser.add_argument(
+        "--render",
+        action="store_true",
+        help="Render a short sample line through each top-N candidate voice",
+    )
+    audition_parser.add_argument(
+        "--line",
+        metavar="TEXT",
+        help="Sample line to render (default: the speaker's first detected line)",
+    )
+    audition_parser.add_argument(
+        "-o", "--output-dir",
+        dest="output_dir",
+        help="Directory for rendered audition WAVs (default: audition/)",
+    )
+    audition_parser.add_argument(
+        "--json", dest="json_output", action="store_true", help="Output as JSON"
+    )
+
+    # --- FT-CLI-003: cast-interactive (alias for `cast --interactive`) ---
+    cast_interactive_parser = subparsers.add_parser(
+        "cast-interactive",
+        help="Interactively cast each uncast speaker (prompts per speaker)",
+    )
+    cast_interactive_parser.add_argument("-p", "--project", help="Project file")
+    cast_interactive_parser.add_argument(
+        "-n", "--top", type=int, default=5, help="Suggestions to show per speaker (default: 5)"
+    )
+
+    # --- FT-CLI-004: completion (shell completion activation snippet) ---
+    completion_parser = subparsers.add_parser(
+        "completion",
+        help="Print a shell-completion activation snippet (bash/zsh/fish)",
+    )
+    completion_parser.add_argument(
+        "shell",
+        choices=["bash", "zsh", "fish"],
+        help="Target shell",
+    )
+
+    # FT-CLI-004: attach the *.audiobooker completer to -p/--project args and
+    # enable argcomplete. Both are no-ops when argcomplete isn't installed.
+    _attach_completers(subparsers)
+    _enable_argcomplete(parser)
+
     return parser
+
+
+def _attach_completers(subparsers) -> None:
+    """FT-CLI-004: attach the project-file completer to relevant arguments.
+
+    Walks every registered subparser and tags any ``-p/--project`` option (and
+    the ``project`` positional of `load`) with ``_audiobooker_file_completer``
+    so argcomplete suggests *.audiobooker files. The attribute argcomplete reads
+    is ``.completer``; setting it is harmless when argcomplete is absent.
+    """
+    choices = getattr(subparsers, "choices", {}) or {}
+    for sub in choices.values():
+        for action in getattr(sub, "_actions", []):
+            opts = getattr(action, "option_strings", [])
+            dest = getattr(action, "dest", "")
+            if "--project" in opts or dest == "project":
+                action.completer = _audiobooker_file_completer  # type: ignore[attr-defined]
+
+
+def _enable_argcomplete(parser) -> None:
+    """FT-CLI-004: guarded argcomplete.autocomplete(parser).
+
+    argcomplete is an optional dependency. When it isn't installed this is a
+    no-op so normal CLI use is unaffected. When it IS installed and the shell is
+    driving completion, argcomplete handles the request and exits.
+    """
+    try:
+        import argcomplete
+    except ImportError:
+        return
+    try:
+        argcomplete.autocomplete(parser)
+    except Exception:  # pragma: no cover - completion is best-effort
+        pass
 
 
 def find_project_file(specified: Optional[str] = None) -> Path:
@@ -763,6 +988,124 @@ def find_project_file(specified: Optional[str] = None) -> Path:
         )
 
 
+# ---------------------------------------------------------------------------
+# FT-CLI-002: config-file merge (CLI flag > config-file value > built-in default)
+# ---------------------------------------------------------------------------
+
+# Section keys that config_file.load_config() may return alongside flat
+# ProjectConfig fields. These are NOT ProjectConfig fields — they seed
+# BookMetadata or point at auxiliary files — so they must be stripped before
+# ProjectConfig(**mapped).
+_CONFIG_SECTION_KEYS = frozenset({"book", "casting", "lexicon"})
+
+
+def _load_config_file(source_path: Optional[str] = None) -> dict:
+    """Resolve the on-disk config (project-local > user) for ``source_path``.
+
+    Thin wrapper around config_file.load_config that never raises: a broken
+    config module or filesystem error degrades to an empty config so the run
+    continues with built-in defaults. Returns the flat dict as-is (section
+    keys included).
+    """
+    try:
+        from audiobooker import config_file
+        return config_file.load_config(source_path) or {}
+    except Exception as e:  # pragma: no cover - defensive; load_config is pure-read
+        print(f"WARNING: ignoring config file ({e})")
+        return {}
+
+
+def _build_config_from(
+    file_config: dict,
+    cli_overrides: dict,
+    *,
+    base_kwargs: Optional[dict] = None,
+):
+    """Build a ProjectConfig from config-file values under CLI overrides.
+
+    Precedence (highest first): explicit CLI flag > config-file value > the
+    ProjectConfig built-in default. ``cli_overrides`` should contain ONLY flags
+    the user actually passed (None / absent values are dropped so they never
+    clobber a config-file value). ``base_kwargs`` are unconditional seeds (e.g.
+    a language already validated by the caller) applied above the config file
+    but below explicit CLI overrides.
+
+    Section keys (book/casting/lexicon) are stripped before construction.
+    Validation happens in ProjectConfig.__post_init__, which raises structured
+    ValueErrors on bad values — those propagate to the caller's error handler.
+    """
+    from audiobooker.models import ProjectConfig
+
+    mapped = {
+        k: v for k, v in file_config.items() if k not in _CONFIG_SECTION_KEYS
+    }
+    if base_kwargs:
+        mapped.update(base_kwargs)
+    # Only let CLI flags the user actually set win over the config file.
+    for key, value in cli_overrides.items():
+        if value is not None:
+            mapped[key] = value
+    return ProjectConfig(**mapped)
+
+
+def _apply_config_sections(project, file_config: dict, *, base_dir: Path) -> None:
+    """Apply book/casting/lexicon sections from a config file onto a project.
+
+    NEVER mutates a saved project file — the caller is responsible for deciding
+    whether to persist. Paths in the casting/lexicon sections are resolved
+    relative to ``base_dir`` (the source directory) when not absolute. Best
+    effort: a missing/invalid aux file warns and is skipped rather than failing
+    the whole run.
+    """
+    from audiobooker.models import BookMetadata
+
+    book = file_config.get("book")
+    if isinstance(book, dict):
+        meta: BookMetadata = project.metadata
+        if book.get("title"):
+            project.title = str(book["title"])
+        if book.get("author"):
+            project.author = str(book["author"])
+        if book.get("genre"):
+            meta.genre = str(book["genre"])
+        if book.get("series"):
+            meta.series = str(book["series"])
+        if book.get("series_index") is not None:
+            try:
+                meta.series_index = int(book["series_index"])
+            except (TypeError, ValueError):
+                print(f"WARNING: ignoring non-integer series_index: {book['series_index']!r}")
+        if book.get("year") is not None:
+            try:
+                meta.year = int(book["year"])
+            except (TypeError, ValueError):
+                print(f"WARNING: ignoring non-integer year: {book['year']!r}")
+        if book.get("narrator"):
+            meta.narrator_name = str(book["narrator"])
+        if book.get("publisher"):
+            meta.publisher = str(book["publisher"])
+
+    def _resolve(p: str) -> Path:
+        path = Path(p)
+        return path if path.is_absolute() else (base_dir / path)
+
+    casting_ref = file_config.get("casting")
+    if isinstance(casting_ref, str) and casting_ref:
+        casting_path = _resolve(casting_ref)
+        try:
+            project.import_casting(casting_path)
+        except (FileNotFoundError, ValueError) as e:
+            print(f"WARNING: could not import casting from config ({e})")
+
+    lexicon_ref = file_config.get("lexicon")
+    if isinstance(lexicon_ref, str) and lexicon_ref:
+        lexicon_path = _resolve(lexicon_ref)
+        try:
+            project.import_lexicon(lexicon_path)
+        except (FileNotFoundError, ValueError) as e:
+            print(f"WARNING: could not import lexicon from config ({e})")
+
+
 def cmd_new(args) -> int:
     """Create new project from source file."""
     from audiobooker import AudiobookProject
@@ -779,7 +1122,6 @@ def cmd_new(args) -> int:
 
     try:
         from audiobooker.language.profile import get_profile, available_profiles
-        from audiobooker.models import ProjectConfig
 
         lang = getattr(args, "lang", "en")
         try:
@@ -790,7 +1132,19 @@ def cmd_new(args) -> int:
             return 1
 
         booknlp_mode = getattr(args, "booknlp", "auto")
-        config = ProjectConfig(language_code=lang, booknlp_mode=booknlp_mode)
+
+        # FT-CLI-002: seed config from the on-disk config file, then let
+        # explicit CLI flags win (CLI flag > config-file value > default).
+        file_config = _load_config_file(str(source))
+        config = _build_config_from(
+            file_config,
+            cli_overrides={"booknlp_mode": getattr(args, "booknlp", None)},
+            base_kwargs={"language_code": lang},
+        )
+        # booknlp default is "auto"; only treat it as an explicit override when
+        # the user passed something other than the parser default.
+        if booknlp_mode != "auto":
+            config.booknlp_mode = booknlp_mode
 
         # INPUT (v2.1): custom chapter delimiter (TXT/MD/stdin) + force-text (PDF).
         chapter_delimiter = getattr(args, "chapter_delimiter", None)
@@ -815,6 +1169,14 @@ def cmd_new(args) -> int:
             print(f"Error: Unsupported file format: {suffix}")
             print("Supported: .epub, .docx, .txt, .md, .pdf, or a folder of chapter files")
             return 1
+
+        # FT-CLI-002: apply book/casting/lexicon sections from the config file
+        # onto the freshly-created project (paths resolved next to the source).
+        _apply_config_sections(
+            project,
+            file_config,
+            base_dir=source if is_dir else source.parent,
+        )
 
         # Save project. For a folder source there is no source file to derive
         # the project path from, so default to <folder-name>.audiobooker.
@@ -849,6 +1211,18 @@ def cmd_cast(args) -> int:
     """Assign voice to character."""
     from audiobooker import AudiobookProject
 
+    # FT-CLI-003: `cast --interactive` walks every uncast speaker.
+    if getattr(args, "interactive", False):
+        return _cast_interactive(args)
+
+    if not args.character or not args.voice:
+        print(
+            "Error: cast requires a character and a voice "
+            "(or use --interactive to cast all uncast speakers)."
+        )
+        print("Usage: audiobooker cast <character> <voice>")
+        return 1
+
     try:
         project_path = find_project_file(args.project)
         project = AudiobookProject.load(project_path)
@@ -871,6 +1245,302 @@ def cmd_cast(args) -> int:
     except USER_ERROR_TYPES as e:
         _report_error(e, args)
         return 1
+
+
+def _gather_speaker_utterances(project, limit: int = 5) -> dict:
+    """Collect up to ``limit`` sample lines per speaker from compiled chapters.
+
+    Mirrors the gathering loop in cmd_cast_suggest so audition/interactive
+    casting see the same per-speaker sample set the suggester uses.
+    """
+    speaker_utterances: dict[str, list[str]] = {}
+    for chapter in project.chapters:
+        for utt in chapter.utterances:
+            key = utt.speaker
+            bucket = speaker_utterances.setdefault(key, [])
+            if len(bucket) < limit:
+                bucket.append(utt.text)
+    return speaker_utterances
+
+
+def _cast_interactive(args) -> int:
+    """
+    FT-CLI-003: Interactively cast each uncast speaker.
+
+    For each uncast speaker: print a representative utterance + the top-N
+    VoiceSuggester candidates, then prompt for a choice (number / voice id /
+    's' to skip / 'p' to preview). Guards sys.stdin.isatty(): when stdin is not
+    a TTY it falls back to printing the suggestions (no prompt) so piping is
+    safe.
+    """
+    from audiobooker import AudiobookProject
+    from audiobooker.casting.voice_suggester import VoiceSuggester
+
+    try:
+        project_path = find_project_file(args.project)
+        project = AudiobookProject.load(project_path)
+
+        # Compile if needed so speakers are detected.
+        if not any(c.is_compiled for c in project.chapters):
+            _out("Compiling to detect speakers...")
+            project.compile()
+            project.save()
+
+        uncast = sorted(project.get_uncast_speakers())
+        if not uncast:
+            _out("All speakers are already cast.")
+            return 0
+
+        top_n = getattr(args, "top", 5) or 5
+        speaker_utterances = _gather_speaker_utterances(project)
+        already_cast = project.casting.get_voice_mapping()
+        suggester = VoiceSuggester(max_suggestions=top_n)
+        results = suggester.suggest_all(uncast, speaker_utterances, already_cast)
+
+        interactive = sys.stdin.isatty()
+        if not interactive:
+            _out(
+                "Non-interactive stdin — printing suggestions only "
+                "(run in a terminal to cast interactively):\n"
+            )
+
+        applied = 0
+        for result in results:
+            speaker = result.speaker
+            samples = speaker_utterances.get(speaker, [])
+            sample = samples[0][:80] if samples else "(no sample line)"
+            _out(f"\nSpeaker: {speaker}")
+            _out(f"  Sample: {sample!r}")
+            if not result.suggestions:
+                _out("  (no voice suggestions available)")
+                continue
+            for i, s in enumerate(result.suggestions, 1):
+                marker = ">>>" if i == 1 else "   "
+                _out(f"    {marker} [{i}] {s.voice_id} (score: {s.score:.2f}) - {s.reason}")
+
+            if not interactive:
+                continue
+
+            # Prompt loop for this speaker.
+            chosen = _prompt_for_voice(speaker, result.suggestions, project)
+            if chosen is None:
+                _out(f"  Skipped {speaker}.")
+                continue
+            project.cast(speaker, chosen)
+            _out(f"  Cast {speaker} as {chosen}")
+            applied += 1
+
+        if applied:
+            project.save()
+            _out(f"\nApplied {applied} voice assignment(s).")
+        elif interactive:
+            _out("\nNo voices assigned.")
+        return 0
+
+    except USER_ERROR_TYPES as e:
+        _report_error(e, args)
+        return 1
+
+
+def _prompt_for_voice(speaker, suggestions, project):
+    """Prompt the user for a voice choice for one speaker.
+
+    Accepts: a number (1..N from the suggestion list), a raw voice id, 's' to
+    skip, 'p' to preview the top suggestion (best-effort; skipped if rendering
+    is unavailable). Returns the chosen voice id, or None to skip. EOF / empty
+    input also skips.
+    """
+    valid_numbers = {str(i): s.voice_id for i, s in enumerate(suggestions, 1)}
+    while True:
+        try:
+            raw = input(
+                f"  Choose voice for {speaker} "
+                f"[1-{len(suggestions)} / voice-id / s=skip / p=preview]: "
+            ).strip()
+        except EOFError:
+            return None
+        if not raw or raw.lower() == "s":
+            return None
+        if raw in valid_numbers:
+            return valid_numbers[raw]
+        if raw.lower() == "p":
+            top = suggestions[0].voice_id if suggestions else None
+            if top:
+                _preview_voice_line(speaker, top, project)
+            continue
+        # Treat anything else as a raw voice id.
+        return raw
+
+
+def _preview_voice_line(speaker, voice_id, project) -> None:
+    """Best-effort: render the speaker's first line through ``voice_id``.
+
+    Prints a short status line. Never raises — a missing engine just prints a
+    note so the interactive loop continues.
+    """
+    from audiobooker.models import CastingTable, Chapter, Character, Utterance
+
+    samples = _gather_speaker_utterances(project, limit=1).get(speaker, [])
+    line = samples[0] if samples else "This is a preview of the selected voice."
+    try:
+        from audiobooker.renderer.engine import render_chapter
+
+        casting = CastingTable()
+        casting.characters[casting.normalize_key(speaker)] = Character(
+            name=speaker, voice=voice_id
+        )
+        chapter = Chapter(index=0, title=f"Preview {voice_id}", raw_text="")
+        chapter.utterances = [Utterance(speaker=speaker, text=line)]
+        out = Path(f"preview_{voice_id}.wav")
+        render_chapter(chapter, casting, out)
+        _out(f"    Preview rendered: {out}")
+    except Exception as e:  # pragma: no cover - depends on TTS backend
+        _out(f"    (preview unavailable: {e})")
+
+
+def cmd_cast_interactive(args) -> int:
+    """FT-CLI-003: `cast-interactive` — thin alias for cast --interactive."""
+    return _cast_interactive(args)
+
+
+def cmd_audition(args) -> int:
+    """
+    FT-CAST-019: Print the ranked candidate-voice table for one speaker.
+
+    Uses voice_suggester.audition_voices() for the ranking. With --render,
+    renders the chosen sample line through each top-N candidate voice to
+    separate WAVs under an audition/ directory (one one-utterance Chapter per
+    voice via engine.render_chapter).
+    """
+    from audiobooker import AudiobookProject
+    from audiobooker.casting.voice_suggester import audition_voices
+
+    try:
+        project_path = find_project_file(args.project)
+        project = AudiobookProject.load(project_path)
+
+        # Compile if needed so the speaker's lines exist.
+        if not any(c.is_compiled for c in project.chapters):
+            _out("Compiling to detect speakers...")
+            project.compile()
+            project.save()
+
+        speaker = args.character
+        top_n = getattr(args, "top", 5) or 5
+        json_output = getattr(args, "json_output", False)
+
+        # Gather the speaker's sample utterances (like cmd_cast_suggest).
+        samples = _gather_speaker_utterances(project).get(speaker, [])
+
+        candidates = audition_voices(speaker, project.casting, samples)
+        candidates = candidates[:top_n]
+
+        # Pick the sample line: explicit --line, else first detected line.
+        sample_line = getattr(args, "line", None) or (
+            samples[0] if samples else "This is a sample of the selected voice."
+        )
+
+        if json_output and not getattr(args, "render", False):
+            import json as json_mod
+            print(json_mod.dumps(
+                {"speaker": speaker, "candidates": candidates},
+                indent=2,
+                ensure_ascii=False,
+            ))
+            return 0
+
+        _out(f"Audition for speaker '{speaker}' (top {len(candidates)}):\n")
+        _out(f"  {'#':<3} {'Voice':<14} {'Gender':<8} {'Style':<12} {'Score':<7}")
+        _out(f"  {'-'*3} {'-'*14} {'-'*8} {'-'*12} {'-'*7}")
+        for i, c in enumerate(candidates, 1):
+            flag = " (low confidence)" if c.get("low_confidence") else ""
+            _out(
+                f"  {i:<3} {c['voice_id']:<14} {c.get('gender', '?'):<8} "
+                f"{c.get('style', '?'):<12} {c.get('score', 0.0):<7.2f}{flag}"
+            )
+
+        if not getattr(args, "render", False):
+            _out(
+                "\nRe-run with --render to hear each candidate, or cast one with: "
+                f"audiobooker cast {speaker} <voice-id>"
+            )
+            return 0
+
+        # --render: one WAV per candidate voice into the audition dir.
+        from audiobooker.models import CastingTable, Chapter, Character, Utterance
+        from audiobooker.renderer.engine import render_chapter
+
+        out_dir = Path(getattr(args, "output_dir", None) or "audition")
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        rendered: list[dict] = []
+        _out(f"\nRendering {len(candidates)} sample(s) to {out_dir}/ ...")
+        for c in candidates:
+            voice_id = c["voice_id"]
+            casting = CastingTable()
+            casting.characters[casting.normalize_key(speaker)] = Character(
+                name=speaker, voice=voice_id
+            )
+            chapter = Chapter(index=0, title=f"Audition {voice_id}", raw_text="")
+            chapter.utterances = [Utterance(speaker=speaker, text=sample_line)]
+            out_path = out_dir / f"{voice_id}.wav"
+            try:
+                path = render_chapter(chapter, casting, out_path)
+                rendered.append({"voice_id": voice_id, "path": str(path)})
+                _out(f"  {voice_id} -> {path}")
+            except Exception as e:
+                _out(f"  {voice_id}: render failed ({e})")
+
+        if json_output:
+            import json as json_mod
+            print(json_mod.dumps(
+                {"speaker": speaker, "rendered": rendered},
+                indent=2,
+                ensure_ascii=False,
+            ))
+        return 0
+
+    except USER_ERROR_TYPES as e:
+        _report_error(e, args)
+        return 1
+
+
+def cmd_completion(args) -> int:
+    """
+    FT-CLI-004: Print a shell-completion activation snippet.
+
+    Emits the register-python-argcomplete activation for the chosen shell. The
+    user eval's/sources it (e.g. `eval "$(audiobooker completion bash)"`).
+    Output goes to stdout via print() so --silent never suppresses the snippet
+    the user is capturing.
+    """
+    shell = args.shell
+    if shell == "bash":
+        print('eval "$(register-python-argcomplete audiobooker)"')
+        print("# Add the line above to ~/.bashrc to enable tab-completion.")
+    elif shell == "zsh":
+        print("autoload -U bashcompinit && bashcompinit")
+        print('eval "$(register-python-argcomplete audiobooker)"')
+        print("# Add the lines above to ~/.zshrc to enable tab-completion.")
+    elif shell == "fish":
+        print("register-python-argcomplete --shell fish audiobooker | source")
+        print(
+            "# Add the line above to ~/.config/fish/config.fish "
+            "to enable tab-completion."
+        )
+    else:  # pragma: no cover - argparse choices prevent this
+        print(f"Error: unsupported shell: {shell}")
+        return 1
+
+    # Remind the user the optional dependency must be installed.
+    try:
+        import argcomplete  # noqa: F401
+    except ImportError:
+        print(
+            "# NOTE: install the optional dependency first: "
+            "pip install argcomplete"
+        )
+    return 0
 
 
 def cmd_compile(args) -> int:
@@ -966,7 +1636,24 @@ def cmd_compile(args) -> int:
 
 
 def cmd_render(args) -> int:
-    """Render audiobook."""
+    """Render audiobook.
+
+    FT-CLI-008: with --watch, polls the project file's mtime and re-renders
+    (resume=True so only changed chapters re-render) whenever it changes.
+    """
+    if getattr(args, "watch", False):
+        try:
+            project_path = find_project_file(getattr(args, "project", None))
+        except USER_ERROR_TYPES as e:
+            _report_error(e, args)
+            return 1
+        # Watching re-renders with resume on each change; ignore per-run codes.
+        return _watch_loop(project_path, lambda: _cmd_render_once(args))
+    return _cmd_render_once(args)
+
+
+def _cmd_render_once(args) -> int:
+    """Render audiobook (single pass — the body shared by cmd_render/watch)."""
     from audiobooker import AudiobookProject
     from audiobooker.renderer.engine import RenderError
 
@@ -1587,6 +2274,46 @@ def cmd_chapters(args) -> int:
             _report_error(e, args)
             return 1
 
+    elif chapters_command == "rename":
+        # FT-PARSE-006: rename a chapter by index.
+        try:
+            project_path = find_project_file(args.project)
+            project = AudiobookProject.load(project_path)
+            old_title = project.chapters[args.index].title if 0 <= args.index < len(project.chapters) else "?"
+            project.rename_chapter(args.index, args.title)
+            project.save()
+            _out(f"Renamed chapter {args.index}: {old_title!r} -> {args.title!r}")
+            return 0
+        except USER_ERROR_TYPES as e:
+            _report_error(e, args)
+            return 1
+
+    elif chapters_command == "reorder":
+        # FT-PARSE-006: reorder chapters by a comma-separated permutation.
+        try:
+            project_path = find_project_file(args.project)
+            project = AudiobookProject.load(project_path)
+
+            raw = args.order.replace(" ", "")
+            try:
+                new_order = [int(tok) for tok in raw.split(",") if tok != ""]
+            except ValueError:
+                print(
+                    "Error: --order must be comma-separated integers, "
+                    f"e.g. '2,0,1'. Got: {args.order!r}"
+                )
+                return 1
+
+            project.reorder_chapters(new_order)
+            project.save()
+            _out(f"Reordered {len(project.chapters)} chapters: new order {new_order}")
+            for ch in project.chapters:
+                _out(f"  [{ch.index}] {ch.title}")
+            return 0
+        except USER_ERROR_TYPES as e:
+            _report_error(e, args)
+            return 1
+
     # Default: list chapters
     try:
         project_path = find_project_file(args.project)
@@ -2023,13 +2750,25 @@ def cmd_from_stdin(args) -> int:
         return 1
 
     try:
+        # FT-CLI-002: seed config from the cwd-anchored config file (stdin has
+        # no source path). CLI --lang wins over a config language.
+        file_config = _load_config_file(None)
+        config = _build_config_from(
+            file_config,
+            cli_overrides={},
+            base_kwargs={"language_code": args.lang},
+        )
         project = AudiobookProject.from_string(
             text,
             title=args.title,
             author=args.author,
             lang=args.lang,
+            config=config,
             chapter_delimiter=getattr(args, "chapter_delimiter", None),
         )
+
+        # FT-CLI-002: book/casting/lexicon sections (paths relative to cwd).
+        _apply_config_sections(project, file_config, base_dir=Path.cwd())
 
         # Route the title through the filename sanitizer so titles with
         # slashes/colons/etc. don't produce an invalid default output path.
@@ -2500,45 +3239,341 @@ def cmd_diagnose(args: argparse.Namespace) -> int:
     return 0 if all_ok else 1
 
 
+def _process_book(
+    source: Path,
+    *,
+    fmt: str,
+    jobs: int,
+    lang: str,
+    overrides: Optional[dict] = None,
+    render_overrides: Optional[dict] = None,
+    output_path: Optional[Path] = None,
+) -> dict:
+    """Create + compile + auto-cast + render a single source file.
+
+    This is the canonical per-book sequence shared by `batch` (FT-RENDER-012)
+    and `make` (FT-CLI-001) so both run byte-for-byte identical steps:
+    config-file merge -> source factory -> config sections -> compile ->
+    auto-cast (VoiceSuggester top suggestion) -> save -> render_project.
+
+    Args:
+        source: Source file or chapter folder.
+        fmt: Output format (m4b/mp3/wav).
+        jobs: Parallel render workers.
+        lang: Language code.
+        overrides: Optional manifest-style per-book metadata (title/author/
+            cover/series/series_index/cast) applied on top of config-file
+            sections.
+        render_overrides: Extra render_project kwargs (cover_art/normalize/
+            output_profile/bitrate) — used by `make` for --cover/--acx/etc.
+        output_path: Explicit output audio path (default derives from title).
+
+    Returns:
+        A result dict: {file, name, status, output, error, duration_s}.
+        Never raises — render/parse errors are captured into the dict.
+    """
+    import time as _time
+    from audiobooker import AudiobookProject
+    from audiobooker.project import _sanitize_filename
+    from audiobooker.renderer.engine import RenderError, render_project
+
+    overrides = overrides or {}
+    render_overrides = render_overrides or {}
+
+    book_start = _time.time()
+    book_result = {
+        "file": str(source),
+        "name": source.stem,
+        "status": "unknown",
+        "output": "",
+        "error": "",
+        "duration_s": 0.0,
+    }
+
+    try:
+        # Step 1: Create project. FT-CLI-002: seed config from the on-disk
+        # config file next to this source, with the --lang/--format CLI flags
+        # winning over config-file values.
+        file_config = _load_config_file(str(source))
+        config = _build_config_from(
+            file_config,
+            cli_overrides={"output_format": overrides.get("format") or fmt},
+            base_kwargs={"language_code": overrides.get("lang") or lang},
+        )
+
+        suffix = source.suffix.lower()
+        if source.is_dir():
+            project = AudiobookProject.from_folder(source, config=config)
+        elif suffix == ".epub":
+            project = AudiobookProject.from_epub(source, config=config)
+        elif suffix == ".docx":
+            project = AudiobookProject.from_docx(source, config=config)
+        elif suffix == ".pdf":
+            project = AudiobookProject.from_pdf(source, config=config)
+        elif suffix in (".txt", ".md", ".markdown"):
+            project = AudiobookProject.from_text(source, config=config)
+        else:
+            book_result["status"] = "skipped"
+            book_result["error"] = f"Unsupported format: {suffix}"
+            book_result["duration_s"] = _time.time() - book_start
+            return book_result
+
+        base_dir = source if source.is_dir() else source.parent
+
+        # FT-CLI-002: apply book/casting/lexicon sections from the config file
+        # before compile (so a config casting table is honored).
+        _apply_config_sections(project, file_config, base_dir=base_dir)
+
+        # FT-CLI-006: apply manifest per-book overrides (highest precedence,
+        # over both config-file sections and parsed metadata).
+        _apply_book_overrides(project, overrides, base_dir=base_dir)
+
+        book_result["name"] = project.title
+
+        # Step 2: Compile
+        project.compile()
+
+        # Step 3: Auto-cast with suggestions
+        uncast = project.get_uncast_speakers()
+        if uncast:
+            try:
+                from audiobooker.casting.voice_suggester import VoiceSuggester
+                already_cast = project.casting.get_voice_mapping()
+                suggester = VoiceSuggester(max_suggestions=1)
+                suggest_results = suggester.suggest_all(
+                    sorted(uncast), already_cast=already_cast
+                )
+                for sr in suggest_results:
+                    if sr.top:
+                        project.cast(sr.speaker, sr.top.voice_id)
+            except Exception as cast_err:
+                _out(f"  Warning: Auto-cast failed ({cast_err}), using fallback voices")
+
+        # Step 4: Save project. A directory source has no file suffix to swap,
+        # so place the project file alongside the folder.
+        if source.is_dir():
+            project_path = source.parent / f"{source.name}.audiobooker"
+        else:
+            project_path = source.with_suffix(".audiobooker")
+        project.save(project_path)
+
+        # Step 5: Render
+        out_fmt = overrides.get("format") or fmt
+        if output_path is not None:
+            final_output = Path(output_path)
+        else:
+            final_output = source.parent / f"{_sanitize_filename(project.title)}.{out_fmt}"
+
+        # FT-RENDER-M-002: pass cover art + metadata through. render_project
+        # auto-defaults cover_art from project.metadata.cover_art_path when None.
+        md_cover = None
+        if project.metadata.cover_art_path and Path(project.metadata.cover_art_path).exists():
+            md_cover = str(project.metadata.cover_art_path)
+        render_kwargs = dict(
+            jobs=jobs,
+            force=True,  # skip casting validation in batch/make
+            output_format=out_fmt,
+            cover_art=md_cover,
+            output_profile=project.config.output_profile,
+        )
+        # make's --cover/--normalize/--acx/--bitrate land here.
+        render_kwargs.update(render_overrides)
+        try:
+            path = render_project(project, final_output, **render_kwargs)
+        except TypeError as te:
+            # Older renderer signature: drop the v2.1 kwargs and retry.
+            if not any(
+                k in str(te) for k in ("output_profile", "bitrate", "normalize")
+            ):
+                raise
+            for k in ("output_profile", "bitrate", "normalize"):
+                render_kwargs.pop(k, None)
+            path = render_project(project, final_output, **render_kwargs)
+
+        book_result["status"] = "success"
+        book_result["output"] = str(path)
+        book_result["duration_s"] = _time.time() - book_start
+
+    except RenderError as e:
+        book_result["status"] = "failed"
+        book_result["error"] = str(e)[:200]
+        book_result["duration_s"] = _time.time() - book_start
+
+    except Exception as e:
+        book_result["status"] = "error"
+        book_result["error"] = str(e)[:200]
+        book_result["duration_s"] = _time.time() - book_start
+
+    return book_result
+
+
+def _apply_book_overrides(project, overrides: dict, *, base_dir: Path) -> None:
+    """FT-CLI-006: apply manifest per-book metadata onto a project.
+
+    Recognized keys: title, author, cover, series, series_index, year, genre,
+    narrator, cast (path to a casting JSON, resolved relative to base_dir).
+    Best effort: a missing cast file warns and is skipped.
+    """
+    if not overrides:
+        return
+    meta = project.metadata
+    if overrides.get("title"):
+        project.title = str(overrides["title"])
+    if overrides.get("author"):
+        project.author = str(overrides["author"])
+    if overrides.get("genre"):
+        meta.genre = str(overrides["genre"])
+    if overrides.get("series"):
+        meta.series = str(overrides["series"])
+    if overrides.get("series_index") is not None:
+        try:
+            meta.series_index = int(overrides["series_index"])
+        except (TypeError, ValueError):
+            print(f"WARNING: ignoring non-integer series_index: {overrides['series_index']!r}")
+    if overrides.get("year") is not None:
+        try:
+            meta.year = int(overrides["year"])
+        except (TypeError, ValueError):
+            print(f"WARNING: ignoring non-integer year: {overrides['year']!r}")
+    if overrides.get("narrator"):
+        meta.narrator_name = str(overrides["narrator"])
+
+    cover = overrides.get("cover")
+    if cover:
+        cover_path = Path(cover)
+        if not cover_path.is_absolute():
+            cover_path = base_dir / cover_path
+        if cover_path.exists():
+            meta.cover_art_path = cover_path
+        else:
+            print(f"WARNING: cover art not found, skipping: {cover_path}")
+
+    cast_ref = overrides.get("cast")
+    if cast_ref:
+        cast_path = Path(cast_ref)
+        if not cast_path.is_absolute():
+            cast_path = base_dir / cast_path
+        try:
+            project.import_casting(cast_path)
+        except (FileNotFoundError, ValueError) as e:
+            print(f"WARNING: could not import casting from manifest ({e})")
+
+
+def _load_manifest(path: Path) -> list[dict]:
+    """FT-CLI-006: load a batch manifest (.toml or .json) into a list of dicts.
+
+    Accepts either a top-level list (JSON array) or a table with a "books"
+    list. Each entry must carry at least a "source" key. Raises ValueError on
+    a malformed manifest and FileNotFoundError when the file is missing.
+    """
+    if not path.exists():
+        raise FileNotFoundError(f"Manifest not found: {path}")
+
+    suffix = path.suffix.lower()
+    if suffix == ".json":
+        import json as json_mod
+        try:
+            data = json_mod.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as e:
+            raise ValueError(f"Could not parse JSON manifest {path}: {e}") from e
+    elif suffix == ".toml":
+        from audiobooker import config_file as _cf
+        if not _cf.have_toml_support():
+            raise ValueError(
+                "TOML manifest requested but no TOML parser is available "
+                "(install 'tomli' on Python 3.10)."
+            )
+        # Reuse config_file's resolved TOML loader (returns None on bad TOML).
+        data = _cf._read_toml(path)
+        if data is None:
+            raise ValueError(f"Could not parse TOML manifest: {path}")
+    else:
+        raise ValueError(
+            f"Unsupported manifest format: {suffix!r}. Use .toml or .json."
+        )
+
+    if isinstance(data, list):
+        books = data
+    elif isinstance(data, dict) and isinstance(data.get("books"), list):
+        books = data["books"]
+    else:
+        raise ValueError(
+            "Manifest must be a list of book entries or a table with a "
+            "'books' list."
+        )
+
+    cleaned: list[dict] = []
+    for entry in books:
+        if not isinstance(entry, dict) or not entry.get("source"):
+            raise ValueError(
+                f"Each manifest entry must be an object with a 'source' key; "
+                f"got: {entry!r}"
+            )
+        cleaned.append(entry)
+    return cleaned
+
+
 def cmd_batch(args) -> int:
     """
     FT-RENDER-012: Batch process multiple source files.
 
     For each source file: create project -> auto-cast -> compile -> render.
     Logs per-book progress, elapsed time, and summary table at the end.
+
+    FT-CLI-006: with --manifest, reads per-book metadata + casting from a
+    TOML/JSON manifest instead of (or in addition to) glob/file arguments.
     """
     import glob as glob_mod
     import time as _time
-    from audiobooker import AudiobookProject
-    from audiobooker.renderer.engine import RenderError
 
-    # Expand glob patterns
-    source_files: list[Path] = []
-    for pattern in args.files:
-        expanded = glob_mod.glob(pattern, recursive=True)
-        if expanded:
-            source_files.extend(Path(f) for f in expanded)
-        else:
-            # Treat as literal path
-            source_files.append(Path(pattern))
+    # FT-CLI-006: manifest mode builds (source, overrides) pairs; glob mode
+    # builds (source, {}) pairs. Both funnel through _process_book.
+    manifest_entries: list[dict] = []
+    manifest_file = getattr(args, "manifest", None)
+    if manifest_file:
+        try:
+            manifest_entries = _load_manifest(Path(manifest_file))
+        except USER_ERROR_TYPES as e:
+            _report_error(e, args)
+            return 1
 
-    if not source_files:
-        print("No source files found.")
-        return 1
-
-    # Deduplicate and filter to supported extensions. INPUT (v2.1): .docx is
-    # supported, and a directory entry is treated as a single book (a folder of
-    # per-chapter text files), so directories pass the filter regardless of
-    # suffix.
+    fmt = getattr(args, "output_format", None) or "m4b"
+    jobs = getattr(args, "jobs", 1)
+    lang = getattr(args, "lang", "en")
     supported = {".epub", ".docx", ".txt", ".md", ".markdown", ".pdf"}
-    source_files = list(dict.fromkeys(source_files))  # deduplicate preserving order
-    source_files = [
-        f for f in source_files
-        if f.exists() and (f.is_dir() or f.suffix.lower() in supported)
-    ]
 
-    if not source_files:
-        print("No supported source files found (EPUB/DOCX/TXT/MD/PDF or a chapter folder).")
+    # FT-CLI-006: manifest mode — each entry is (source path, overrides dict).
+    # Glob mode — each entry is (source path, {}). Both funnel through the
+    # shared _process_book sequence below.
+    book_specs: list[tuple[Path, dict]] = []
+
+    if manifest_entries:
+        for entry in manifest_entries:
+            src = Path(str(entry["source"]))
+            book_specs.append((src, entry))
+
+    # Expand glob patterns (also runs alongside a manifest if files were given).
+    if args.files:
+        source_files: list[Path] = []
+        for pattern in args.files:
+            expanded = glob_mod.glob(pattern, recursive=True)
+            if expanded:
+                source_files.extend(Path(f) for f in expanded)
+            else:
+                source_files.append(Path(pattern))
+        source_files = list(dict.fromkeys(source_files))  # dedupe, keep order
+        source_files = [
+            f for f in source_files
+            if f.exists() and (f.is_dir() or f.suffix.lower() in supported)
+        ]
+        for f in source_files:
+            book_specs.append((f, {}))
+
+    if not book_specs:
+        if manifest_file:
+            print("Manifest contained no usable book entries.")
+        else:
+            print("No supported source files found (EPUB/DOCX/TXT/MD/PDF or a chapter folder).")
         return 1
 
     json_output = getattr(args, "json_output", False)
@@ -2546,134 +3581,62 @@ def cmd_batch(args) -> int:
     # --dry-run: show what would be processed without rendering
     dry_run = getattr(args, "dry_run", False)
     if dry_run:
-        _out(f"DRY RUN — {len(source_files)} file(s) would be processed:\n")
-        for i, source in enumerate(source_files, 1):
-            _out(f"  [{i}/{len(source_files)}] {source.name} ({source.suffix})")
-        _out(f"\nFormat: {getattr(args, 'output_format', None) or 'm4b'}")
-        _out(f"Language: {getattr(args, 'lang', 'en')}")
-        _out(f"Workers: {getattr(args, 'jobs', 1)}")
+        _out(f"DRY RUN — {len(book_specs)} book(s) would be processed:\n")
+        for i, (source, ov) in enumerate(book_specs, 1):
+            label = ov.get("title") or source.name
+            _out(f"  [{i}/{len(book_specs)}] {label} ({source})")
+        _out(f"\nFormat: {fmt}")
+        _out(f"Language: {lang}")
+        _out(f"Workers: {jobs}")
         return 0
 
-    _out(f"Batch processing {len(source_files)} file(s)...\n")
+    _out(f"Batch processing {len(book_specs)} book(s)...\n")
 
     results: list[dict] = []
-    fmt = getattr(args, "output_format", None) or "m4b"
-    jobs = getattr(args, "jobs", 1)
-    lang = getattr(args, "lang", "en")
     batch_start = _time.time()
 
-    for i, source in enumerate(source_files, 1):
-        book_start = _time.time()
-        _out(f"[{i}/{len(source_files)}] {source.name}")
-        book_result = {
-            "file": str(source),
-            "name": source.stem,
-            "status": "unknown",
-            "output": "",
-            "error": "",
-            "duration_s": 0.0,
-        }
+    for i, (source, overrides) in enumerate(book_specs, 1):
+        _out(f"[{i}/{len(book_specs)}] {overrides.get('title') or source.name}")
 
-        try:
-            # Step 1: Create project
-            from audiobooker.models import ProjectConfig
-            config = ProjectConfig(language_code=lang)
+        if not source.exists():
+            results.append({
+                "file": str(source),
+                "name": source.stem,
+                "status": "error",
+                "output": "",
+                "error": f"Source not found: {source}",
+                "duration_s": 0.0,
+            })
+            _out(f"  ERROR: source not found: {source}")
+            continue
+        if not source.is_dir() and source.suffix.lower() not in supported:
+            results.append({
+                "file": str(source),
+                "name": source.stem,
+                "status": "skipped",
+                "output": "",
+                "error": f"Unsupported format: {source.suffix}",
+                "duration_s": 0.0,
+            })
+            _out(f"  Skipped: unsupported format {source.suffix}")
+            continue
 
-            suffix = source.suffix.lower()
-            if source.is_dir():
-                # INPUT (v2.1): a folder of per-chapter text files = one book.
-                project = AudiobookProject.from_folder(source, config=config)
-            elif suffix == ".epub":
-                project = AudiobookProject.from_epub(source, config=config)
-            elif suffix == ".docx":
-                project = AudiobookProject.from_docx(source, config=config)
-            elif suffix == ".pdf":
-                project = AudiobookProject.from_pdf(source, config=config)
-            elif suffix in (".txt", ".md", ".markdown"):
-                project = AudiobookProject.from_text(source, config=config)
-            else:
-                book_result["status"] = "skipped"
-                book_result["error"] = f"Unsupported format: {suffix}"
-                book_result["duration_s"] = _time.time() - book_start
-                results.append(book_result)
-                _out(f"  Skipped: unsupported format {suffix}")
-                continue
-
-            book_result["name"] = project.title
-
-            # Step 2: Compile
-            project.compile()
-
-            # Step 3: Auto-cast with suggestions
-            uncast = project.get_uncast_speakers()
-            if uncast:
-                try:
-                    from audiobooker.casting.voice_suggester import VoiceSuggester
-                    already_cast = project.casting.get_voice_mapping()
-                    suggester = VoiceSuggester(max_suggestions=1)
-                    suggest_results = suggester.suggest_all(sorted(uncast), already_cast=already_cast)
-                    for sr in suggest_results:
-                        if sr.top:
-                            project.cast(sr.speaker, sr.top.voice_id)
-                except Exception as cast_err:
-                    _out(f"  Warning: Auto-cast failed ({cast_err}), using fallback voices")
-
-            # Step 4: Save project. A directory source has no file suffix to
-            # swap, so place the project file alongside the folder.
-            if source.is_dir():
-                project_path = source.parent / f"{source.name}.audiobooker"
-            else:
-                project_path = source.with_suffix(".audiobooker")
-            project.save(project_path)
-
-            # Step 5: Render
-            from audiobooker.project import _sanitize_filename
-            output_path = source.parent / f"{_sanitize_filename(project.title)}.{fmt}"
-
-            # FT-RENDER-M-002: pass cover art + metadata through. Per the v2.1
-            # render contract, render_project auto-defaults cover_art from
-            # project.metadata.cover_art_path when None and threads
-            # project.metadata to the assembler for full tagging, so we pass
-            # cover_art explicitly (None lets the contract default kick in) and
-            # honor the project's output_profile. Called defensively so an older
-            # concurrent renderer signature degrades gracefully.
-            from audiobooker.renderer.engine import render_project
-            md_cover = None
-            if project.metadata.cover_art_path and Path(project.metadata.cover_art_path).exists():
-                md_cover = str(project.metadata.cover_art_path)
-            batch_kwargs = dict(
-                jobs=jobs,
-                force=True,  # skip casting validation in batch
-                output_format=fmt,
-                cover_art=md_cover,
-                output_profile=project.config.output_profile,
-            )
-            try:
-                path = render_project(project, output_path, **batch_kwargs)
-            except TypeError as te:
-                if "output_profile" not in str(te):
-                    raise
-                batch_kwargs.pop("output_profile", None)
-                path = render_project(project, output_path, **batch_kwargs)
-
-            book_result["status"] = "success"
-            book_result["output"] = str(path)
-            book_result["duration_s"] = _time.time() - book_start
-            elapsed = book_result["duration_s"]
-            _out(f"  OK: {path} ({elapsed:.1f}s)")
-
-        except RenderError as e:
-            book_result["status"] = "failed"
-            book_result["error"] = str(e)[:200]
-            book_result["duration_s"] = _time.time() - book_start
-            _out(f"  FAILED: {e}")
-
-        except Exception as e:
-            book_result["status"] = "error"
-            book_result["error"] = str(e)[:200]
-            book_result["duration_s"] = _time.time() - book_start
-            _out(f"  ERROR: {e}")
-
+        book_result = _process_book(
+            source,
+            fmt=fmt,
+            jobs=jobs,
+            lang=lang,
+            overrides=overrides,
+        )
+        status = book_result["status"]
+        if status == "success":
+            _out(f"  OK: {book_result['output']} ({book_result['duration_s']:.1f}s)")
+        elif status == "failed":
+            _out(f"  FAILED: {book_result['error']}")
+        elif status == "skipped":
+            _out(f"  Skipped: {book_result['error']}")
+        else:
+            _out(f"  ERROR: {book_result['error']}")
         results.append(book_result)
 
     # Summary
@@ -2727,6 +3690,123 @@ def cmd_batch(args) -> int:
         return 3  # partial success
     else:
         return 1
+
+
+def _run_make_once(args) -> dict:
+    """FT-CLI-001: run the full make sequence once for args.source.
+
+    Reuses _process_book (the exact per-file sequence cmd_batch uses) and
+    threads make's render-time options (cover/normalize/acx/bitrate/output).
+    Returns the book_result dict.
+    """
+    source = Path(args.source)
+    fmt = getattr(args, "output_format", None) or "m4b"
+    jobs = getattr(args, "jobs", 1)
+    lang = getattr(args, "lang", "en")
+
+    render_overrides: dict = {}
+    cover = getattr(args, "cover", None)
+    if cover:
+        render_overrides["cover_art"] = cover
+    if getattr(args, "normalize", False):
+        render_overrides["normalize"] = True
+    if getattr(args, "acx", False):
+        render_overrides["output_profile"] = "acx"
+    bitrate = getattr(args, "bitrate", None)
+    if bitrate:
+        render_overrides["bitrate"] = bitrate
+
+    output_path = getattr(args, "output", None)
+    return _process_book(
+        source,
+        fmt=fmt,
+        jobs=jobs,
+        lang=lang,
+        render_overrides=render_overrides,
+        output_path=Path(output_path) if output_path else None,
+    )
+
+
+def cmd_make(args) -> int:
+    """
+    FT-CLI-001: One command — create + compile + auto-cast + render.
+
+    Runs the exact per-file sequence cmd_batch uses (via _process_book), so a
+    single `audiobooker make book.epub` goes from source to a finished, cast,
+    rendered audiobook. The staged commands (new/compile/cast/render) remain
+    available for users who want manual control of each step.
+    """
+    source = Path(args.source)
+    if not source.exists():
+        print(f"Error: Source file not found: {source}")
+        return 1
+
+    # FT-CLI-008: watch mode — re-run make whenever the source mtime changes.
+    if getattr(args, "watch", False):
+        return _watch_loop(source, lambda: _make_summary(_run_make_once(args)))
+
+    return _make_summary(_run_make_once(args))
+
+
+def _make_summary(book_result: dict) -> int:
+    """Print a single-book make result and return the process exit code."""
+    status = book_result["status"]
+    if status == "success":
+        _out(f"\nAudiobook created: {book_result['output']}")
+        _out(f"  Source: {book_result['file']}")
+        _out(f"  Elapsed: {book_result['duration_s']:.1f}s")
+        return 0
+    if status == "skipped":
+        print(f"Skipped: {book_result['error']}")
+        return 1
+    # failed / error
+    print(f"Make failed: {book_result['error']}")
+    return 1
+
+
+def _watch_loop(source: Path, run_once) -> int:
+    """
+    FT-CLI-008: poll the source file's mtime and re-run on change.
+
+    Runs ``run_once`` immediately, then watches ``source`` for modifications,
+    debouncing rapid successive writes. The callable should re-render with
+    resume=True so only changed chapters re-render (handled by the batch/make
+    sequence via the render cache). Ctrl-C exits cleanly with code 0.
+
+    ``run_once`` is a zero-arg callable returning an int exit code (ignored
+    between iterations; the watch loop itself returns 0 on Ctrl-C).
+    """
+    debounce_seconds = 1.0
+    poll_interval = 1.0
+
+    def _mtime() -> float:
+        try:
+            return source.stat().st_mtime
+        except OSError:
+            return 0.0
+
+    _out(f"Watching {source} for changes (Ctrl-C to stop)...")
+    run_once()
+    last_mtime = _mtime()
+
+    try:
+        while True:
+            time.sleep(poll_interval)
+            current = _mtime()
+            if current != last_mtime and current != 0.0:
+                # Debounce: wait for writes to settle before re-running.
+                time.sleep(debounce_seconds)
+                settled = _mtime()
+                if settled != current:
+                    # Still being written — pick it up on the next poll.
+                    last_mtime = current
+                    continue
+                _out(f"\nChange detected in {source.name} — re-rendering...")
+                run_once()
+                last_mtime = _mtime()
+    except KeyboardInterrupt:
+        _out("\nStopped watching.")
+        return 0
 
 
 def cmd_preview(args) -> int:
@@ -3021,6 +4101,10 @@ def main(argv: Optional[list[str]] = None) -> int:
         "sample": cmd_sample,
         "master-check": cmd_master_check,
         "export-chapters": cmd_export_chapters,
+        "make": cmd_make,
+        "audition": cmd_audition,
+        "cast-interactive": cmd_cast_interactive,
+        "completion": cmd_completion,
     }
 
     handler = commands.get(args.command)

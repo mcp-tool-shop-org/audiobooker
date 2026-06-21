@@ -1446,6 +1446,100 @@ class AudiobookProject:
         self.modified_at = datetime.now().isoformat()
         return first, second
 
+    def rename_chapter(self, index: int, title: str) -> Chapter:
+        """
+        Rename a chapter's display title (F-FEAT-F3, v2.1).
+
+        The chapter title is what surfaces in the M4B chapter list and the
+        per-chapter file names, so a rename invalidates any cached render for
+        that chapter — same invalidation pattern merge_chapters/split_chapter
+        use. Text/utterances are NOT reset on a pure rename: the audio is only
+        stale because its title-derived metadata/filename changed, so we clear
+        audio_path + duration but keep the compiled utterances.
+
+        Args:
+            index: Chapter index to rename (0-based).
+            title: New chapter title. Must be a non-empty string.
+
+        Returns:
+            The renamed Chapter.
+
+        Raises:
+            IndexError: If index is out of range.
+            ValueError: If title is empty or not a string.
+        """
+        if index < 0 or index >= len(self.chapters):
+            raise IndexError(
+                f"Chapter index {index} out of range (0-{len(self.chapters) - 1})"
+            )
+        if not isinstance(title, str) or not title.strip():
+            raise ValueError("Chapter title must be a non-empty string.")
+
+        chapter = self.chapters[index]
+        chapter.title = title.strip()
+        # A title change invalidates the cached audio (chapter metadata + the
+        # per-chapter output filename derive from the title). Mirror the
+        # merge/split invalidation, but keep utterances since the text is
+        # unchanged — only re-rendering metadata is required.
+        chapter.audio_path = None
+        chapter.duration_seconds = 0.0
+
+        self.modified_at = datetime.now().isoformat()
+        return chapter
+
+    def reorder_chapters(self, new_order: list[int]) -> None:
+        """
+        Reorder chapters according to a permutation of their current indices
+        (F-FEAT-F3, v2.1).
+
+        ``new_order`` must be a permutation of ``range(len(chapters))``:
+        ``new_order[k]`` is the *current* index of the chapter that should end
+        up at position ``k``. After reordering, every chapter is re-indexed to
+        its new position, and any chapter that actually moved has its cached
+        audio invalidated (audio_path / duration / utterances cleared), exactly
+        as merge_chapters/split_chapter do for affected chapters. Chapters that
+        keep their position are left untouched.
+
+        Args:
+            new_order: A list that is a permutation of range(len(chapters)).
+
+        Raises:
+            ValueError: If new_order is not a valid permutation (wrong length,
+                duplicates, or out-of-range indices).
+        """
+        n = len(self.chapters)
+        if not isinstance(new_order, (list, tuple)):
+            raise ValueError(
+                f"new_order must be a list of indices, got {type(new_order).__name__}."
+            )
+        if len(new_order) != n:
+            raise ValueError(
+                f"new_order has {len(new_order)} entries but the project has "
+                f"{n} chapter(s); it must be a permutation of 0-{n - 1}."
+            )
+        if sorted(new_order) != list(range(n)):
+            raise ValueError(
+                f"new_order must be a permutation of range({n}) "
+                f"(each index 0-{n - 1} exactly once); got {new_order!r}."
+            )
+
+        # Build the reordered list. new_order[k] is the OLD index landing at k.
+        reordered = [self.chapters[old_idx] for old_idx in new_order]
+        self.chapters = reordered
+
+        # Re-index and invalidate cached audio for chapters that actually
+        # moved (old position != new position). Same invalidation as
+        # merge_chapters/split_chapter for affected chapters.
+        for new_idx, old_idx in enumerate(new_order):
+            ch = self.chapters[new_idx]
+            ch.index = new_idx
+            if old_idx != new_idx:
+                ch.audio_path = None
+                ch.duration_seconds = 0.0
+                ch.utterances = []
+
+        self.modified_at = datetime.now().isoformat()
+
     # -------------------------------------------------------------------------
     # Compilation
     # -------------------------------------------------------------------------
