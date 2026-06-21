@@ -1,0 +1,74 @@
+name: 'Audiobooker'
+description: 'Generate a narrated, multi-voice audiobook from a book file (EPUB/PDF/DOCX/TXT/MD)'
+author: 'mcp-tool-shop'
+branding:
+  icon: 'book-open'
+  color: 'orange'
+
+inputs:
+  source:
+    description: 'Path to the source book (EPUB / PDF / DOCX / TXT / MD)'
+    required: true
+  output:
+    description: 'Output audiobook path'
+    required: false
+    default: 'audiobook.m4b'
+  format:
+    description: 'Output format: m4b | mp3 | opus | flac'
+    required: false
+    default: 'm4b'
+  acx:
+    description: 'Master to ACX/Audible spec (true/false)'
+    required: false
+    default: 'false'
+  lang:
+    description: 'Language code: en | fr | de | es | ja | it | pt'
+    required: false
+    default: 'en'
+  cover:
+    description: 'Optional cover image path (EPUB cover is auto-embedded otherwise)'
+    required: false
+    default: ''
+  python-version:
+    description: 'Python version to run audiobooker on'
+    required: false
+    default: '3.12'
+
+outputs:
+  audiobook:
+    description: 'Path to the generated audiobook file'
+    value: ${{ steps.render.outputs.audiobook }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Set up Python
+      uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+      with:
+        python-version: ${{ inputs.python-version }}
+
+    - name: Install FFmpeg
+      shell: bash
+      run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
+
+    - name: Install audiobooker
+      shell: bash
+      # Note: the [render] extra pulls the voice-soundboard TTS engine, which
+      # downloads model weights on first run — expect a multi-minute, multi-GB
+      # step. Cache ~/.cache where possible in the calling workflow.
+      run: pip install "audiobooker-ai[render]"
+
+    - name: Render audiobook
+      id: render
+      shell: bash
+      run: |
+        ACX_FLAG=""
+        [ "${{ inputs.acx }}" = "true" ] && ACX_FLAG="--acx"
+        COVER_FLAG=""
+        [ -n "${{ inputs.cover }}" ] && COVER_FLAG="--cover ${{ inputs.cover }}"
+        audiobooker make "${{ inputs.source }}" \
+          --lang "${{ inputs.lang }}" \
+          --format "${{ inputs.format }}" \
+          $ACX_FLAG $COVER_FLAG \
+          -o "${{ inputs.output }}"
+        echo "audiobook=${{ inputs.output }}" >> "$GITHUB_OUTPUT"
