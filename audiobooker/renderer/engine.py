@@ -366,9 +366,138 @@ class _VoiceSoundboardEngine:
         )
 
 
-def get_default_engine() -> TTSEngine:
-    """Create the real voice-soundboard TTS engine (lazy)."""
-    return _VoiceSoundboardEngine()
+# FT-ENGINE-001: Pluggable TTS engine registry.
+#
+# Third parties register engines via the 'audiobooker.tts_engines' entry-point
+# group (pyproject.toml owns the built-in 'voice-soundboard' registration so the
+# default resolves through the very same path a plugin would). Resolution order:
+#
+#   explicit name arg  >  AUDIOBOOKER_ENGINE env var  >  DEFAULT_ENGINE_NAME
+#
+# The built-in voice-soundboard engine is ALWAYS available as a hard fallback,
+# even when the entry-point metadata can't be read (editable installs, partial
+# metadata, etc.) — so get_default_engine(None) is byte-identical to the
+# historical behavior regardless of whether the package metadata is present.
+ENGINE_ENTRY_POINT_GROUP = "audiobooker.tts_engines"
+DEFAULT_ENGINE_NAME = "voice-soundboard"
+ENGINE_ENV_VAR = "AUDIOBOOKER_ENGINE"
+
+
+def _load_engine_entry_points() -> dict[str, object]:
+    """Return {name: EntryPoint} for the audiobooker.tts_engines group.
+
+    Tolerant of every importlib.metadata API shape (3.10 dict-style vs 3.12
+    selectable) and of metadata being entirely absent — returns {} on failure.
+    """
+    try:
+        from importlib.metadata import entry_points
+    except ImportError:  # pragma: no cover - importlib.metadata always present on 3.10+
+        return {}
+
+    try:
+        eps = entry_points()
+        # Python 3.10/3.11: entry_points() returns a dict-like keyed by group.
+        # Python 3.12+: it returns a SelectableGroups supporting select(group=).
+        if hasattr(eps, "select"):
+            selected = eps.select(group=ENGINE_ENTRY_POINT_GROUP)
+        else:  # pragma: no cover - legacy dict API
+            selected = eps.get(ENGINE_ENTRY_POINT_GROUP, [])
+        return {ep.name: ep for ep in selected}
+    except Exception as exc:  # pragma: no cover - defensive: never let discovery crash
+        logger.debug(f"ENGINE_DISCOVERY_FAILED: {exc}")
+        return {}
+
+
+def list_registered_engines() -> list[str]:
+    """List the names of all registered TTS engines (sorted).
+
+    Always includes the built-in 'voice-soundboard' even if its entry point
+    can't be read from package metadata.
+    """
+    names = set(_load_engine_entry_points())
+    names.add(DEFAULT_ENGINE_NAME)
+    return sorted(names)
+
+
+def get_default_engine(name: Optional[str] = None) -> TTSEngine:
+    """Resolve a TTS engine by name, env var, or the built-in default.
+
+    FT-ENGINE-001 pluggable engine registry. Resolution order:
+
+        1. ``name`` argument (when given)
+        2. ``AUDIOBOOKER_ENGINE`` environment variable
+        3. ``DEFAULT_ENGINE_NAME`` ('voice-soundboard')
+
+    Registered engines are looked up via the ``audiobooker.tts_engines``
+    entry-point group. The built-in voice-soundboard engine is ALWAYS available
+    as a hard fallback, so a bare ``get_default_engine()`` (or
+    ``get_default_engine("voice-soundboard")``) is byte-identical to the
+    historical behavior and never depends on package metadata being readable.
+
+    Args:
+        name: Explicit engine name. None falls through to the env var / default.
+
+    Returns:
+        An instantiated TTSEngine.
+
+    Raises:
+        EngineNotFoundError: If a *named* engine (from the arg or env var) is
+            not registered. The built-in default never raises this.
+    """
+    # Resolve the requested name through the precedence chain. An empty/blank
+    # env var is treated as unset.
+    requested = name
+    if requested is None:
+        env_name = os.environ.get(ENGINE_ENV_VAR)
+        if env_name and env_name.strip():
+            requested = env_name.strip()
+    if requested is None:
+        requested = DEFAULT_ENGINE_NAME
+
+    # The built-in always resolves to the in-process class — no metadata needed.
+    if requested == DEFAULT_ENGINE_NAME:
+        return _VoiceSoundboardEngine()
+
+    # Otherwise look the name up in the registered entry points.
+    registered = _load_engine_entry_points()
+    ep = registered.get(requested)
+    if ep is None:
+        installed = sorted(set(registered) | {DEFAULT_ENGINE_NAME})
+        raise EngineNotFoundError(requested, installed)
+
+    engine_cls = ep.load()
+    return engine_cls()
+
+
+class EngineNotFoundError(RuntimeError):
+    """FT-ENGINE-001: a named TTS engine is not registered."""
+
+    def __init__(self, name: str, installed: list[str]) -> None:
+        self.name = name
+        self.installed = installed
+        message = (
+            f"Unknown TTS engine {name!r}. "
+            f"Installed: {', '.join(installed)}. "
+            f"Install a plugin, e.g. pip install audiobooker-piper."
+        )
+        super().__init__(message)
+        # Structured error shape (code/message/hint/retryable) — matches the
+        # rest of the renderer's error surface.
+        self.code = "INPUT_UNKNOWN_ENGINE"
+        self.hint = (
+            "Install a TTS engine plugin (e.g. pip install audiobooker-piper) "
+            f"or set {ENGINE_ENV_VAR} to one of: {', '.join(installed)}."
+        )
+        self.retryable = False
+
+    def structured(self) -> dict:
+        """Return the canonical error shape as a dict."""
+        return {
+            "code": self.code,
+            "message": str(self),
+            "hint": self.hint,
+            "retryable": self.retryable,
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -481,6 +610,245 @@ def render_chapter(
 
         render_log.log()
         raise
+
+
+# ---------------------------------------------------------------------------
+# FT-RENDER-P-004: Utterance-level incremental cache (OPT-IN, namespaced)
+# ---------------------------------------------------------------------------
+#
+# DEFAULT: OFF. render_chapter() (above) is completely untouched — the chapter
+# cache path is byte-identical when this feature is unused. Nothing in
+# render_project() calls into this path unless an opt-in flag is threaded
+# through by the integration layer (cli/project, which this agent does not own).
+#
+# When ON, a chapter is synthesized one utterance at a time. Each utterance's
+# WAV is sub-cached under its utterance_hash (speaker+text+emotion+intensity+
+# voice+params). Re-rendering a chapter after editing one line only
+# re-synthesizes that one utterance; the rest are reused from the sub-cache and
+# the chapter WAV is re-stitched with a cheap ffmpeg concat (-c copy).
+#
+# The utterance manifest is namespaced (render_v2_utterance.json, its own
+# version) so old render_v1.json chapter manifests still load unchanged.
+
+
+@dataclass
+class IncrementalRenderResult:
+    """Outcome of an utterance-level incremental chapter render."""
+    audio_path: Path
+    duration_seconds: float
+    utterances_total: int = 0
+    utterances_synthesized: int = 0
+    utterances_reused: int = 0
+
+
+def render_chapter_incremental(
+    chapter: "Chapter",
+    casting: "CastingTable",
+    output_path: Path,
+    *,
+    engine: Optional[TTSEngine] = None,
+    cache_root: Path,
+    render_params_hash: str,
+    runner: Optional[Callable] = None,
+    progress_callback: Optional[Callable[[int, int], None]] = None,
+) -> IncrementalRenderResult:
+    """
+    FT-RENDER-P-004: Render a chapter utterance-by-utterance with a sub-cache.
+
+    OPT-IN. This is never reached by the default render path — the chapter
+    cache stays byte-identical unless a caller explicitly opts in.
+
+    Each utterance is synthesized individually into a per-chapter utterance
+    directory, keyed on its ``utterance_hash``. Unchanged utterances are reused
+    from a prior run; only changed/new utterances hit the TTS engine. The
+    per-utterance WAVs are then concatenated into ``output_path`` with ffmpeg
+    ``concat -c copy`` (cheap — no re-encode).
+
+    Args:
+        chapter: Compiled chapter (utterances required).
+        casting: CastingTable for voice resolution.
+        output_path: Final chapter WAV path.
+        engine: Injected TTSEngine (defaults to voice-soundboard).
+        cache_root: Render cache root (utterance WAVs + manifest live under it).
+        render_params_hash: The chapter's render-params hash (ties utterance
+            keys to the same TTS knobs the chapter cache uses).
+        runner: Injected FFmpegRunner-like callable holder for the concat step
+            (defaults to RealFFmpegRunner). Tests pass a fake.
+        progress_callback: Callback(current_utterance, total_utterances).
+
+    Returns:
+        IncrementalRenderResult with the stitched WAV path, duration, and
+        synthesize/reuse accounting.
+
+    Raises:
+        ValueError: If the chapter has no utterances.
+        RenderError: If synthesis or stitching fails.
+    """
+    from audiobooker.renderer.cache_manifest import (
+        UtteranceCacheEntry,
+        UtteranceCacheManifest,
+        get_utterance_manifest_path,
+        get_utterance_wav_dir,
+        load_utterance_manifest,
+        save_utterance_manifest,
+    )
+    from audiobooker.renderer.hash_utils import utterance_hash as _utterance_hash
+
+    if not chapter.utterances:
+        raise ValueError(
+            f"Chapter {chapter.index} has no utterances. Compile first."
+        )
+
+    if engine is None:
+        engine = get_default_engine()
+
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    utt_dir = get_utterance_wav_dir(cache_root, chapter.index)
+    utt_dir.mkdir(parents=True, exist_ok=True)
+    manifest_path = get_utterance_manifest_path(cache_root, chapter.index)
+
+    manifest = load_utterance_manifest(manifest_path)
+    if manifest is None:
+        manifest = UtteranceCacheManifest()
+
+    voice_mapping = casting.get_voice_mapping()
+    total = len(chapter.utterances)
+    synthesized = 0
+    reused = 0
+    total_duration = 0.0
+    ordered_wavs: list[Path] = []
+
+    for idx, utt in enumerate(chapter.utterances):
+        voice, _emotion = casting.get_voice(utt.speaker)
+        uhash = _utterance_hash(utt, voice, render_params_hash)
+        target = utt_dir / f"utt_{uhash}.wav"
+
+        entry = manifest.get_entry(uhash)
+        if entry is not None and entry.is_valid():
+            # Reuse the cached utterance WAV — no engine call.
+            reused += 1
+            total_duration += entry.duration_s
+            ordered_wavs.append(Path(entry.wav_path))
+        else:
+            # Synthesize just this utterance. A single-utterance script keeps the
+            # engine contract identical to the chapter path (same tagged-line
+            # format), only narrower in scope.
+            from audiobooker.casting.dialogue import utterances_to_script
+            script = utterances_to_script([utt], casting)
+            tmp = target.with_suffix(".wav.tmp")
+            try:
+                result = engine.synthesize(
+                    script=script,
+                    voices=voice_mapping,
+                    output_path=tmp,
+                )
+            except Exception as e:
+                tmp.unlink(missing_ok=True)
+                raise RenderError(
+                    f"Chapter {chapter.index} utterance {idx} "
+                    f"({utt.speaker!r}) failed to synthesize: {e}",
+                    code="RUNTIME_RENDER",
+                ) from e
+
+            try:
+                os.replace(str(tmp), str(target))
+            except OSError:
+                shutil.move(str(tmp), str(target))
+
+            synthesized += 1
+            total_duration += result.duration_seconds
+            ordered_wavs.append(target)
+
+            manifest.set_entry(
+                UtteranceCacheEntry(
+                    utterance_hash=uhash,
+                    wav_path=str(target),
+                    duration_s=result.duration_seconds,
+                    created_at=datetime.now(timezone.utc).isoformat(),
+                )
+            )
+            save_utterance_manifest(manifest, manifest_path)
+
+        if progress_callback:
+            progress_callback(idx + 1, total)
+
+    # Stitch the per-utterance WAVs into the chapter WAV (cheap concat copy).
+    _stitch_utterance_wavs(ordered_wavs, output_path, runner=runner)
+
+    chapter.audio_path = output_path
+    chapter.duration_seconds = total_duration
+
+    logger.info(
+        f"RENDER_INCREMENTAL: chapter={chapter.index} "
+        f"utterances={total} synthesized={synthesized} reused={reused} "
+        f"duration={total_duration:.1f}s"
+    )
+
+    return IncrementalRenderResult(
+        audio_path=output_path,
+        duration_seconds=total_duration,
+        utterances_total=total,
+        utterances_synthesized=synthesized,
+        utterances_reused=reused,
+    )
+
+
+def _stitch_utterance_wavs(
+    wavs: list[Path],
+    output_path: Path,
+    *,
+    runner: Optional[Callable] = None,
+) -> Path:
+    """Concatenate per-utterance WAVs into one chapter WAV via ffmpeg concat.
+
+    Uses ``-c copy`` (no re-encode) — the utterance WAVs share the engine's
+    sample format, so this is a cheap remux. A single WAV is just copied.
+    """
+    if not wavs:
+        raise RenderError(
+            "Cannot stitch an empty utterance list into a chapter WAV.",
+            code="RUNTIME_RENDER",
+        )
+
+    if runner is None:
+        from audiobooker.renderer.ffmpeg_runner import RealFFmpegRunner
+        runner = RealFFmpegRunner()
+
+    if len(wavs) == 1:
+        shutil.copy(str(wavs[0]), str(output_path))
+        return output_path
+
+    # Build a concat list file (one 'file ...' line per utterance WAV).
+    import tempfile
+    concat_file = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".txt", delete=False, encoding="utf-8"
+        ) as f:
+            concat_file = Path(f.name)
+            for wav in wavs:
+                escaped = str(Path(wav).absolute().as_posix()).replace("'", "'\\''")
+                f.write(f"file '{escaped}'\n")
+
+        result = runner.run([
+            "ffmpeg", "-y",
+            "-f", "concat",
+            "-safe", "0",
+            "-i", str(concat_file),
+            "-c", "copy",
+            str(output_path),
+        ])
+        if result.returncode != 0:
+            raise RenderError(
+                f"Failed to stitch chapter WAV from utterances: {result.stderr}",
+                code="RUNTIME_RENDER",
+            )
+        return output_path
+    finally:
+        if concat_file is not None:
+            concat_file.unlink(missing_ok=True)
 
 
 # ---------------------------------------------------------------------------

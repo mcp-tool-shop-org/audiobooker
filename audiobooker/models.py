@@ -580,6 +580,14 @@ class ProjectConfig:
         phoneme_overrides: Phoneme-typed pronunciation entries, kept distinct
             from plain spelling replacements (pronunciation_overrides). Filled
             by import_lexicon from lexicon entries marked type=phoneme.
+        tts_engine: Pluggable TTS engine entry-point name (ECOSYSTEM v2.1).
+            The renderer resolves it through engine.get_default_engine(name).
+            "voice-soundboard" (default) is the built-in engine and preserves
+            current behavior; third-party engines register under the
+            "audiobooker.tts_engines" entry-point group.
+        utterance_cache: Per-utterance render cache opt-in (ECOSYSTEM v2.1).
+            False (default) keeps the chapter-level cache path byte-identical to
+            today. True sub-caches individual utterance WAVs (renderer-owned).
     """
     chapter_pause_ms: int = 2000
     narrator_pause_ms: int = 600
@@ -620,6 +628,14 @@ class ProjectConfig:
     #   inferencer's threshold + label set. "neutral" preserves the current
     #   default behavior; "literary" / "dramatic" / "children" tune sensitivity.
     emotion_preset: str = "neutral"
+    # ECOSYSTEM (v2.1): pluggable TTS engine entry-point name. The renderer
+    #   resolves this via engine.get_default_engine(name); "voice-soundboard" is
+    #   the built-in default and preserves current behavior byte-for-byte.
+    tts_engine: str = "voice-soundboard"
+    # ECOSYSTEM (v2.1): per-utterance render cache. OFF BY DEFAULT — when False
+    #   (the default) the existing chapter-level cache path is byte-identical to
+    #   today. Opt in to sub-cache individual utterance WAVs (renderer-owned).
+    utterance_cache: bool = False
 
     _VALID_OUTPUT_FORMATS = ("m4b", "mp3", "wav", "ogg", "flac")
     _VALID_BOOKNLP_MODES = ("on", "off", "auto")
@@ -703,6 +719,8 @@ class ProjectConfig:
             "use_toc": self.use_toc,
             "phoneme_overrides": self.phoneme_overrides,
             "emotion_preset": self.emotion_preset,
+            "tts_engine": self.tts_engine,
+            "utterance_cache": self.utterance_cache,
         }
 
     @classmethod
@@ -738,6 +756,10 @@ class ProjectConfig:
             phoneme_overrides=data.get("phoneme_overrides", {}),
             # CASTING-DEPTH v2.1: legacy configs default to "neutral".
             emotion_preset=data.get("emotion_preset", "neutral"),
+            # ECOSYSTEM v2.1: legacy configs default to the built-in engine and
+            # the chapter-level cache (utterance cache off) — current behavior.
+            tts_engine=data.get("tts_engine", "voice-soundboard"),
+            utterance_cache=data.get("utterance_cache", False),
         )
 
 

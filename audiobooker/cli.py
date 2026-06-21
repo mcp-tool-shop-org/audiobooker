@@ -24,7 +24,9 @@ Usage:
     audiobooker compile                    # Compile chapters to utterances
     audiobooker compile --dry-run          # Preview speaker/line summary
     audiobooker render                     # Render audiobook
+    audiobooker render --engine my-tts     # Render with a pluggable TTS engine
     audiobooker render --dry-run           # Preview render without executing
+    audiobooker podcast --base-url https://cdn/  # Per-chapter render + RSS feed
     audiobooker render --cover cover.jpg   # Render with cover art
     audiobooker render --acx               # Master for ACX retail (-20 LUFS)
     audiobooker render --split             # One file per chapter
@@ -51,6 +53,7 @@ Usage:
     audiobooker cache clean-failed         # Reset failed cache entries
     audiobooker info                       # Show project info
     audiobooker voices                     # List available voices
+    audiobooker voices --engine my-tts     # List a specific engine's voices
 """
 
 from __future__ import annotations
@@ -95,6 +98,41 @@ def _out(*args, **kwargs) -> None:
     """
     if not _QUIET:
         print(*args, **kwargs)
+
+
+def _resolve_engine(args, project=None):
+    """FT-ENGINE-001: resolve the TTS engine for a render-shaped command.
+
+    Resolution order (matching engine.get_default_engine):
+        explicit --engine NAME > project.config.tts_engine > the env/default
+        the renderer applies (AUDIOBOOKER_ENGINE / 'voice-soundboard').
+
+    When neither --engine nor a non-default project tts_engine is set, returns
+    None so the renderer keeps its current behavior byte-for-byte (the default
+    voice-soundboard engine resolves through the same path). Returns an engine
+    INSTANCE otherwise. Never raises here — an unresolved name surfaces as a
+    RenderError when the renderer actually tries to synthesize.
+    """
+    from audiobooker.renderer import engine as engine_mod
+
+    name = getattr(args, "engine", None)
+    if not name and project is not None:
+        cfg_name = getattr(getattr(project, "config", None), "tts_engine", None)
+        # A non-default config engine is an explicit choice worth resolving;
+        # the bare default keeps the None fast-path (current behavior).
+        if cfg_name and cfg_name != "voice-soundboard":
+            name = cfg_name
+
+    if not name:
+        return None
+    # Per contract get_default_engine accepts name=; call defensively so a
+    # concurrently-evolving renderer with the older no-arg signature still
+    # works (it only resolves the built-in engine, which is correct for the
+    # 'voice-soundboard' default).
+    try:
+        return engine_mod.get_default_engine(name)
+    except TypeError:
+        return engine_mod.get_default_engine()
 
 
 def _report_error(e: BaseException, args: "argparse.Namespace | None" = None) -> None:
@@ -436,6 +474,13 @@ def create_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Watch the source file and re-render (resume) whenever it changes",
     )
+    # FT-ENGINE-001: pluggable TTS engine selection.
+    render_parser.add_argument(
+        "--engine",
+        metavar="NAME",
+        help="TTS engine to render with (default: voice-soundboard; "
+             "overrides AUDIOBOOKER_ENGINE and the project's tts_engine)",
+    )
 
     # --- info ---
     info_parser = subparsers.add_parser("info", help="Show project information")
@@ -451,6 +496,15 @@ def create_parser() -> argparse.ArgumentParser:
     voices_parser = subparsers.add_parser("voices", help="List available voices")
     voices_parser.add_argument("-g", "--gender", help="Filter by gender (male/female)")
     voices_parser.add_argument("-s", "--search", help="Search by name/description")
+    # FT-ENGINE-001: list voices from a specific engine's list_voices().
+    voices_parser.add_argument(
+        "--engine",
+        metavar="NAME",
+        help="List voices from this TTS engine (default: voice-soundboard)",
+    )
+    voices_parser.add_argument(
+        "--json", dest="json_output", action="store_true", help="Output as JSON"
+    )
 
     # --- chapters ---
     chapters_parser = subparsers.add_parser("chapters", help="List chapters")
@@ -600,6 +654,12 @@ def create_parser() -> argparse.ArgumentParser:
         "--json", dest="json_output", action="store_true",
         help="Emit the per-book results array as JSON",
     )
+    # FT-ENGINE-001: pluggable TTS engine for every book in the batch.
+    batch_parser.add_argument(
+        "--engine",
+        metavar="NAME",
+        help="TTS engine to render with (default: voice-soundboard)",
+    )
 
     # --- FT-RENDER-007: preview ---
     preview_parser = subparsers.add_parser(
@@ -624,6 +684,12 @@ def create_parser() -> argparse.ArgumentParser:
     preview_parser.add_argument(
         "-o", "--output",
         help="Output file path (default: preview.wav)",
+    )
+    # FT-ENGINE-001: render the preview through a specific TTS engine.
+    preview_parser.add_argument(
+        "--engine",
+        metavar="NAME",
+        help="TTS engine to render with (default: voice-soundboard)",
     )
 
     # --- OUTPUT-F1: sample (retail sample clip) ---
@@ -667,6 +733,12 @@ def create_parser() -> argparse.ArgumentParser:
         "-o", "--output",
         help="Output file path (default: sample.<ext>)",
     )
+    # FT-ENGINE-001: render the sample through a specific TTS engine.
+    sample_parser.add_argument(
+        "--engine",
+        metavar="NAME",
+        help="TTS engine to render with (default: voice-soundboard)",
+    )
 
     # --- OUTPUT-F1: master-check (ACX compliance check) ---
     master_check_parser = subparsers.add_parser(
@@ -696,6 +768,49 @@ def create_parser() -> argparse.ArgumentParser:
     export_chapters_parser.add_argument(
         "-o", "--output",
         help="Output file path (default: stdout)",
+    )
+
+    # --- FT-RENDER-M-008: podcast (iTunes RSS feed for a per-chapter render) ---
+    podcast_parser = subparsers.add_parser(
+        "podcast",
+        help="Render one file per chapter and write an iTunes podcast RSS feed",
+    )
+    podcast_parser.add_argument("-p", "--project", help="Project file")
+    podcast_parser.add_argument(
+        "--base-url",
+        metavar="URL",
+        dest="base_url",
+        default="",
+        help="Base URL prepended to each episode's audio filename in the feed",
+    )
+    podcast_parser.add_argument(
+        "-o", "--output",
+        help="Output RSS file path (default: podcast.xml)",
+    )
+    podcast_parser.add_argument(
+        "--format",
+        choices=["m4b", "m4a", "mp3", "wav"],
+        default=None,
+        dest="output_format",
+        help="Per-chapter audio format (default: from config, usually m4b)",
+    )
+    podcast_parser.add_argument(
+        "-j", "--jobs",
+        type=int,
+        default=1,
+        metavar="N",
+        help="Number of parallel render workers (default: 1)",
+    )
+    podcast_parser.add_argument(
+        "--no-render",
+        action="store_true",
+        dest="no_render",
+        help="Skip rendering; build the feed from already-rendered chapter audio",
+    )
+    podcast_parser.add_argument(
+        "--engine",
+        metavar="NAME",
+        help="TTS engine to render with (default: voice-soundboard)",
     )
 
     # --- cast-export ---
@@ -1021,6 +1136,12 @@ def create_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Watch the source file and re-render (resume) whenever it changes",
     )
+    # FT-ENGINE-001: pluggable TTS engine for the make render step.
+    make_parser.add_argument(
+        "--engine",
+        metavar="NAME",
+        help="TTS engine to render with (default: voice-soundboard)",
+    )
 
     # --- FT-CAST-019: audition (rank candidate voices for one speaker) ---
     audition_parser = subparsers.add_parser(
@@ -1046,6 +1167,12 @@ def create_parser() -> argparse.ArgumentParser:
         "-o", "--output-dir",
         dest="output_dir",
         help="Directory for rendered audition WAVs (default: audition/)",
+    )
+    # FT-ENGINE-001: render audition samples through a specific TTS engine.
+    audition_parser.add_argument(
+        "--engine",
+        metavar="NAME",
+        help="TTS engine to render audition samples with (with --render)",
     )
     audition_parser.add_argument(
         "--json", dest="json_output", action="store_true", help="Output as JSON"
@@ -1634,6 +1761,11 @@ def cmd_audition(args) -> int:
         out_dir = Path(getattr(args, "output_dir", None) or "audition")
         out_dir.mkdir(parents=True, exist_ok=True)
 
+        # FT-ENGINE-001: render audition samples through the resolved engine
+        # when one is selected; None keeps the default voice-soundboard path.
+        tts_engine = _resolve_engine(args, project)
+        engine_kwargs = {"engine": tts_engine} if tts_engine is not None else {}
+
         rendered: list[dict] = []
         _out(f"\nRendering {len(candidates)} sample(s) to {out_dir}/ ...")
         for c in candidates:
@@ -1646,7 +1778,7 @@ def cmd_audition(args) -> int:
             chapter.utterances = [Utterance(speaker=speaker, text=sample_line)]
             out_path = out_dir / f"{voice_id}.wav"
             try:
-                path = render_chapter(chapter, casting, out_path)
+                path = render_chapter(chapter, casting, out_path, **engine_kwargs)
                 rendered.append({"voice_id": voice_id, "path": str(path)})
                 _out(f"  {voice_id} -> {path}")
             except Exception as e:
@@ -1830,6 +1962,10 @@ def _cmd_render_once(args) -> int:
         project_path = find_project_file(args.project)
         project = AudiobookProject.load(project_path)
 
+        # FT-ENGINE-001: resolve the TTS engine once (explicit --engine >
+        # project.config.tts_engine > default). None keeps current behavior.
+        tts_engine = _resolve_engine(args, project)
+
         # OUTPUT-F1: Apply per-render metadata overrides onto project.metadata
         # before rendering so they get embedded in the output tags. These are
         # transient render-time overrides; they ARE persisted with the project
@@ -1911,7 +2047,24 @@ def _cmd_render_once(args) -> int:
             # Render single chapter
             _out(f"Rendering chapter {args.chapter}...")
             output = args.output or f"chapter_{args.chapter:03d}.wav"
-            path = project.render_chapter(args.chapter, output)
+            if tts_engine is not None:
+                # FT-ENGINE-001: thread the resolved engine through the
+                # module-level render_chapter (project.render_chapter takes no
+                # engine). Compile on demand to mirror its behavior.
+                from audiobooker.renderer.engine import render_chapter as _render_chapter
+                if args.chapter < 0 or args.chapter >= len(project.chapters):
+                    raise IndexError(
+                        f"Chapter index {args.chapter} out of range "
+                        f"(0-{len(project.chapters) - 1})"
+                    )
+                chapter = project.chapters[args.chapter]
+                if not chapter.is_compiled:
+                    project.compile_chapter(args.chapter)
+                path = _render_chapter(
+                    chapter, project.casting, Path(output), engine=tts_engine
+                )
+            else:
+                path = project.render_chapter(args.chapter, output)
             _out(f"Output: {path}")
         else:
             # Render full audiobook
@@ -1998,8 +2151,11 @@ def _cmd_render_once(args) -> int:
                 # direct render_project call so we can thread the extra kwargs.
                 # The plain case still goes through project.render() (which now
                 # also forwards profile/bitrate/split) to keep that path simple.
+                # FT-ENGINE-001: a non-default engine also requires the direct
+                # render_project path so we can pass engine= through.
                 needs_direct = bool(
-                    cover or normalize or output_profile != "podcast" or bitrate or split
+                    cover or normalize or output_profile != "podcast"
+                    or bitrate or split or tts_engine is not None
                 )
                 if needs_direct:
                     from audiobooker.renderer.engine import render_project
@@ -2023,6 +2179,10 @@ def _cmd_render_once(args) -> int:
                         bitrate=bitrate,
                         split=split,
                     )
+                    # FT-ENGINE-001: only pass engine when one was resolved so
+                    # the None default stays byte-identical to today.
+                    if tts_engine is not None:
+                        direct_kwargs["engine"] = tts_engine
                     try:
                         path = render_project(project, Path(output), **direct_kwargs)
                     except TypeError as te:
@@ -2346,19 +2506,84 @@ def cmd_load(args) -> int:
         return 1
 
 
+def _voice_display(voice) -> tuple[str, str]:
+    """Normalize one list_voices() entry to (voice_id, description).
+
+    Tolerates the shapes a third-party engine's list_voices() might return: a
+    bare id string, a (id, description) tuple, or a dict carrying an
+    id/name/voice_id key plus an optional description/label. Keeps cmd_voices
+    engine-agnostic so the printed/filtered output is stable across engines.
+    """
+    if isinstance(voice, str):
+        return voice, ""
+    if isinstance(voice, dict):
+        vid = str(
+            voice.get("voice_id")
+            or voice.get("id")
+            or voice.get("name")
+            or ""
+        )
+        desc = str(voice.get("description") or voice.get("label") or "")
+        return vid, desc
+    if isinstance(voice, (tuple, list)) and voice:
+        vid = str(voice[0])
+        desc = str(voice[1]) if len(voice) > 1 else ""
+        return vid, desc
+    return str(voice), ""
+
+
 def cmd_voices(args) -> int:
-    """List available voices."""
+    """List available voices (optionally from a specific TTS engine).
+
+    FT-ENGINE-001: with --engine NAME, resolve that engine and list its voices
+    via voice_registry.get_available_voices(engine=...) — which uses the
+    engine's optional list_voices() when present and otherwise falls back to the
+    built-in voice-soundboard voice set. Without --engine, the default behavior
+    (the built-in voice-soundboard catalog) is preserved.
+    """
+    from audiobooker.casting.voice_registry import get_available_voices
+
+    engine_name = getattr(args, "engine", None)
+    json_output = getattr(args, "json_output", False)
+
+    # Resolve the engine instance when one was named so its list_voices() is
+    # used; None lets get_available_voices() fall back to the default catalog.
+    engine_obj = None
+    if engine_name:
+        from audiobooker.renderer import engine as engine_mod
+        try:
+            try:
+                engine_obj = engine_mod.get_default_engine(engine_name)
+            except TypeError:
+                # Older no-arg signature — resolves the built-in engine.
+                engine_obj = engine_mod.get_default_engine()
+        except Exception as e:
+            print(f"Error: could not load TTS engine {engine_name!r}: {e}")
+            return 1
+
     try:
-        from voice_soundboard.config import VOICES
+        # Per contract: get_available_voices(engine=...) uses the engine's
+        # list_voices() when present, else the built-in catalog. Call
+        # defensively so a concurrently-evolving registry with the older
+        # no-arg signature still works (engine=None == today's default).
+        try:
+            voices = get_available_voices(engine=engine_obj)
+        except TypeError:
+            voices = get_available_voices()
     except ImportError:
         print("Error: voice-soundboard not installed")
         print(VOICE_SOUNDBOARD_INSTALL_HINT)
         return 1
 
-    _out("Available voices:\n")
+    # Normalize whatever get_available_voices returns (a set of ids, or a list
+    # of richer voice descriptors) into (voice_id, description) pairs.
+    pairs = [_voice_display(v) for v in voices]
 
-    for voice_id, info in sorted(VOICES.items()):
-        # Filter by gender if specified
+    rows: list[tuple[str, str]] = []
+    for voice_id, desc in pairs:
+        if not voice_id:
+            continue
+        # Filter by gender (voice-soundboard prefix convention).
         if args.gender:
             voice_gender = (
                 "female"
@@ -2367,17 +2592,37 @@ def cmd_voices(args) -> int:
             )
             if voice_gender != args.gender.lower():
                 continue
-
-        # Filter by search term
+        # Filter by search term across id + description.
         if args.search:
             search_lower = args.search.lower()
             if (
                 search_lower not in voice_id.lower()
-                and search_lower not in str(info).lower()
+                and search_lower not in desc.lower()
             ):
                 continue
+        rows.append((voice_id, desc))
 
-        _out(f"  {voice_id}")
+    rows.sort(key=lambda r: r[0])
+
+    if json_output:
+        import json as json_mod
+        print(json_mod.dumps(
+            {
+                "engine": engine_name or "voice-soundboard",
+                "voices": [
+                    {"voice_id": vid, "description": desc} if desc else {"voice_id": vid}
+                    for vid, desc in rows
+                ],
+            },
+            indent=2,
+            ensure_ascii=False,
+        ))
+        return 0
+
+    label = f" ({engine_name})" if engine_name else ""
+    _out(f"Available voices{label}:\n")
+    for voice_id, desc in rows:
+        _out(f"  {voice_id}{f'  - {desc}' if desc else ''}")
 
     return 0
 
@@ -3844,6 +4089,7 @@ def _process_book(
     render_overrides: Optional[dict] = None,
     output_path: Optional[Path] = None,
     emotion_preset: Optional[str] = None,
+    engine=None,
 ) -> dict:
     """Create + compile + auto-cast + render a single source file.
 
@@ -3976,6 +4222,10 @@ def _process_book(
             cover_art=md_cover,
             output_profile=project.config.output_profile,
         )
+        # FT-ENGINE-001: pass the resolved engine through when one was selected
+        # (--engine on batch/make). None keeps the default voice-soundboard path.
+        if engine is not None:
+            render_kwargs["engine"] = engine
         # make's --cover/--normalize/--acx/--bitrate land here.
         render_kwargs.update(render_overrides)
         try:
@@ -4140,6 +4390,9 @@ def cmd_batch(args) -> int:
     fmt = getattr(args, "output_format", None) or "m4b"
     jobs = getattr(args, "jobs", 1)
     lang = getattr(args, "lang", "en")
+    # FT-ENGINE-001: resolve --engine once for the whole batch (explicit name
+    # only; each book's project config could override but batch is a fleet op).
+    batch_engine = _resolve_engine(args)
     supported = {".epub", ".docx", ".txt", ".md", ".markdown", ".pdf"}
 
     # FT-CLI-006: manifest mode — each entry is (source path, overrides dict).
@@ -4227,6 +4480,7 @@ def cmd_batch(args) -> int:
             jobs=jobs,
             lang=lang,
             overrides=overrides,
+            engine=batch_engine,
         )
         status = book_result["status"]
         if status == "success":
@@ -4317,6 +4571,9 @@ def _run_make_once(args) -> dict:
         render_overrides["bitrate"] = bitrate
 
     output_path = getattr(args, "output", None)
+    # FT-ENGINE-001: resolve --engine before the project exists (make creates
+    # it); explicit name only, since there is no project config to fall back to.
+    engine = _resolve_engine(args)
     return _process_book(
         source,
         fmt=fmt,
@@ -4325,6 +4582,7 @@ def _run_make_once(args) -> dict:
         render_overrides=render_overrides,
         output_path=Path(output_path) if output_path else None,
         emotion_preset=getattr(args, "emotion_preset", None),
+        engine=engine,
     )
 
 
@@ -4473,10 +4731,14 @@ def cmd_preview(args) -> int:
         _out(f"  Utterances: {len(preview_chapter.utterances)} of {len(chapter.utterances)}")
         _out(f"  Target duration: ~{target_seconds}s")
 
+        # FT-ENGINE-001: render through the resolved engine when one is selected.
+        tts_engine = _resolve_engine(args, project)
+        render_kwargs = {"engine": tts_engine} if tts_engine is not None else {}
         path = render_chapter(
             preview_chapter,
             project.casting,
             output_path,
+            **render_kwargs,
         )
 
         _out(f"\nPreview saved: {path}")
@@ -4527,6 +4789,9 @@ def cmd_sample(args) -> int:
         _out(f"Rendering sample from chapter {from_chapter}...")
         _out(f"  Start: {start_seconds:.0f}s  Duration: {duration:.0f}s  Profile: {output_profile}")
 
+        # FT-ENGINE-001: render through the resolved engine when one is selected.
+        tts_engine = _resolve_engine(args, project)
+        sample_kwargs = {"engine": tts_engine} if tts_engine is not None else {}
         path = render_sample(
             project,
             from_chapter=from_chapter,
@@ -4535,6 +4800,7 @@ def cmd_sample(args) -> int:
             output_path=Path(output) if output else None,
             output_profile=output_profile,
             bitrate=bitrate,
+            **sample_kwargs,
         )
 
         _out(f"\nSample saved: {path}")
@@ -4647,6 +4913,102 @@ def cmd_export_chapters(args) -> int:
         return 1
 
 
+def cmd_podcast(args) -> int:
+    """
+    FT-RENDER-M-008: Render one file per chapter and write a podcast RSS feed.
+
+    Sequence:
+      1. Render the project with split=True so each chapter is its own audio
+         file (skipped with --no-render, which builds the feed from chapters
+         already rendered).
+      2. Build a per-chapter ``items`` list (title, filename, duration_seconds)
+         from the rendered chapters.
+      3. Call output.export_podcast_rss(project, items, base_url=...) and write
+         the iTunes RSS 2.0 XML to podcast.xml (or -o).
+
+    Flags: --base-url (prepended to each enclosure URL), -o (output XML path),
+    --format (per-chapter audio format), -j/--jobs, --no-render, --engine.
+    """
+    from audiobooker import AudiobookProject
+    from audiobooker.renderer.engine import RenderError
+    from audiobooker.renderer.output import export_podcast_rss
+
+    try:
+        project_path = find_project_file(args.project)
+        project = AudiobookProject.load(project_path)
+
+        base_url = getattr(args, "base_url", "") or ""
+        no_render = getattr(args, "no_render", False)
+        fmt = getattr(args, "output_format", None) or project.config.output_format
+
+        if not no_render:
+            # FT-ENGINE-001: resolve the TTS engine (explicit --engine >
+            # project config > default). None keeps current behavior.
+            tts_engine = _resolve_engine(args, project)
+
+            # Ensure compiled before a split render.
+            uncompiled = [c for c in project.chapters if not c.is_compiled and not c.skip]
+            if uncompiled:
+                _out("Compiling chapters...")
+                project.compile()
+                project.save()
+
+            _out(f"Rendering {len(project.chapters)} chapter file(s) ({fmt})...")
+            render_kwargs = dict(
+                resume=True,
+                jobs=getattr(args, "jobs", 1),
+                force=True,
+                output_format=fmt,
+                split=True,
+            )
+            if tts_engine is not None:
+                render_kwargs["engine"] = tts_engine
+            project.render(**render_kwargs)
+            project.save()
+
+        # Build per-chapter feed items from rendered chapter audio.
+        items = []
+        for ch in project.chapters:
+            if getattr(ch, "skip", False):
+                continue
+            audio = getattr(ch, "audio_path", None)
+            filename = Path(audio).name if audio else ""
+            items.append({
+                "index": ch.index,
+                "title": ch.title,
+                "filename": filename,
+                "duration_seconds": ch.duration_seconds,
+            })
+
+        if not any(item["filename"] for item in items):
+            print(
+                "Error: no rendered chapter audio found. Run the podcast command "
+                "without --no-render, or render the chapters first."
+            )
+            return 1
+
+        # output.export_podcast_rss is a pure string builder (renderer-owned).
+        rss = export_podcast_rss(project, items, base_url=base_url)
+
+        out_path = Path(getattr(args, "output", None) or "podcast.xml")
+        out_path.write_text(rss, encoding="utf-8")
+
+        episode_count = sum(1 for item in items if item["filename"])
+        _out(f"\nPodcast feed written: {out_path}")
+        _out(f"  Episodes: {episode_count}")
+        if base_url:
+            _out(f"  Base URL: {base_url}")
+        return 0
+
+    except RenderError as e:
+        _print_render_failure(e)
+        return 1
+
+    except USER_ERROR_TYPES as e:
+        _report_error(e, args)
+        return 1
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     """Main entry point."""
     parser = create_parser()
@@ -4704,6 +5066,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         "sample": cmd_sample,
         "master-check": cmd_master_check,
         "export-chapters": cmd_export_chapters,
+        "podcast": cmd_podcast,
         "make": cmd_make,
         "audition": cmd_audition,
         "cast-interactive": cmd_cast_interactive,

@@ -49,6 +49,24 @@ class TTSEngine(Protocol):
             "multi_speaker": False,
         }
 
+    # FT-ENGINE-001: Optional voice discovery. Engines MAY implement this to
+    # advertise the voice IDs they support; callers MUST tolerate its absence
+    # (the built-in voice-soundboard engine does not implement it and instead
+    # falls back to voice_soundboard.config.VOICES — see voice_registry).
+    #
+    # Declared with a default body (rather than `...`) so this stays an OPTIONAL
+    # member: a class that omits list_voices() entirely still satisfies the
+    # Protocol, and runtime callers use hasattr()/getattr() to detect it.
+    def list_voices(self) -> list[str]:  # pragma: no cover - optional protocol member
+        """Return the voice IDs this engine supports (optional).
+
+        Returns:
+            A list of voice ID strings. Engines that do not implement voice
+            discovery simply omit this method; callers fall back to the
+            voice-soundboard catalog.
+        """
+        return []
+
 
 @dataclass
 class RunResult:

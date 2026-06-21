@@ -12,13 +12,17 @@ import subprocess
 import tempfile
 import shutil
 from dataclasses import dataclass
+from datetime import datetime, timezone
+from email.utils import format_datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional, Union
+from xml.sax.saxutils import escape as _xml_escape
 
 from audiobooker.renderer.protocols import FFmpegRunner
 
 if TYPE_CHECKING:
     from audiobooker.models import BookMetadata
+    from audiobooker.project import AudiobookProject
 
 logger = logging.getLogger("audiobooker.output")
 
@@ -1443,3 +1447,164 @@ def export_chapter_metadata(
         cue_lines.append(f'    TITLE "{_sanitize_metadata_value(entry["title"])}"')
         cue_lines.append(f"    INDEX 01 {_cue_timestamp(entry['start'])}")
     return "\n".join(cue_lines) + "\n"
+
+
+# ---------------------------------------------------------------------------
+# FT-RENDER-M-008: Podcast RSS feed (iTunes RSS 2.0)
+# ---------------------------------------------------------------------------
+
+def _itunes_duration(seconds: float) -> str:
+    """Format a duration in seconds as HH:MM:SS for <itunes:duration>."""
+    total = int(round(max(0.0, float(seconds or 0.0))))
+    hours, rem = divmod(total, 3600)
+    minutes, secs = divmod(rem, 60)
+    return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+
+
+def _rss_pubdate(value: object) -> str:
+    """Coerce a pubDate input into an RFC 822 date string.
+
+    Accepts a datetime, an already-formatted RFC 822 string, or None (which
+    falls back to 'now' in UTC). Naive datetimes are assumed UTC.
+    """
+    if isinstance(value, datetime):
+        dt = value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+        return format_datetime(dt)
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return format_datetime(datetime.now(timezone.utc))
+
+
+def _item_get(item: object, key: str, default: object = None) -> object:
+    """Read ``key`` from an RSS item that may be a dict or an attribute object."""
+    if isinstance(item, dict):
+        return item.get(key, default)
+    return getattr(item, key, default)
+
+
+def export_podcast_rss(
+    project: "AudiobookProject",
+    items: list,
+    *,
+    base_url: str = "",
+) -> str:
+    """
+    FT-RENDER-M-008: Build an iTunes-compatible RSS 2.0 podcast feed.
+
+    Pure string builder — does no I/O. The channel is populated from the
+    project's title/author and its ``BookMetadata`` (genre → itunes:category,
+    narrator → itunes:author/owner, publisher, year). One ``<item>`` is emitted
+    per chapter with an ``<itunes:duration>``, an ``<enclosure>`` whose ``url``
+    is ``base_url + filename``, the enclosure ``length`` (bytes), and a
+    ``pubDate``.
+
+    Args:
+        project: AudiobookProject supplying title/author/metadata.
+        items: One entry per chapter. Each entry may be a dict or an object
+            exposing these fields:
+                - ``title`` (str, required-ish; defaults to "Chapter N")
+                - ``filename`` (str) — appended to ``base_url`` for the enclosure
+                - ``duration_seconds`` (float) — for ``<itunes:duration>``
+                - ``length`` (int) — enclosure byte length (default 0)
+                - ``pubdate`` (datetime | RFC-822 str | None)
+                - ``description`` (str, optional)
+                - ``guid`` (str, optional; defaults to the enclosure URL)
+                - ``mime_type`` (str, optional; inferred from the filename ext)
+        base_url: Prefix joined to each item's ``filename`` to form the
+            enclosure URL (e.g. "https://example.com/feed/"). Empty by default.
+
+    Returns:
+        The complete RSS 2.0 XML document as a string.
+    """
+    metadata = getattr(project, "metadata", None)
+    title = getattr(project, "title", "") or "Audiobook"
+    author = getattr(project, "author", "") or ""
+    narrator = getattr(metadata, "narrator_name", "") if metadata else ""
+    genre = getattr(metadata, "genre", "") if metadata else ""
+    publisher = getattr(metadata, "publisher", "") if metadata else ""
+    # itunes:author is the credited voice — prefer the narrator, fall back to
+    # the book author so the feed always carries an author.
+    itunes_author = narrator or author
+
+    def esc(value: object) -> str:
+        return _xml_escape("" if value is None else str(value))
+
+    def join_url(prefix: str, name: str) -> str:
+        if not prefix:
+            return name
+        if prefix.endswith("/") or not name:
+            return f"{prefix}{name}"
+        return f"{prefix}/{name}"
+
+    lines: list[str] = [
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        '<rss version="2.0" '
+        'xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd" '
+        'xmlns:content="http://purl.org/rss/1.0/modules/content/">',
+        "  <channel>",
+        f"    <title>{esc(title)}</title>",
+        f"    <link>{esc(base_url)}</link>",
+        f"    <language>{esc(getattr(getattr(project, 'config', None), 'language_code', '') or 'en')}</language>",
+    ]
+
+    book_description = author and f"{title} by {author}" or title
+    lines.append(f"    <description>{esc(book_description)}</description>")
+
+    if itunes_author:
+        lines.append(f"    <itunes:author>{esc(itunes_author)}</itunes:author>")
+        lines.append("    <itunes:owner>")
+        lines.append(f"      <itunes:name>{esc(itunes_author)}</itunes:name>")
+        lines.append("    </itunes:owner>")
+    if publisher:
+        lines.append(f"    <copyright>{esc(publisher)}</copyright>")
+    if genre:
+        lines.append(f'    <itunes:category text="{esc(genre)}"/>')
+    lines.append("    <itunes:explicit>false</itunes:explicit>")
+
+    for i, item in enumerate(items):
+        ch_title = _item_get(item, "title") or f"Chapter {i + 1}"
+        filename = _item_get(item, "filename", "") or ""
+        duration_s = _item_get(item, "duration_seconds", 0.0) or 0.0
+        length = int(_item_get(item, "length", 0) or 0)
+        description = _item_get(item, "description", "")
+        url = join_url(base_url, str(filename))
+        guid = _item_get(item, "guid") or url
+        mime_type = _item_get(item, "mime_type") or _guess_audio_mime(str(filename))
+        pubdate = _rss_pubdate(_item_get(item, "pubdate"))
+
+        lines.append("    <item>")
+        lines.append(f"      <title>{esc(ch_title)}</title>")
+        if description:
+            lines.append(f"      <description>{esc(description)}</description>")
+        lines.append(
+            f'      <enclosure url="{esc(url)}" '
+            f'length="{length}" type="{esc(mime_type)}"/>'
+        )
+        lines.append(f'      <guid isPermaLink="false">{esc(guid)}</guid>')
+        lines.append(f"      <pubDate>{esc(pubdate)}</pubDate>")
+        lines.append(
+            f"      <itunes:duration>{esc(_itunes_duration(duration_s))}</itunes:duration>"
+        )
+        lines.append("    </item>")
+
+    lines.append("  </channel>")
+    lines.append("</rss>")
+    return "\n".join(lines) + "\n"
+
+
+# MIME types for podcast enclosures, keyed on the audio file extension.
+_AUDIO_MIME_TYPES = {
+    ".m4b": "audio/x-m4b",
+    ".m4a": "audio/mp4",
+    ".mp3": "audio/mpeg",
+    ".opus": "audio/opus",
+    ".ogg": "audio/ogg",
+    ".flac": "audio/flac",
+    ".wav": "audio/wav",
+}
+
+
+def _guess_audio_mime(filename: str) -> str:
+    """Best-effort audio MIME type from a filename extension (default mp3)."""
+    ext = Path(filename).suffix.lower()
+    return _AUDIO_MIME_TYPES.get(ext, "audio/mpeg")

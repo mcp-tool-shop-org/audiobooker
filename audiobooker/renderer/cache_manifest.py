@@ -20,6 +20,15 @@ logger = logging.getLogger("audiobooker.cache")
 MANIFEST_VERSION = 1
 MANIFEST_FILENAME = "render_v1.json"
 
+# FT-RENDER-P-004: the utterance-level incremental cache lives in its OWN
+# namespaced manifest so the chapter-level cache (render_v1.json) is never
+# touched, read, or rewritten by the opt-in utterance path. Old render_v1.json
+# manifests therefore continue to load byte-identically — bumping the chapter
+# MANIFEST_VERSION was deliberately avoided. The utterance manifest carries its
+# own independent version line.
+UTTERANCE_MANIFEST_VERSION = 1
+UTTERANCE_MANIFEST_FILENAME = "render_v2_utterance.json"
+
 
 @dataclass
 class ChapterCacheEntry:
@@ -116,6 +125,145 @@ class CacheManifest:
             chapters=chapters,
             last_updated=data.get("last_updated", ""),
         )
+
+
+# ---------------------------------------------------------------------------
+# FT-RENDER-P-004: Utterance-level incremental cache manifest (namespaced)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class UtteranceCacheEntry:
+    """One utterance's sub-cache record (FT-RENDER-P-004)."""
+    utterance_hash: str
+    wav_path: str
+    duration_s: float = 0.0
+    created_at: str = ""
+
+    def is_valid(self) -> bool:
+        """Valid when the WAV still exists on disk and is non-empty."""
+        wav = Path(self.wav_path)
+        if not wav.exists():
+            return False
+        try:
+            return wav.stat().st_size > 0
+        except OSError:
+            return False
+
+
+@dataclass
+class UtteranceCacheManifest:
+    """
+    FT-RENDER-P-004: per-chapter utterance sub-cache.
+
+    Maps an utterance hash → its rendered WAV. Kept entirely separate from the
+    chapter-level CacheManifest: it lives in its own file
+    (render_v2_utterance.json) and carries its own version, so it can evolve
+    without ever invalidating or rewriting the chapter cache.
+    """
+    version: int = UTTERANCE_MANIFEST_VERSION
+    book_title: str = ""
+    entries: list[UtteranceCacheEntry] = field(default_factory=list)
+    last_updated: str = ""
+    _index: dict[str, int] = field(default_factory=dict, repr=False, compare=False)
+
+    def __post_init__(self):
+        self._rebuild_index()
+
+    def _rebuild_index(self) -> None:
+        self._index = {e.utterance_hash: i for i, e in enumerate(self.entries)}
+
+    def get_entry(self, utterance_hash: str) -> Optional[UtteranceCacheEntry]:
+        pos = self._index.get(utterance_hash)
+        if pos is not None:
+            return self.entries[pos]
+        return None
+
+    def set_entry(self, entry: UtteranceCacheEntry) -> None:
+        pos = self._index.get(entry.utterance_hash)
+        if pos is not None:
+            self.entries[pos] = entry
+        else:
+            self._index[entry.utterance_hash] = len(self.entries)
+            self.entries.append(entry)
+
+    def to_dict(self) -> dict:
+        d = asdict(self)
+        d.pop("_index", None)
+        return d
+
+    def to_json(self) -> str:
+        return json.dumps(self.to_dict(), indent=2, ensure_ascii=False)
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "UtteranceCacheManifest":
+        entries = [UtteranceCacheEntry(**e) for e in data.get("entries", [])]
+        return cls(
+            version=data.get("version", UTTERANCE_MANIFEST_VERSION),
+            book_title=data.get("book_title", ""),
+            entries=entries,
+            last_updated=data.get("last_updated", ""),
+        )
+
+
+def get_utterance_manifest_path(cache_root: Path, chapter_index: int) -> Path:
+    """Per-chapter utterance manifest path (lives under manifests/)."""
+    return (
+        get_manifests_dir(cache_root)
+        / f"chapter_{chapter_index:04d}_{UTTERANCE_MANIFEST_FILENAME}"
+    )
+
+
+def get_utterance_wav_dir(cache_root: Path, chapter_index: int) -> Path:
+    """Per-chapter directory holding the individual utterance WAVs."""
+    return get_chapters_dir(cache_root) / f"chapter_{chapter_index:04d}_utterances"
+
+
+def load_utterance_manifest(manifest_path: Path) -> Optional[UtteranceCacheManifest]:
+    """Load an utterance manifest. Returns None if missing or corrupt.
+
+    A future-version manifest (version > UTTERANCE_MANIFEST_VERSION) is ignored
+    rather than mis-read, mirroring the chapter loader's policy.
+    """
+    if not manifest_path.exists():
+        return None
+    try:
+        data = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest = UtteranceCacheManifest.from_dict(data)
+        if manifest.version > UTTERANCE_MANIFEST_VERSION:
+            logger.warning(
+                f"Utterance manifest version {manifest.version} > supported "
+                f"{UTTERANCE_MANIFEST_VERSION}; ignoring utterance cache"
+            )
+            return None
+        return manifest
+    except (json.JSONDecodeError, KeyError, TypeError) as e:
+        logger.warning(f"Corrupt utterance manifest at {manifest_path}: {e}")
+        return None
+
+
+def save_utterance_manifest(
+    manifest: UtteranceCacheManifest, manifest_path: Path
+) -> None:
+    """Atomically write an utterance manifest (tmp → rename via .bak)."""
+    manifest.last_updated = datetime.now(timezone.utc).isoformat()
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+
+    tmp_path = manifest_path.with_suffix(".json.tmp")
+    bak_path = manifest_path.with_suffix(".json.bak")
+    tmp_path.write_text(manifest.to_json(), encoding="utf-8")
+
+    try:
+        if manifest_path.exists():
+            if bak_path.exists():
+                bak_path.unlink()
+            os.rename(str(manifest_path), str(bak_path))
+        os.rename(str(tmp_path), str(manifest_path))
+        if bak_path.exists():
+            bak_path.unlink()
+    except OSError:
+        if not manifest_path.exists() and bak_path.exists():
+            os.rename(str(bak_path), str(manifest_path))
+        raise
 
 
 # ---------------------------------------------------------------------------

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "audiobooker-ai"
-version = "2.0.1"
+version = "2.1.0"
 description = "AI Audiobook Generator - Convert books to narrated audiobooks"
 readme = "README.md"
 license = {text = "MIT"}
@@ -69,6 +69,13 @@ dev = [
 
 [project.scripts]
 audiobooker = "audiobooker.cli:main"
+
+# ECOSYSTEM (v2.1): the built-in voice-soundboard engine is registered through
+# the SAME entry-point group third parties use, so the default resolves via the
+# identical importlib.metadata path. engine.get_default_engine(name) looks up
+# this group; "voice-soundboard"/None always falls back to the built-in class.
+[project.entry-points."audiobooker.tts_engines"]
+voice-soundboard = "audiobooker.renderer.engine:_VoiceSoundboardEngine"
 
 [project.urls]
 Homepage = "https://github.com/mcp-tool-shop-org/audiobooker"
