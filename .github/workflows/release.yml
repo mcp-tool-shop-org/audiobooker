@@ -30,7 +30,7 @@ jobs:
           python -m build
 
       - name: Publish to PyPI (trusted publishing / OIDC)
-        uses: pypa/gh-action-pypi-publish@76f52bc884231f62b54f72e44af12044e8c37755 # v1.12.4
+        uses: pypa/gh-action-pypi-publish@76f52bc884231f62b9a034ebfe128415bbaabdfc # v1.12.4
         with:
           print-hash: true
 
@@ -39,6 +39,9 @@ jobs:
   # The tag-vs-package.json check below guards against version drift.
   publish-npm:
     name: Publish npm launcher
+    # Only on a real release — npm rejects republishing an existing version, and
+    # the tag-vs-package.json check needs a vX.Y.Z ref (not a workflow_dispatch).
+    if: ${{ github.event_name == 'release' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
