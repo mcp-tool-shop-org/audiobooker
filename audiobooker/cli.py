@@ -13,6 +13,11 @@ Usage:
     audiobooker render                     # Render audiobook
     audiobooker render --dry-run           # Preview render without executing
     audiobooker render --cover cover.jpg   # Render with cover art
+    audiobooker render --acx               # Master for ACX retail (-20 LUFS)
+    audiobooker render --split             # One file per chapter
+    audiobooker sample --duration 120      # Render a mastered retail sample
+    audiobooker master-check book.m4b      # Check ACX loudness/peak compliance
+    audiobooker export-chapters --format cue  # Export chapter markers
     audiobooker batch *.epub               # Batch process multiple files
     audiobooker batch *.epub --dry-run     # Preview batch without rendering
     audiobooker emotions list              # List emotion summary per chapter
@@ -310,6 +315,39 @@ def create_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Send desktop notification on render completion or failure",
     )
+    # OUTPUT-F1: ACX / output-profile mastering
+    render_parser.add_argument(
+        "--acx",
+        action="store_true",
+        help="Master for ACX/audiobook retail (loudnorm -20 LUFS, 192k); "
+             "sets output_profile=acx",
+    )
+    render_parser.add_argument(
+        "--bitrate",
+        metavar="RATE",
+        help="Encoder bitrate override, e.g. 192k (default: profile-dependent)",
+    )
+    render_parser.add_argument(
+        "--split",
+        action="store_true",
+        help="Emit one file per chapter instead of a single combined file",
+    )
+    # OUTPUT-F1: Per-render metadata overrides (filled onto project.metadata)
+    render_parser.add_argument(
+        "--narrator",
+        metavar="NAME",
+        help="Set the narrator credit embedded in the output",
+    )
+    render_parser.add_argument(
+        "--genre",
+        metavar="GENRE",
+        help="Set the genre tag embedded in the output",
+    )
+    render_parser.add_argument(
+        "--series",
+        metavar="NAME",
+        help="Set the series name embedded in the output",
+    )
 
     # --- info ---
     info_parser = subparsers.add_parser("info", help="Show project information")
@@ -470,6 +508,78 @@ def create_parser() -> argparse.ArgumentParser:
     preview_parser.add_argument(
         "-o", "--output",
         help="Output file path (default: preview.wav)",
+    )
+
+    # --- OUTPUT-F1: sample (retail sample clip) ---
+    sample_parser = subparsers.add_parser(
+        "sample",
+        help="Render a mastered retail sample clip (distinct from 'preview')",
+    )
+    sample_parser.add_argument("-p", "--project", help="Project file")
+    sample_parser.add_argument(
+        "--from-chapter",
+        type=int,
+        default=0,
+        metavar="N",
+        help="Chapter index to sample from (0-based, default: 0)",
+    )
+    sample_parser.add_argument(
+        "--start-seconds",
+        type=float,
+        default=0.0,
+        metavar="S",
+        help="Offset into the chapter to start the sample (default: 0)",
+    )
+    sample_parser.add_argument(
+        "--duration",
+        type=float,
+        default=180.0,
+        metavar="S",
+        help="Sample length in seconds (default: 180)",
+    )
+    sample_parser.add_argument(
+        "--acx",
+        action="store_true",
+        help="Master the sample for ACX (sets output_profile=acx)",
+    )
+    sample_parser.add_argument(
+        "--bitrate",
+        metavar="RATE",
+        help="Encoder bitrate override, e.g. 192k",
+    )
+    sample_parser.add_argument(
+        "-o", "--output",
+        help="Output file path (default: sample.<ext>)",
+    )
+
+    # --- OUTPUT-F1: master-check (ACX compliance check) ---
+    master_check_parser = subparsers.add_parser(
+        "master-check",
+        help="Check an audio file against ACX loudness/peak/noise-floor limits",
+    )
+    master_check_parser.add_argument(
+        "file", help="Audio file to check (WAV/MP3/M4B/etc.)"
+    )
+    master_check_parser.add_argument(
+        "--json", dest="json_output", action="store_true", help="Output as JSON"
+    )
+
+    # --- OUTPUT-F1: export-chapters (chapter metadata sidecar) ---
+    export_chapters_parser = subparsers.add_parser(
+        "export-chapters",
+        help="Export chapter markers as ffmetadata, CUE, or JSON",
+    )
+    export_chapters_parser.add_argument("-p", "--project", help="Project file")
+    export_chapters_parser.add_argument(
+        "--format",
+        choices=["ffmetadata", "cue", "json"],
+        default="ffmetadata",
+        dest="chapter_format",
+        help="Chapter metadata format (default: ffmetadata)",
+    )
+    export_chapters_parser.add_argument(
+        "-o", "--output",
+        help="Output file path (default: stdout)",
     )
 
     # --- cast-export ---
@@ -802,6 +912,20 @@ def cmd_render(args) -> int:
         project_path = find_project_file(args.project)
         project = AudiobookProject.load(project_path)
 
+        # OUTPUT-F1: Apply per-render metadata overrides onto project.metadata
+        # before rendering so they get embedded in the output tags. These are
+        # transient render-time overrides; they ARE persisted with the project
+        # on save() (same as cover art), which is the expected behavior.
+        narrator_override = getattr(args, "narrator", None)
+        genre_override = getattr(args, "genre", None)
+        series_override = getattr(args, "series", None)
+        if narrator_override:
+            project.metadata.narrator_name = narrator_override
+        if genre_override:
+            project.metadata.genre = genre_override
+        if series_override:
+            project.metadata.series = series_override
+
         # Handle --clean-cache before rendering
         if getattr(args, "clean_cache", False):
             from audiobooker.renderer.cache_manifest import get_cache_root
@@ -887,6 +1011,10 @@ def cmd_render(args) -> int:
             cover = getattr(args, "cover", None)
             normalize = getattr(args, "normalize", False)
             notify = getattr(args, "notify", False)
+            # OUTPUT-F1: ACX / output-profile + bitrate + split
+            output_profile = "acx" if getattr(args, "acx", False) else project.config.output_profile
+            bitrate = getattr(args, "bitrate", None)
+            split = getattr(args, "split", False)
 
             # FT-RENDER-004: Dry-run mode
             if getattr(args, "dry_run", False):
@@ -915,6 +1043,12 @@ def cmd_render(args) -> int:
                 _out("  (cache disabled — full re-render)")
             if jobs > 1:
                 _out(f"  (parallel rendering: {jobs} workers)")
+            if output_profile == "acx":
+                _out("  (ACX mastering profile: loudnorm -20 LUFS, peak -3 dBTP)")
+            if bitrate:
+                _out(f"  (bitrate: {bitrate})")
+            if split:
+                _out("  (split: one file per chapter)")
 
             # FT-RENDER-005: Rich progress bar (conditional import)
             progress_bar = None
@@ -942,16 +1076,22 @@ def cmd_render(args) -> int:
                     print(f"  [{current}/{total}] {status}")
 
             try:
-                if cover:
-                    # FT-RENDER-006: Call render_project directly to pass cover_art
+                # OUTPUT-F1: Any of cover/normalize/acx/bitrate/split requires a
+                # direct render_project call so we can thread the extra kwargs.
+                # The plain case still goes through project.render() (which now
+                # also forwards profile/bitrate/split) to keep that path simple.
+                needs_direct = bool(
+                    cover or normalize or output_profile != "podcast" or bitrate or split
+                )
+                if needs_direct:
                     from audiobooker.renderer.engine import render_project
                     # Ensure compiled
                     uncompiled = [c for c in project.chapters if not c.is_compiled and not c.skip]
                     if uncompiled:
                         project.compile()
-                    path = render_project(
-                        project,
-                        Path(output),
+                    # Call defensively: a concurrently-evolving renderer with an
+                    # older signature may not yet accept the v2.1 kwargs.
+                    direct_kwargs = dict(
                         progress_callback=progress,
                         resume=resume,
                         from_chapter=from_chapter,
@@ -961,37 +1101,34 @@ def cmd_render(args) -> int:
                         output_format=getattr(args, "output_format", None),
                         cover_art=cover,
                         normalize=normalize,
+                        output_profile=output_profile,
+                        bitrate=bitrate,
+                        split=split,
                     )
+                    try:
+                        path = render_project(project, Path(output), **direct_kwargs)
+                    except TypeError as te:
+                        if not any(
+                            k in str(te) for k in ("output_profile", "bitrate", "split")
+                        ):
+                            raise
+                        for k in ("output_profile", "bitrate", "split"):
+                            direct_kwargs.pop(k, None)
+                        path = render_project(project, Path(output), **direct_kwargs)
                 else:
-                    # Pass normalize via render_project directly when no cover
-                    if normalize:
-                        from audiobooker.renderer.engine import render_project
-                        uncompiled = [c for c in project.chapters if not c.is_compiled and not c.skip]
-                        if uncompiled:
-                            project.compile()
-                        path = render_project(
-                            project,
-                            Path(output),
-                            progress_callback=progress,
-                            resume=resume,
-                            from_chapter=from_chapter,
-                            allow_partial=allow_partial,
-                            jobs=jobs,
-                            force=force,
-                            output_format=getattr(args, "output_format", None),
-                            normalize=normalize,
-                        )
-                    else:
-                        path = project.render(
-                            output,
-                            progress_callback=progress,
-                            resume=resume,
-                            from_chapter=from_chapter,
-                            allow_partial=allow_partial,
-                            jobs=jobs,
-                            force=force,
-                            output_format=getattr(args, "output_format", None),
-                        )
+                    path = project.render(
+                        output,
+                        progress_callback=progress,
+                        resume=resume,
+                        from_chapter=from_chapter,
+                        allow_partial=allow_partial,
+                        jobs=jobs,
+                        force=force,
+                        output_format=getattr(args, "output_format", None),
+                        output_profile=output_profile,
+                        bitrate=bitrate,
+                        split=split,
+                    )
             finally:
                 if progress_bar is not None:
                     progress_bar.stop()
@@ -2365,14 +2502,31 @@ def cmd_batch(args) -> int:
             from audiobooker.project import _sanitize_filename
             output_path = source.parent / f"{_sanitize_filename(project.title)}.{fmt}"
 
+            # FT-RENDER-M-002: pass cover art + metadata through. Per the v2.1
+            # render contract, render_project auto-defaults cover_art from
+            # project.metadata.cover_art_path when None and threads
+            # project.metadata to the assembler for full tagging, so we pass
+            # cover_art explicitly (None lets the contract default kick in) and
+            # honor the project's output_profile. Called defensively so an older
+            # concurrent renderer signature degrades gracefully.
             from audiobooker.renderer.engine import render_project
-            path = render_project(
-                project,
-                output_path,
+            md_cover = None
+            if project.metadata.cover_art_path and Path(project.metadata.cover_art_path).exists():
+                md_cover = str(project.metadata.cover_art_path)
+            batch_kwargs = dict(
                 jobs=jobs,
                 force=True,  # skip casting validation in batch
                 output_format=fmt,
+                cover_art=md_cover,
+                output_profile=project.config.output_profile,
             )
+            try:
+                path = render_project(project, output_path, **batch_kwargs)
+            except TypeError as te:
+                if "output_profile" not in str(te):
+                    raise
+                batch_kwargs.pop("output_profile", None)
+                path = render_project(project, output_path, **batch_kwargs)
 
             book_result["status"] = "success"
             book_result["output"] = str(path)
@@ -2532,6 +2686,158 @@ def cmd_preview(args) -> int:
         return 2
 
 
+def cmd_sample(args) -> int:
+    """
+    OUTPUT-F1: Render a mastered retail sample clip.
+
+    Distinct from 'preview' (which is quick voice QA): 'sample' produces a
+    trimmed, mastered clip suitable for a retail listing / ACX sample, reusing
+    rendered chapter audio from the cache when available.
+    """
+    from audiobooker import AudiobookProject
+    from audiobooker.renderer.engine import render_sample, RenderError
+
+    try:
+        project_path = find_project_file(args.project)
+        project = AudiobookProject.load(project_path)
+
+        from_chapter = getattr(args, "from_chapter", 0)
+        start_seconds = getattr(args, "start_seconds", 0.0)
+        duration = getattr(args, "duration", 180.0)
+        output_profile = "acx" if getattr(args, "acx", False) else project.config.output_profile
+        bitrate = getattr(args, "bitrate", None)
+        output = getattr(args, "output", None)
+
+        if from_chapter < 0 or from_chapter >= len(project.chapters):
+            print(
+                f"Error: Chapter {from_chapter} not found "
+                f"(project has {len(project.chapters)} chapters)"
+            )
+            return 1
+
+        _out(f"Rendering sample from chapter {from_chapter}...")
+        _out(f"  Start: {start_seconds:.0f}s  Duration: {duration:.0f}s  Profile: {output_profile}")
+
+        path = render_sample(
+            project,
+            from_chapter=from_chapter,
+            start_seconds=start_seconds,
+            duration=duration,
+            output_path=Path(output) if output else None,
+            output_profile=output_profile,
+            bitrate=bitrate,
+        )
+
+        _out(f"\nSample saved: {path}")
+        return 0
+
+    except RenderError as e:
+        _report_error(e, args)
+        return 1
+
+    except USER_ERROR_TYPES as e:
+        _report_error(e, args)
+        return 1
+
+    except Exception as e:
+        _report_error(e, args)
+        return 2
+
+
+def cmd_master_check(args) -> int:
+    """
+    OUTPUT-F1: Check an audio file against ACX loudness/peak/noise-floor limits.
+
+    Prints PASS/FAIL per criterion (human-readable) or the full result dict
+    (--json). Exits 0 when the file passes, 1 when it fails the profile checks,
+    and 1 on user errors (missing file).
+    """
+    from audiobooker.renderer.output import master_check
+
+    try:
+        file_path = Path(args.file)
+        if not file_path.exists():
+            print(f"Error: Audio file not found: {file_path}")
+            return 1
+
+        result = master_check(file_path)
+
+        if getattr(args, "json_output", False):
+            import json as json_mod
+            print(json_mod.dumps(result, indent=2, ensure_ascii=False))
+            return 0 if result.get("passes") else 1
+
+        passes = result.get("passes", False)
+        profile = result.get("profile", "acx")
+        _out(f"Master check ({profile}) for {file_path.name}:\n")
+        _out(f"  RMS:         {result.get('measured_rms_db')} dB")
+        _out(f"  Peak:        {result.get('measured_peak_db')} dBTP")
+        _out(f"  Noise floor: {result.get('measured_noise_floor_db')} dB")
+        failures = result.get("failures") or []
+        if passes:
+            _out(
+                "\nResult: PASS — meets ACX's measurable loudness, peak, and "
+                "noise-floor limits.\n"
+                "(ACX also has subjective/quality criteria this check can't verify.)"
+            )
+        else:
+            _out("\nResult: FAIL")
+            for failure in failures:
+                _out(f"  - {failure}")
+        return 0 if passes else 1
+
+    except USER_ERROR_TYPES as e:
+        _report_error(e, args)
+        return 1
+
+
+def cmd_export_chapters(args) -> int:
+    """
+    OUTPUT-F1: Export chapter markers as ffmetadata, CUE, or JSON.
+
+    Writes to the file given by -o, or to stdout when omitted. Uses each
+    chapter's rendered duration_seconds; chapters with no rendered audio
+    contribute a 0-length marker (the contract handles formatting).
+    """
+    from audiobooker import AudiobookProject
+    from audiobooker.renderer.output import export_chapter_metadata
+
+    try:
+        project_path = find_project_file(args.project)
+        project = AudiobookProject.load(project_path)
+
+        fmt = getattr(args, "chapter_format", "ffmetadata")
+
+        # Build (title, duration_seconds) pairs from project chapters. The
+        # exporter accepts (title, duration) or (path, title, duration) tuples
+        # and computes cumulative timings itself.
+        chapters_data = [
+            (ch.title, ch.duration_seconds)
+            for ch in project.chapters
+            if not ch.skip
+        ]
+
+        contents = export_chapter_metadata(
+            chapters_data, fmt=fmt, title=project.title
+        )
+
+        output = getattr(args, "output", None)
+        if output:
+            out_path = Path(output)
+            out_path.write_text(contents, encoding="utf-8")
+            _out(f"Chapter metadata ({fmt}) written to {out_path}")
+        else:
+            # Raw contents to stdout (not via _out so --silent still emits the
+            # payload, which is the whole point of stdout export).
+            print(contents)
+
+        return 0
+
+    except USER_ERROR_TYPES as e:
+        _report_error(e, args)
+        return 1
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     """Main entry point."""
     parser = create_parser()
@@ -2584,6 +2890,9 @@ def main(argv: Optional[list[str]] = None) -> int:
         "diagnose": cmd_diagnose,
         "batch": cmd_batch,
         "preview": cmd_preview,
+        "sample": cmd_sample,
+        "master-check": cmd_master_check,
+        "export-chapters": cmd_export_chapters,
     }
 
     handler = commands.get(args.command)

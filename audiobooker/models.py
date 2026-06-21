@@ -515,6 +515,13 @@ class ProjectConfig:
         booknlp_mode: NLP speaker resolution: "on"|"off"|"auto" (default "auto")
         emotion_mode: Emotion inference: "off"|"rule"|"auto" (default "rule")
         emotion_confidence_threshold: Minimum confidence to apply inferred emotion
+        output_profile: Mastering profile for final assembly: "podcast"
+            (EBU R128 -16 LUFS, current behavior) or "acx" (ACX retail target,
+            loudnorm I=-20:TP=-3:LRA=11). Default "podcast".
+        aac_bitrate: Override AAC bitrate for M4B/m4a output (e.g. "192k").
+            None uses the assembler default (128k, or 192k under the acx profile).
+        mp3_bitrate: Override MP3/Opus bitrate (e.g. "192k"). None uses the
+            assembler default.
     """
     chapter_pause_ms: int = 2000
     narrator_pause_ms: int = 600
@@ -538,11 +545,15 @@ class ProjectConfig:
     compile_workers: int = 4
     user_emotion_rules: dict[str, str] = field(default_factory=dict)
     footnote_behavior: str = "inline"
+    output_profile: str = "podcast"
+    aac_bitrate: Optional[str] = None
+    mp3_bitrate: Optional[str] = None
 
     _VALID_OUTPUT_FORMATS = ("m4b", "mp3", "wav", "ogg", "flac")
     _VALID_BOOKNLP_MODES = ("on", "off", "auto")
     _VALID_EMOTION_MODES = ("off", "rule", "auto")
     _VALID_FOOTNOTE_BEHAVIORS = ("inline", "end", "skip")
+    _VALID_OUTPUT_PROFILES = ("podcast", "acx")
 
     def __post_init__(self):
         """F-CORE-B-015: Validate enum-like string fields."""
@@ -571,6 +582,11 @@ class ProjectConfig:
                 f"global_speed must be between 0.5 and 2.0, got {self.global_speed}. "
                 "Use 1.0 for normal speed."
             )
+        if self.output_profile not in self._VALID_OUTPUT_PROFILES:
+            raise ValueError(
+                f"Invalid output_profile: {self.output_profile!r}. "
+                f"Must be one of: {', '.join(self._VALID_OUTPUT_PROFILES)}"
+            )
 
     def to_dict(self) -> dict:
         """Serialize to dictionary."""
@@ -597,6 +613,9 @@ class ProjectConfig:
             "compile_workers": self.compile_workers,
             "user_emotion_rules": self.user_emotion_rules,
             "footnote_behavior": self.footnote_behavior,
+            "output_profile": self.output_profile,
+            "aac_bitrate": self.aac_bitrate,
+            "mp3_bitrate": self.mp3_bitrate,
         }
 
     @classmethod
@@ -625,6 +644,9 @@ class ProjectConfig:
             compile_workers=data.get("compile_workers", 4),
             user_emotion_rules=data.get("user_emotion_rules", {}),
             footnote_behavior=data.get("footnote_behavior", "inline"),
+            output_profile=data.get("output_profile", "podcast"),
+            aac_bitrate=data.get("aac_bitrate"),
+            mp3_bitrate=data.get("mp3_bitrate"),
         )
 
 

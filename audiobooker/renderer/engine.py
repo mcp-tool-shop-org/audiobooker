@@ -36,7 +36,10 @@ VOICE_SOUNDBOARD_INSTALL_HINT = (
 
 # Output formats that require ffmpeg for assembly. 'wav' chapters are written
 # directly by the TTS engine and need no ffmpeg step.
-_FFMPEG_FORMATS = {"m4b", "m4a", "mp3"}
+_FFMPEG_FORMATS = {"m4b", "m4a", "mp3", "opus", "ogg", "flac"}
+
+# FT-RENDER-M-006: all output formats the renderer knows how to assemble.
+VALID_OUTPUT_FORMATS = {"m4b", "m4a", "mp3", "wav", "opus", "ogg", "flac"}
 
 
 # ---------------------------------------------------------------------------
@@ -529,6 +532,10 @@ def render_project(
     output_format: Optional[str] = None,
     cover_art: Optional[str] = None,
     normalize: bool = False,
+    bitrate: Optional[str] = None,
+    output_profile: str = "podcast",
+    split: bool = False,
+    **kwargs,
 ) -> Path:
     """
     Render all chapters and assemble final audiobook.
@@ -538,7 +545,7 @@ def render_project(
 
     Args:
         project: AudiobookProject to render.
-        output_path: Output file path (.m4b or .mp3).
+        output_path: Output file path (.m4b / .mp3 / .opus / .flac / ...).
         progress_callback: Callback(current_chapter, total_chapters, status).
         engine: Injected TTSEngine (defaults to voice-soundboard).
         assembler: Injected assembly function (defaults based on format).
@@ -548,8 +555,18 @@ def render_project(
         allow_partial: If True, assemble even if some chapters failed.
         jobs: Number of parallel render workers (default 1).
         force: If True, bypass casting completeness validation.
-        output_format: Override output format ('m4b', 'mp3', 'wav').
-        cover_art: Optional path to cover art image (JPG/PNG) for embedding.
+        output_format: Override output format
+            ('m4b', 'mp3', 'wav', 'opus', 'flac').
+        cover_art: Optional path to cover art image (JPG/PNG). When None,
+            defaults to project.metadata.cover_art_path if that file exists
+            (FT-RENDER-M-002).
+        normalize: If True, run loudness mastering with ``output_profile``.
+        bitrate: Encoding bitrate override (e.g. "192k"). Defaults to the
+            profile's bitrate (FT-RENDER-M-003).
+        output_profile: 'podcast' (EBU R128 -16 LUFS) or 'acx' (loudnorm
+            I=-20:TP=-3:LRA=11, 44.1k/192k) (FT-ACX-001).
+        split: If True for AAC output, emit per-chapter .m4a files plus an
+            index playlist instead of a single m4b (FT-RENDER-M-007).
 
     Returns:
         Path to final audiobook file.
@@ -561,6 +578,9 @@ def render_project(
     from audiobooker.renderer.output import (
         assemble_m4b as _m4b_assembler,
         assemble_mp3 as _mp3_assembler,
+        assemble_opus as _opus_assembler,
+        assemble_flac as _flac_assembler,
+        assemble_m4a_split as _m4a_split_assembler,
     )
     from audiobooker.renderer.cache_manifest import (
         CacheManifest, ChapterCacheEntry,
@@ -576,11 +596,22 @@ def render_project(
     # FT-RENDER-011: Casting completeness validation
     validate_casting_completeness(project, force=force)
 
-    # FT-RENDER-003: Select assembler based on format
+    # FT-RENDER-003 / FT-RENDER-M-006 / FT-RENDER-M-007: Select assembler by
+    # format. 'split' on an AAC format emits per-chapter .m4a files.
     fmt = output_format or project.config.output_format
+    _builtin_assemblers = (
+        _m4b_assembler, _mp3_assembler, _opus_assembler,
+        _flac_assembler, _m4a_split_assembler,
+    )
     if assembler is None:
-        if fmt == "mp3":
+        if split and fmt in ("m4b", "m4a"):
+            assembler = _m4a_split_assembler
+        elif fmt == "mp3":
             assembler = _mp3_assembler
+        elif fmt in ("opus", "ogg"):
+            assembler = _opus_assembler
+        elif fmt == "flac":
+            assembler = _flac_assembler
         else:
             assembler = _m4b_assembler
 
@@ -588,7 +619,7 @@ def render_project(
     # assembly, fail fast BEFORE rendering the whole book — otherwise the user
     # waits through a full render only to hit a missing-ffmpeg wall at assembly.
     # Skipped when a custom assembler is injected (tests / non-ffmpeg backends).
-    if assembler in (_m4b_assembler, _mp3_assembler) and fmt in _FFMPEG_FORMATS:
+    if assembler in _builtin_assemblers and fmt in _FFMPEG_FORMATS:
         from audiobooker.renderer.output import check_ffmpeg
         if not check_ffmpeg():
             raise RenderError(
@@ -604,6 +635,31 @@ def render_project(
             )
 
     output_path = Path(output_path)
+
+    # FT-RENDER-M-002: Auto-cover. When no cover was supplied, fall back to the
+    # project's metadata cover_art_path if that file exists, and log which
+    # source we used so it's never a silent surprise.
+    if cover_art is None:
+        meta = getattr(project, "metadata", None)
+        meta_cover = getattr(meta, "cover_art_path", None) if meta else None
+        if meta_cover is not None and Path(meta_cover).exists():
+            cover_art = str(meta_cover)
+            logger.info(f"RENDER_COVER: using project metadata cover {cover_art}")
+        elif meta_cover is not None:
+            logger.warning(
+                f"RENDER_COVER: project metadata cover path does not exist "
+                f"({meta_cover}); rendering without a cover."
+            )
+    elif cover_art:
+        logger.info(f"RENDER_COVER: using supplied cover {cover_art}")
+
+    # FT-ACX-001 / FT-RENDER-M-003: resolve the effective bitrate from the
+    # profile default when the caller didn't pin one.
+    from audiobooker.renderer.output import _resolve_loudnorm_profile
+    _profile = _resolve_loudnorm_profile(output_profile)
+    effective_bitrate = bitrate or _profile["bitrate"]
+    # ACX is a retail master — always run loudness normalization for it.
+    effective_normalize = normalize or (output_profile == "acx")
 
     # Determine cache root
     if cache_root is None:
@@ -849,26 +905,61 @@ def render_project(
 
         logger.info(f"RENDER_ASSEMBLE: chapters={len(ok_paths)} format={fmt}")
 
-        # FT-RENDER-006: Pass cover_art to assembler if supported
-        assembler_kwargs = dict(
+        # FT-RENDER-006 / FT-RENDER-M-*: Pass the rich assembler kwargs when the
+        # assembler accepts them. Injected test assemblers only take the base
+        # five positional kwargs, so optional kwargs are stripped on TypeError.
+        base_kwargs = dict(
             chapter_files=ok_paths,
             output_path=output_path,
             title=project.title,
             author=project.author,
             chapter_pause_ms=project.config.chapter_pause_ms,
         )
+        # Optional kwargs, attempted in addition to base_kwargs. Order matters:
+        # they're stripped one group at a time on TypeError, most-specific last.
+        optional_kwargs = dict(
+            metadata=getattr(project, "metadata", None),
+            loudnorm_profile=output_profile,
+        )
+        # Bitrate kwarg name differs across assemblers: assemble_m4b takes
+        # aac_bitrate, the others take bitrate. Pick whichever the assembler
+        # actually accepts so the bitrate is never silently dropped. When the
+        # assembler only declares **kwargs (no named bitrate param), default to
+        # the generic 'bitrate' name.
+        try:
+            import inspect
+            _params = inspect.signature(assembler).parameters
+            _names = set(_params)
+            _has_var_kw = any(
+                p.kind is inspect.Parameter.VAR_KEYWORD for p in _params.values()
+            )
+            if "aac_bitrate" in _names:
+                optional_kwargs["aac_bitrate"] = effective_bitrate
+            elif "bitrate" in _names or _has_var_kw:
+                optional_kwargs["bitrate"] = effective_bitrate
+        except (TypeError, ValueError):
+            optional_kwargs["bitrate"] = effective_bitrate
         if cover_art:
-            assembler_kwargs["cover_art"] = cover_art
-        if normalize:
-            assembler_kwargs["normalize"] = normalize
+            optional_kwargs["cover_art"] = cover_art
+        if effective_normalize:
+            optional_kwargs["normalize"] = effective_normalize
+
+        def _call_assembler():
+            """Call the assembler, degrading optional kwargs on TypeError."""
+            attempt = dict(base_kwargs, **optional_kwargs)
+            # Drop optional kwargs from the end until the call type-checks.
+            droppable = list(optional_kwargs.keys())
+            while True:
+                try:
+                    return assembler(**attempt)
+                except TypeError:
+                    if not droppable:
+                        raise
+                    drop = droppable.pop()
+                    attempt.pop(drop, None)
 
         try:
-            try:
-                assembly = assembler(**assembler_kwargs)
-            except TypeError:
-                # Assembler doesn't accept cover_art — call without it
-                assembler_kwargs.pop("cover_art", None)
-                assembly = assembler(**assembler_kwargs)
+            assembly = _call_assembler()
         except RuntimeError as assembly_err:
             # ENGINE-C-001: assembly can fail on missing ffmpeg AFTER a full,
             # successful render. Wrap it in RenderError so the recoverable path
@@ -934,6 +1025,180 @@ def render_project(
     finally:
         # FT-RENDER-010: Always release lockfile
         _release_render_lock(lock_path)
+
+
+# ---------------------------------------------------------------------------
+# FT-RENDER-M-009: Retail sample
+# ---------------------------------------------------------------------------
+
+def render_sample(
+    project: "AudiobookProject",
+    *,
+    from_chapter: int = 0,
+    start_seconds: float = 0.0,
+    duration: float = 180.0,
+    output_path: Optional[Path] = None,
+    output_profile: str = "podcast",
+    bitrate: Optional[str] = None,
+    engine: Optional[TTSEngine] = None,
+    cache_root: Optional[Path] = None,
+) -> Path:
+    """
+    FT-RENDER-M-009: Produce a short, retail-ready audiobook sample.
+
+    Trims ``duration`` seconds (starting at ``start_seconds``) from a single
+    chapter and masters it with the chosen profile/bitrate, tagging it as a
+    "Retail Sample". The chapter's rendered WAV is reused from the render
+    cache when present; otherwise the chapter is rendered on the fly.
+
+    Args:
+        project: AudiobookProject (chapters should be compiled).
+        from_chapter: Chapter index (0-based) to sample from.
+        start_seconds: Offset into the chapter to start the sample.
+        duration: Sample length in seconds (ACX retail samples are ~1-5 min).
+        output_path: Output file path. Defaults to ``<title>_sample.<ext>``
+            where the extension follows the profile (m4b/m4a → .m4a).
+        output_profile: 'podcast' or 'acx' mastering profile.
+        bitrate: Encoding bitrate override (defaults to the profile bitrate).
+        engine: Injected TTSEngine (for rendering an uncached chapter / tests).
+        cache_root: Override cache directory (default: derive from project).
+
+    Returns:
+        Path to the rendered sample file.
+
+    Raises:
+        RenderError: If the chapter index is out of range, the chapter cannot
+            be rendered, or ffmpeg is unavailable.
+        ValueError: If duration <= 0.
+    """
+    from audiobooker.renderer.output import (
+        check_ffmpeg,
+        _resolve_loudnorm_profile,
+        _sanitize_metadata_value,
+    )
+    from audiobooker.renderer.cache_manifest import (
+        load_manifest, get_cache_root, get_manifest_path, get_chapter_wav_path,
+    )
+    from audiobooker.renderer.hash_utils import (
+        chapter_text_hash, casting_hash, render_params_hash,
+    )
+
+    if duration <= 0:
+        raise ValueError(f"Sample duration must be positive, got {duration}.")
+    if from_chapter < 0 or from_chapter >= len(project.chapters):
+        raise RenderError(
+            f"Sample chapter index {from_chapter} out of range "
+            f"(0-{len(project.chapters) - 1}).",
+            code="SAMPLE_BAD_CHAPTER",
+            retryable=False,
+        )
+
+    if not check_ffmpeg():
+        raise RenderError(
+            "ffmpeg is required to master a retail sample but was not found "
+            "on PATH.",
+            code="DEP_FFMPEG_MISSING",
+            retryable=True,
+            hint="Install ffmpeg (https://ffmpeg.org/download.html), then re-run.",
+        )
+
+    from audiobooker.renderer.ffmpeg_runner import RealFFmpegRunner
+    runner = RealFFmpegRunner()
+
+    profile = _resolve_loudnorm_profile(output_profile)
+    effective_bitrate = bitrate or profile["bitrate"]
+    sample_rate = profile["sample_rate"]
+    loudnorm_filter = profile["loudnorm"]
+
+    chapter = project.chapters[from_chapter]
+
+    # Resolve cache root for cache reuse.
+    if cache_root is None:
+        project_dir = _resolve_project_dir(project)
+        cache_root = get_cache_root(project_dir)
+
+    # --- Locate the chapter WAV: reuse cache when valid, else render fresh ---
+    chapter_wav: Optional[Path] = None
+    cached_path = get_chapter_wav_path(cache_root, from_chapter)
+    manifest_path = get_manifest_path(cache_root)
+    manifest = load_manifest(manifest_path)
+    if manifest is not None:
+        entry = manifest.get_entry(from_chapter)
+        if entry is not None:
+            try:
+                valid = entry.is_valid(
+                    chapter_text_hash(chapter),
+                    casting_hash(project.casting),
+                    render_params_hash(project.config),
+                )
+            except Exception:
+                valid = False
+            if valid:
+                chapter_wav = Path(entry.wav_path)
+                logger.info(
+                    f"SAMPLE_CACHE_HIT: chapter={from_chapter} reusing {chapter_wav}"
+                )
+
+    if chapter_wav is None and cached_path.exists() and cached_path.stat().st_size > 1024:
+        # WAV present on disk even without a manifest entry — reuse it.
+        chapter_wav = cached_path
+        logger.info(f"SAMPLE_CACHE_DISK: reusing on-disk chapter WAV {chapter_wav}")
+
+    if chapter_wav is None:
+        # Render the chapter fresh into the cache location.
+        if not chapter.is_compiled:
+            raise RenderError(
+                f"Chapter {from_chapter} ({chapter.title!r}) is not compiled — "
+                f"compile the project before sampling.",
+                code="SAMPLE_NOT_COMPILED",
+                retryable=False,
+            )
+        cached_path.parent.mkdir(parents=True, exist_ok=True)
+        logger.info(f"SAMPLE_RENDER: rendering chapter {from_chapter} for sample")
+        render_chapter(chapter, project.casting, cached_path, engine=engine)
+        chapter_wav = cached_path
+
+    # --- Output path / extension ---
+    if output_path is None:
+        from audiobooker.project import _sanitize_filename
+        ext = "m4a"
+        output_path = Path(f"{_sanitize_filename(project.title)}_sample.{ext}")
+    else:
+        output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # --- Trim + master in a single ffmpeg pass ---
+    safe_title = _sanitize_metadata_value(f"{project.title} (Retail Sample)")
+    cmd = [
+        "ffmpeg", "-y",
+        "-ss", f"{max(0.0, start_seconds):.3f}",
+        "-t", f"{duration:.3f}",
+        "-i", str(chapter_wav),
+        "-af", loudnorm_filter,
+        "-c:a", "aac",
+        "-b:a", effective_bitrate,
+        "-ar", sample_rate,
+        "-metadata", f"title={safe_title}",
+        "-metadata", "comment=Retail Sample",
+        "-metadata", f"album={_sanitize_metadata_value(project.title)}",
+    ]
+    if project.author:
+        cmd.extend(["-metadata", f"artist={_sanitize_metadata_value(project.author)}"])
+    cmd.append(str(output_path))
+
+    result = runner.run(cmd)
+    if result.returncode != 0:
+        raise RenderError(
+            f"Failed to master retail sample: {result.stderr.strip()[:300]}",
+            code="SAMPLE_MASTER_FAIL",
+            retryable=True,
+        )
+
+    logger.info(
+        f"SAMPLE_COMPLETE: output={output_path} chapter={from_chapter} "
+        f"start={start_seconds:.1f}s duration={duration:.1f}s profile={output_profile}"
+    )
+    return output_path
 
 
 def _handle_chapter_failure(

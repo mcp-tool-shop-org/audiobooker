@@ -1479,6 +1479,9 @@ class AudiobookProject:
         jobs: int = 1,
         force: bool = False,
         output_format: Optional[str] = None,
+        output_profile: Optional[str] = None,
+        bitrate: Optional[str] = None,
+        split: bool = False,
     ) -> Path:
         """
         Render all chapters and assemble final audiobook.
@@ -1494,6 +1497,11 @@ class AudiobookProject:
             jobs: Number of parallel render workers (default 1).
             force: Bypass casting completeness validation.
             output_format: Override output format ('m4b', 'mp3', 'wav').
+            output_profile: Mastering profile ('podcast' | 'acx'). Defaults to
+                the project config's output_profile when None.
+            bitrate: Override encoder bitrate (e.g. "192k"). None uses the
+                profile/assembler default.
+            split: If True, emit per-chapter files instead of one combined file.
 
         Returns:
             Path to output file
@@ -1501,6 +1509,7 @@ class AudiobookProject:
         from audiobooker.renderer.engine import render_project
 
         fmt = output_format or self.config.output_format
+        profile = output_profile or self.config.output_profile
         if output_path is None:
             output_path = Path(f"{_sanitize_filename(self.title)}.{fmt}")
         else:
@@ -1518,9 +1527,10 @@ class AudiobookProject:
         if uncompiled:
             self.compile()
 
-        # Render
-        result_path = render_project(
-            self, output_path, progress_callback,
+        # Render. output_profile/bitrate/split are part of the v2.1 render
+        # contract; call defensively so a concurrently-evolving renderer with
+        # an older signature degrades gracefully instead of hard-crashing.
+        render_kwargs = dict(
             engine=engine,
             assembler=assembler,
             resume=resume,
@@ -1529,7 +1539,24 @@ class AudiobookProject:
             jobs=jobs,
             force=force,
             output_format=output_format,
+            output_profile=profile,
+            bitrate=bitrate,
+            split=split,
         )
+        try:
+            result_path = render_project(
+                self, output_path, progress_callback, **render_kwargs
+            )
+        except TypeError as e:
+            # Older renderer signature lacks the v2.1 kwargs — retry without
+            # them so existing (podcast/128k) behavior still works.
+            if not any(k in str(e) for k in ("output_profile", "bitrate", "split")):
+                raise
+            for k in ("output_profile", "bitrate", "split"):
+                render_kwargs.pop(k, None)
+            result_path = render_project(
+                self, output_path, progress_callback, **render_kwargs
+            )
 
         self.progress.status = "complete"
         self.modified_at = datetime.now().isoformat()
