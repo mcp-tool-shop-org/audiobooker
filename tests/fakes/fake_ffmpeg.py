@@ -5,9 +5,8 @@ FakeFFmpegRunner + FakeAssembler — test doubles for output assembly.
 from __future__ import annotations
 
 import shutil
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 from audiobooker.renderer.output import AssemblyResult
 from audiobooker.renderer.protocols import RunResult
