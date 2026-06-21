@@ -52,6 +52,52 @@ def _sanitize_filename(name: str) -> str:
     return sanitized or "untitled"
 
 
+# ---------------------------------------------------------------------------
+# CASTING-DEPTH (v2.1): CSV cast-sheet helpers
+# ---------------------------------------------------------------------------
+
+def _gender_from_voice(voice: str) -> str:
+    """Derive an informational gender label from a voice ID prefix.
+
+    Convention (voice-soundboard): af_/bf_ -> female, am_/bm_ -> male. Anything
+    else is "unknown". Used only to populate the CSV ``gender`` column; the
+    value is ignored on import.
+    """
+    v = (voice or "").lower()
+    if v.startswith(("af_", "bf_")):
+        return "female"
+    if v.startswith(("am_", "bm_")):
+        return "male"
+    return "unknown"
+
+
+def _csv_float(value, default: float) -> float:
+    """Parse an optional CSV float cell, falling back to ``default`` when blank."""
+    if value is None or str(value).strip() == "":
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _csv_int(value, default: int) -> int:
+    """Parse an optional CSV int cell, falling back to ``default`` when blank."""
+    if value is None or str(value).strip() == "":
+        return default
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return default
+
+
+def _csv_aliases(value) -> list[str]:
+    """Split a ';'-joined CSV aliases cell into a clean list."""
+    if not value:
+        return []
+    return [a.strip() for a in str(value).split(";") if a.strip()]
+
+
 # Project file schema version for forward compatibility
 SCHEMA_VERSION = 1
 
@@ -1111,17 +1157,12 @@ class AudiobookProject:
     # Batch Casting Import/Export (FT-CORE-007)
     # -------------------------------------------------------------------------
 
-    def export_casting(self, path: Path) -> None:
-        """
-        Export current casting table to a JSON file.
+    def _casting_as_list(self) -> list[dict]:
+        """Return the casting table as a list-of-dicts (export shape).
 
-        Format: JSON array of objects with keys:
-        name, voice, emotion, speed, aliases, description.
-
-        Args:
-            path: Output file path (should end in .json)
+        This is the canonical list-of-dicts shape reused by export_casting (JSON
+        + CSV branches) and by casting.presets.save_preset (CASTING-DEPTH v2.1).
         """
-        path = Path(path)
         cast_list = []
         for char in self.casting.characters.values():
             cast_list.append({
@@ -1132,30 +1173,104 @@ class AudiobookProject:
                 "aliases": char.aliases,
                 "description": char.description,
             })
+        return cast_list
 
+    def export_casting(self, path: Path, fmt: Optional[str] = None) -> None:
+        """
+        Export current casting table to a JSON or CSV file.
+
+        JSON format: array of objects with keys
+        name, voice, emotion, speed, aliases, description.
+
+        CSV format (CASTING-DEPTH v2.1): columns
+        name, voice, gender, line_count, emotion, speed, emphasis,
+        aliases (';'-joined), description.
+
+        Args:
+            path: Output file path.
+            fmt: Explicit format ("json" or "csv"). When None, inferred from the
+                file extension (.csv -> CSV, anything else -> JSON).
+        """
+        path = Path(path)
+        resolved = (fmt or path.suffix.lstrip(".")).lower()
+
+        if resolved == "csv":
+            self._export_casting_csv(path)
+            return
+
+        cast_list = self._casting_as_list()
         with open(path, "w", encoding="utf-8") as f:
             json.dump(cast_list, f, indent=2, ensure_ascii=False)
 
         logger.info("Exported casting table (%d characters) to %s", len(cast_list), path)
 
-    def import_casting(self, path: Path) -> None:
-        """
-        Import casting table from a JSON file, merging with existing cast.
+    def _export_casting_csv(self, path: Path) -> None:
+        """CASTING-DEPTH v2.1: write the casting table as a CSV cast sheet.
 
-        Format: JSON array of objects with keys:
+        Columns: name, voice, gender, line_count, emotion, speed, emphasis,
+        aliases (';'-joined), description. ``gender`` is derived from the voice
+        ID prefix convention (af_/bf_ -> female, am_/bm_ -> male) so a
+        spreadsheet editor sees a useful column; it is informational only and is
+        ignored on import.
+        """
+        import csv
+
+        fieldnames = [
+            "name", "voice", "gender", "line_count", "emotion",
+            "speed", "emphasis", "aliases", "description",
+        ]
+        rows = 0
+        # newline="" per the stdlib csv docs so the writer controls line endings.
+        with open(path, "w", encoding="utf-8", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            for char in self.casting.characters.values():
+                writer.writerow({
+                    "name": char.name,
+                    "voice": char.voice,
+                    "gender": _gender_from_voice(char.voice),
+                    "line_count": char.line_count,
+                    "emotion": char.emotion or "",
+                    "speed": char.speed,
+                    "emphasis": char.emphasis,
+                    "aliases": ";".join(char.aliases),
+                    "description": char.description or "",
+                })
+                rows += 1
+        logger.info("Exported casting CSV (%d characters) to %s", rows, path)
+
+    def import_casting(self, path: Path, fmt: Optional[str] = None) -> None:
+        """
+        Import a casting table from a JSON or CSV file, merging with the cast.
+
+        JSON format: array of objects with keys
         name, voice, emotion, speed, aliases, description.
+
+        CSV format (CASTING-DEPTH v2.1): columns
+        name, voice, gender, line_count, emotion, speed, emphasis,
+        aliases (';'-joined), description. Only name + voice are required;
+        every other column is optional and tolerated when missing. ``gender``
+        is informational and ignored.
+
         On conflicts (same character name), the imported entry overwrites.
 
         Args:
-            path: Path to casting JSON file
+            path: Path to casting file (.json or .csv).
+            fmt: Explicit format ("json" or "csv"). When None, inferred from the
+                file extension (.csv -> CSV, anything else -> JSON).
 
         Raises:
-            FileNotFoundError: If the file doesn't exist
-            ValueError: If the JSON format is invalid
+            FileNotFoundError: If the file doesn't exist.
+            ValueError: If the file format is invalid.
         """
         path = Path(path)
         if not path.exists():
             raise FileNotFoundError(f"Casting file not found: {path}")
+
+        resolved = (fmt or path.suffix.lstrip(".")).lower()
+        if resolved == "csv":
+            self._import_casting_csv(path)
+            return
 
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
@@ -1192,6 +1307,51 @@ class AudiobookProject:
 
         self.modified_at = datetime.now().isoformat()
         logger.info("Imported %d characters from %s", imported, path)
+
+    def _import_casting_csv(self, path: Path) -> None:
+        """CASTING-DEPTH v2.1: import a CSV cast sheet, merging into the cast.
+
+        Columns: name, voice, gender, line_count, emotion, speed, emphasis,
+        aliases (';'-joined), description. Only name + voice are required; all
+        other columns are optional and tolerated when missing/blank. The
+        ``gender`` column is informational and is ignored.
+        """
+        import csv
+
+        imported = 0
+        with open(path, "r", encoding="utf-8", newline="") as f:
+            reader = csv.DictReader(f)
+            if reader.fieldnames is None or not {
+                "name", "voice"
+            }.issubset({(fn or "").strip() for fn in reader.fieldnames}):
+                raise ValueError(
+                    "Casting CSV must have at least 'name' and 'voice' columns. "
+                    f"Got columns: {', '.join(reader.fieldnames or []) or '(none)'}"
+                )
+
+            for row in reader:
+                name = (row.get("name") or "").strip()
+                voice = (row.get("voice") or "").strip()
+                if not name or not voice:
+                    # Skip blank/incomplete rows rather than failing the import.
+                    continue
+
+                char = Character(
+                    name=name,
+                    voice=voice,
+                    emotion=(row.get("emotion") or "").strip() or None,
+                    speed=_csv_float(row.get("speed"), 1.0),
+                    emphasis=_csv_float(row.get("emphasis"), 1.0),
+                    aliases=_csv_aliases(row.get("aliases")),
+                    description=(row.get("description") or "").strip() or None,
+                    line_count=_csv_int(row.get("line_count"), 0),
+                )
+                key = self.casting.normalize_key(char.name)
+                self.casting.characters[key] = char
+                imported += 1
+
+        self.modified_at = datetime.now().isoformat()
+        logger.info("Imported %d characters from CSV %s", imported, path)
 
     # -------------------------------------------------------------------------
     # Pronunciation Lexicon Import/Export (INPUT v2.1)
@@ -1713,11 +1873,24 @@ class AudiobookProject:
                 merged_hints = dict(getattr(inference_profile, "emotion_hints", {}))
                 merged_hints.update(self.config.user_emotion_rules)
                 inference_profile.emotion_hints = merged_hints
-            inferencer = EmotionInferencer(
+            # CASTING-DEPTH v2.1: thread the emotion preset pack so the
+            # inferencer (casting-owned) can parametrize its threshold + label
+            # set. Call defensively: a concurrently-evolving inferencer with the
+            # older signature (no preset=) still works and keeps "neutral"
+            # behavior unchanged.
+            inferencer_kwargs = dict(
                 mode=self.config.emotion_mode,
                 threshold=self.config.emotion_confidence_threshold,
                 profile=inference_profile,
             )
+            preset = getattr(self.config, "emotion_preset", "neutral")
+            if preset and preset != "neutral":
+                inferencer_kwargs["preset"] = preset
+            try:
+                inferencer = EmotionInferencer(**inferencer_kwargs)
+            except TypeError:
+                inferencer_kwargs.pop("preset", None)
+                inferencer = EmotionInferencer(**inferencer_kwargs)
             emotions_inferred = 0
             emotions_near_miss = 0
             for chapter in self.chapters:
@@ -1730,9 +1903,38 @@ class AudiobookProject:
             self.compile_summary["emotions_inferred"] = emotions_inferred
             self.compile_summary["emotions_near_miss"] = emotions_near_miss
 
+        # CASTING-DEPTH v2.1: apply each character's default_intensity as a
+        # fallback for any of its emotional utterances that still have no
+        # intensity. This NEVER overrides an intensity already set inline (by a
+        # user script tag) or by graded inference — only fills the gap so the
+        # renderer's emphasis-band mapping reflects the character's default.
+        self._apply_default_intensities()
+
         self.progress.status = "idle"
         self.modified_at = datetime.now().isoformat()
         return None
+
+    def _apply_default_intensities(self) -> None:
+        """CASTING-DEPTH v2.1: fill in per-character default_intensity.
+
+        For every compiled utterance that HAS an emotion but NO intensity, and
+        whose speaker has a Character with a default_intensity set, copy that
+        default onto the utterance. An intensity already present (set inline by
+        the user or by graded emotion inference) is never overwritten — this is
+        a pure gap-fill so the renderer's (emotion, intensity) emphasis mapping
+        reflects the character's authored default.
+        """
+        casting = self.casting
+        for chapter in self.chapters:
+            for utt in chapter.utterances:
+                if utt.intensity is not None or not utt.emotion:
+                    continue
+                key = casting.normalize_key(utt.speaker)
+                char = casting.characters.get(key)
+                if char is None:
+                    char = casting.resolve_alias(utt.speaker)
+                if char is not None and char.default_intensity is not None:
+                    utt.intensity = char.default_intensity
 
     def _compile_parallel(
         self,
@@ -2062,6 +2264,70 @@ class AudiobookProject:
                 emotion_counts[label] = emotion_counts.get(label, 0) + 1
             result[chapter.index] = emotion_counts
         return result
+
+    def set_mood_span(
+        self,
+        chapter_index: int,
+        start: int,
+        end: int,
+        emotion: str,
+    ) -> str:
+        """CASTING-DEPTH v2.1: mark a character span of a chapter with a mood.
+
+        Wraps ``chapter.raw_text[start:end]`` with the scene tags
+        ``[scene:<emotion>] ... [/scene]`` that casting/dialogue.py parses (like
+        the existing [pause]/[sfx] tags) and applies as an emotion FALLBACK
+        inside the span. Precedence is explicit/inline > scene > chapter mood,
+        so this never overrides a user-set emotion on a line — it only supplies
+        a default for lines that have none. The span is applied at the next
+        compile; this method invalidates the chapter's compiled utterances and
+        cached audio so a re-compile/re-render is required.
+
+        Args:
+            chapter_index: Chapter index (0-based).
+            start: Start character offset into the chapter's raw_text (inclusive).
+            end: End character offset (exclusive). Must be > start.
+            emotion: Mood/emotion label to apply across the span.
+
+        Returns:
+            The text fragment that was wrapped (for confirmation messages).
+
+        Raises:
+            IndexError: If the chapter index is out of range.
+            ValueError: If the offsets are invalid or the emotion is empty.
+        """
+        if not emotion or not emotion.strip():
+            raise ValueError("Mood-span emotion label must not be empty.")
+        if chapter_index < 0 or chapter_index >= len(self.chapters):
+            raise IndexError(
+                f"Chapter index {chapter_index} out of range "
+                f"(0-{len(self.chapters) - 1})"
+            )
+        chapter = self.chapters[chapter_index]
+        text_len = len(chapter.raw_text)
+        if start < 0 or end > text_len or start >= end:
+            raise ValueError(
+                f"Invalid mood span [{start}, {end}) for chapter {chapter_index} "
+                f"(text length {text_len}); need 0 <= start < end <= length."
+            )
+
+        emotion = emotion.strip()
+        fragment = chapter.raw_text[start:end]
+        chapter.raw_text = (
+            chapter.raw_text[:start]
+            + f"[scene:{emotion}]"
+            + fragment
+            + "[/scene]"
+            + chapter.raw_text[end:]
+        )
+
+        # The span only takes effect on (re)compile; invalidate compiled
+        # utterances + cached audio so the next compile/render picks it up.
+        chapter.utterances = []
+        chapter.audio_path = None
+        chapter.duration_seconds = 0.0
+        self.modified_at = datetime.now().isoformat()
+        return fragment
 
     def override_emotion(
         self, chapter_index: int, utterance_index: int, emotion: str

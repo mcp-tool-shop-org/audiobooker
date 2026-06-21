@@ -11,8 +11,16 @@ Usage:
     audiobooker new book.pdf --force-text  # Force text extraction (scanned PDFs)
     audiobooker new book.txt --chapter-delimiter "^Scene [0-9]+"  # Custom chapter split
     audiobooker cast narrator af_bella     # Assign voice to character
-    audiobooker cast-export cast.json      # Export casting table
-    audiobooker cast-import cast.json      # Import casting table
+    audiobooker cast-export cast.json      # Export casting table (JSON)
+    audiobooker cast-export cast.csv       # Export casting table (CSV cast sheet)
+    audiobooker cast-import cast.csv       # Import casting table (CSV or JSON)
+    audiobooker cast-fill --voices af_sky,am_liam --narrator af_heart  # Bulk-cast
+    audiobooker cast-preset save mycast    # Save current cast as a preset
+    audiobooker cast-preset apply mycast   # Apply a saved casting preset
+    audiobooker speakers --suggest-aliases # Propose aliases per character
+    audiobooker emotions presets           # List emotion preset packs + vocab
+    audiobooker emotions mood-span 0 0 500 tense  # Mark a chapter span's mood
+    audiobooker compile --emotion-preset dramatic # Compile with a preset pack
     audiobooker compile                    # Compile chapters to utterances
     audiobooker compile --dry-run          # Preview speaker/line summary
     audiobooker render                     # Render audiobook
@@ -293,6 +301,14 @@ def create_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Preview speaker/line/sample summary without compiling",
     )
+    # CASTING-DEPTH (v2.1): pick an emotion preset pack for this compile.
+    compile_parser.add_argument(
+        "--emotion-preset",
+        choices=["neutral", "literary", "dramatic", "children"],
+        default=None,
+        dest="emotion_preset",
+        help="Emotion preset pack (sets project emotion_preset; default: keep current)",
+    )
 
     # --- render ---
     render_parser = subparsers.add_parser("render", help="Render audiobook")
@@ -443,6 +459,21 @@ def create_parser() -> argparse.ArgumentParser:
     # --- speakers ---
     speakers_parser = subparsers.add_parser("speakers", help="List detected speakers")
     speakers_parser.add_argument("-p", "--project", help="Project file")
+    # CASTING-DEPTH (v2.1): rank alias suggestions per character.
+    speakers_parser.add_argument(
+        "--suggest-aliases",
+        action="store_true",
+        dest="suggest_aliases",
+        help="Propose ranked alias suggestions per character",
+    )
+    speakers_parser.add_argument(
+        "--apply",
+        action="store_true",
+        help="With --suggest-aliases: apply the proposed aliases to the cast",
+    )
+    speakers_parser.add_argument(
+        "--json", dest="json_output", action="store_true", help="Output as JSON"
+    )
 
     # --- from-stdin ---
     stdin_parser = subparsers.add_parser(
@@ -669,17 +700,113 @@ def create_parser() -> argparse.ArgumentParser:
 
     # --- cast-export ---
     cast_export_parser = subparsers.add_parser(
-        "cast-export", help="Export casting table to JSON file"
+        "cast-export", help="Export casting table to a JSON or CSV file"
     )
-    cast_export_parser.add_argument("path", help="Output JSON file path")
+    cast_export_parser.add_argument("path", help="Output file path (.json or .csv)")
     cast_export_parser.add_argument("-p", "--project", help="Project file")
+    # CASTING-DEPTH (v2.1): CSV cast sheets. Default None -> infer from the
+    # file extension (.csv -> CSV, else JSON).
+    cast_export_parser.add_argument(
+        "--format",
+        choices=["json", "csv"],
+        default=None,
+        dest="cast_format",
+        help="Cast sheet format (default: infer from file extension)",
+    )
 
     # --- cast-import ---
     cast_import_parser = subparsers.add_parser(
-        "cast-import", help="Import casting table from JSON file"
+        "cast-import", help="Import casting table from a JSON or CSV file"
     )
-    cast_import_parser.add_argument("path", help="Input JSON file path")
+    cast_import_parser.add_argument("path", help="Input file path (.json or .csv)")
     cast_import_parser.add_argument("-p", "--project", help="Project file")
+    cast_import_parser.add_argument(
+        "--format",
+        choices=["json", "csv"],
+        default=None,
+        dest="cast_format",
+        help="Cast sheet format (default: infer from file extension)",
+    )
+
+    # --- cast-preset (CASTING-DEPTH v2.1) ---
+    cast_preset_parser = subparsers.add_parser(
+        "cast-preset",
+        help="Save / list / apply / delete reusable casting presets",
+    )
+    cast_preset_sub = cast_preset_parser.add_subparsers(
+        dest="cast_preset_command", help="cast-preset sub-commands"
+    )
+
+    cp_save_parser = cast_preset_sub.add_parser(
+        "save", help="Save the current casting table as a named preset"
+    )
+    cp_save_parser.add_argument("name", help="Preset name")
+    cp_save_parser.add_argument("-p", "--project", help="Project file")
+    cp_save_parser.add_argument(
+        "--from-project",
+        metavar="PATH",
+        dest="from_project",
+        help="Seed the preset from another project file instead of the current one",
+    )
+
+    cp_list_parser = cast_preset_sub.add_parser(
+        "list", help="List saved casting presets"
+    )
+    cp_list_parser.add_argument(
+        "--json", dest="json_output", action="store_true", help="Output as JSON"
+    )
+
+    cp_apply_parser = cast_preset_sub.add_parser(
+        "apply", help="Apply a saved preset to the project, merging by name/alias"
+    )
+    cp_apply_parser.add_argument("name", help="Preset name")
+    cp_apply_parser.add_argument("-p", "--project", help="Project file")
+
+    cp_delete_parser = cast_preset_sub.add_parser(
+        "delete", help="Delete a saved casting preset"
+    )
+    cp_delete_parser.add_argument("name", help="Preset name")
+
+    # --- cast-fill (CASTING-DEPTH v2.1) ---
+    cast_fill_parser = subparsers.add_parser(
+        "cast-fill",
+        help="Bulk-assign voices to uncast speakers from explicit voice pools",
+    )
+    cast_fill_parser.add_argument("-p", "--project", help="Project file")
+    cast_fill_parser.add_argument(
+        "--gender",
+        choices=["male", "female"],
+        help="Restrict the round-robin pool to one gender",
+    )
+    cast_fill_parser.add_argument(
+        "--voices",
+        metavar="a,b,c",
+        help="Comma-separated voice pool to round-robin across uncast speakers",
+    )
+    cast_fill_parser.add_argument(
+        "--narrator",
+        metavar="VOICE",
+        help="Voice to assign to the narrator",
+    )
+    cast_fill_parser.add_argument(
+        "--minor-voice",
+        metavar="VOICE",
+        dest="minor_voice",
+        help="Voice for minor speakers (fewer than --minor-threshold lines)",
+    )
+    cast_fill_parser.add_argument(
+        "--minor-threshold",
+        type=int,
+        default=5,
+        metavar="N",
+        dest="minor_threshold",
+        help="Line count at/under which a speaker counts as minor (default: 5)",
+    )
+    cast_fill_parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Reassign speakers that are already cast",
+    )
 
     # --- emotions ---
     emotions_parser = subparsers.add_parser(
@@ -705,6 +832,32 @@ def create_parser() -> argparse.ArgumentParser:
     )
     emotions_override_parser.add_argument("emotion", help="New emotion label")
     emotions_override_parser.add_argument("-p", "--project", help="Project file")
+
+    # CASTING-DEPTH (v2.1): mark a chapter character-span with a mood.
+    emotions_mood_span_parser = emotions_sub.add_parser(
+        "mood-span",
+        help="Apply an emotion across a character span of a chapter (scene mood)",
+    )
+    emotions_mood_span_parser.add_argument(
+        "chapter", type=int, help="Chapter index (0-based)"
+    )
+    emotions_mood_span_parser.add_argument(
+        "start", type=int, help="Start character offset into the chapter (inclusive)"
+    )
+    emotions_mood_span_parser.add_argument(
+        "end", type=int, help="End character offset (exclusive)"
+    )
+    emotions_mood_span_parser.add_argument("emotion", help="Mood/emotion label")
+    emotions_mood_span_parser.add_argument("-p", "--project", help="Project file")
+
+    # CASTING-DEPTH (v2.1): list emotion preset packs + the known vocabulary.
+    emotions_presets_parser = emotions_sub.add_parser(
+        "presets",
+        help="List emotion preset packs and the known emotion vocabulary",
+    )
+    emotions_presets_parser.add_argument(
+        "--json", dest="json_output", action="store_true", help="Output as JSON"
+    )
 
     # --- chapters subcommands ---
     chapters_parser.add_argument(
@@ -824,6 +977,14 @@ def create_parser() -> argparse.ArgumentParser:
     )
     make_parser.add_argument(
         "--lang", default="en", metavar="CODE", help="Language code (default: en)"
+    )
+    # CASTING-DEPTH (v2.1): emotion preset pack for make's compile step.
+    make_parser.add_argument(
+        "--emotion-preset",
+        choices=["neutral", "literary", "dramatic", "children"],
+        default=None,
+        dest="emotion_preset",
+        help="Emotion preset pack (sets project emotion_preset; default: neutral)",
     )
     make_parser.add_argument(
         "--cover", metavar="PATH", help="Cover art image to embed (JPG/PNG)"
@@ -1550,6 +1711,14 @@ def cmd_compile(args) -> int:
     try:
         project_path = find_project_file(args.project)
         project = AudiobookProject.load(project_path)
+
+        # CASTING-DEPTH v2.1: --emotion-preset sets the project's emotion_preset
+        # before compile so the inferencer uses the chosen preset pack. Validated
+        # by ProjectConfig (structured ValueError on a bad value).
+        emotion_preset = getattr(args, "emotion_preset", None)
+        if emotion_preset:
+            project.config.emotion_preset = emotion_preset
+            _out(f"Emotion preset: {emotion_preset}")
 
         # --dry-run: compile in dry-run mode, print speaker summary table
         if getattr(args, "dry_run", False):
@@ -2342,7 +2511,7 @@ def cmd_chapters(args) -> int:
 
 
 def cmd_speakers(args) -> int:
-    """List detected speakers."""
+    """List detected speakers (or, with --suggest-aliases, propose aliases)."""
     from audiobooker import AudiobookProject
 
     try:
@@ -2354,6 +2523,10 @@ def cmd_speakers(args) -> int:
             _out("Compiling to detect speakers...")
             project.compile()
             project.save()
+
+        # CASTING-DEPTH v2.1: alias suggestion mode.
+        if getattr(args, "suggest_aliases", False):
+            return _speakers_suggest_aliases(project, args)
 
         speakers = project.get_detected_speakers()
         cast_speakers = set(project.casting.characters.keys())
@@ -2373,6 +2546,111 @@ def cmd_speakers(args) -> int:
     except USER_ERROR_TYPES as e:
         _report_error(e, args)
         return 1
+
+
+def _speakers_suggest_aliases(project, args) -> int:
+    """CASTING-DEPTH v2.1: rank alias suggestions per character.
+
+    Calls the casting alias-discovery proposal function and prints ranked alias
+    suggestions per character. With --apply, the proposed aliases are added to
+    each matching Character and the project is saved. Aliases are never applied
+    silently — without --apply this only reports.
+
+    The proposal function lives in casting (casting-owned). It returns a mapping
+    of canonical character name -> list of proposals; each proposal is either a
+    bare alias string or a dict with at least an "alias" key and an optional
+    "score"/"confidence". Both shapes are handled so the printed/applied result
+    is stable regardless of the exact return shape the casting side settles on.
+    """
+    from audiobooker.nlp.speaker_resolver import suggest_aliases
+
+    json_output = getattr(args, "json_output", False)
+    apply = getattr(args, "apply", False)
+
+    # suggest_aliases returns a flat list[AliasProposal] (candidate/speaker/
+    # score/source); group by the speaker each descriptor most co-occurs with
+    # so the rest of this handler can display/apply per character.
+    raw = suggest_aliases(project.chapters, project.casting) or []
+    proposals: dict = {}
+    for _p in raw:
+        proposals.setdefault(_p.speaker, []).append(
+            {"alias": _p.candidate, "score": _p.score, "source": _p.source}
+        )
+
+    if json_output:
+        import json as json_mod
+        print(json_mod.dumps(
+            {"proposals": proposals, "applied": apply},
+            indent=2,
+            ensure_ascii=False,
+        ))
+        if apply:
+            _apply_alias_proposals(project, proposals)
+            project.save()
+        return 0
+
+    if not proposals:
+        _out("No alias suggestions found.")
+        return 0
+
+    _out(f"Alias suggestions for {project.title}:\n")
+    for name in sorted(proposals.keys()):
+        items = proposals[name] or []
+        if not items:
+            continue
+        _out(f"  {name}:")
+        for item in items:
+            alias, score = _alias_proposal_parts(item)
+            score_str = f" (score: {score:.2f})" if score is not None else ""
+            _out(f"    - {alias}{score_str}")
+
+    if apply:
+        applied = _apply_alias_proposals(project, proposals)
+        project.save()
+        _out(f"\nApplied {applied} alias(es).")
+    else:
+        _out("\nRe-run with --apply to add these aliases to the cast.")
+
+    return 0
+
+
+def _alias_proposal_parts(item) -> tuple[str, Optional[float]]:
+    """Normalize one alias proposal to (alias, score|None).
+
+    Tolerates a bare string proposal or a dict carrying "alias" plus an optional
+    "score"/"confidence" so the alias-discovery side can evolve its shape.
+    """
+    if isinstance(item, dict):
+        alias = str(item.get("alias", "")).strip()
+        score = item.get("score", item.get("confidence"))
+        try:
+            score = float(score) if score is not None else None
+        except (TypeError, ValueError):
+            score = None
+        return alias, score
+    return str(item).strip(), None
+
+
+def _apply_alias_proposals(project, proposals: dict) -> int:
+    """Add proposed aliases onto matching characters; return count applied."""
+    applied = 0
+    casting = project.casting
+    for name, items in proposals.items():
+        key = casting.normalize_key(name)
+        char = casting.characters.get(key)
+        if char is None:
+            char = casting.resolve_alias(name)
+        if char is None:
+            continue
+        for item in items or []:
+            alias, _ = _alias_proposal_parts(item)
+            if alias and alias not in char.aliases:
+                char.aliases.append(alias)
+                applied += 1
+    if applied:
+        from datetime import datetime as _dt
+        project.modified_at = _dt.now().isoformat()
+    return applied
 
 
 def cmd_review_export(args) -> int:
@@ -2570,11 +2848,13 @@ def cmd_cast_export(args) -> int:
         project = AudiobookProject.load(project_path)
 
         path = Path(args.path)
-        project.export_casting(path)
+        # CASTING-DEPTH v2.1: honor --format (json|csv); None infers from suffix.
+        project.export_casting(path, fmt=getattr(args, "cast_format", None))
         project.save()
 
         count = len(project.casting.characters)
-        _out(f"Exported {count} character(s) to {path}")
+        fmt = (getattr(args, "cast_format", None) or path.suffix.lstrip(".") or "json").lower()
+        _out(f"Exported {count} character(s) to {path} ({fmt})")
         return 0
 
     except USER_ERROR_TYPES as e:
@@ -2591,11 +2871,13 @@ def cmd_cast_import(args) -> int:
         project = AudiobookProject.load(project_path)
 
         path = Path(args.path)
-        project.import_casting(path)
+        # CASTING-DEPTH v2.1: honor --format (json|csv); None infers from suffix.
+        project.import_casting(path, fmt=getattr(args, "cast_format", None))
         project.save()
 
         count = len(project.casting.characters)
-        _out(f"Imported casting table from {path}")
+        fmt = (getattr(args, "cast_format", None) or path.suffix.lstrip(".") or "json").lower()
+        _out(f"Imported casting table from {path} ({fmt})")
         _out(f"  Total characters: {count}")
         return 0
 
@@ -2604,18 +2886,268 @@ def cmd_cast_import(args) -> int:
         return 1
 
 
+def cmd_cast_preset(args) -> int:
+    """
+    CASTING-DEPTH v2.1: save / list / apply / delete reusable casting presets.
+
+    Presets are stored by casting.presets (casting-owned) in a user config dir.
+    Each preset is a list-of-dicts in the same shape as export_casting().
+
+    Subcommands:
+      save <name>   — save the current (or --from-project) casting table.
+      list          — list saved preset names.
+      apply <name>  — merge a preset into the project by normalized name/alias,
+                      reporting matched vs unmatched entries.
+      delete <name> — remove a saved preset.
+    """
+    from audiobooker.casting import presets as cast_presets
+
+    sub = getattr(args, "cast_preset_command", None)
+    if sub is None:
+        print("Usage: audiobooker cast-preset {save|list|apply|delete}")
+        return 1
+
+    try:
+        if sub == "save":
+            return _cast_preset_save(args, cast_presets)
+        if sub == "list":
+            return _cast_preset_list(args, cast_presets)
+        if sub == "apply":
+            return _cast_preset_apply(args, cast_presets)
+        if sub == "delete":
+            return _cast_preset_delete(args, cast_presets)
+    except USER_ERROR_TYPES as e:
+        _report_error(e, args)
+        return 1
+
+    print(f"Unknown cast-preset subcommand: {sub}")
+    return 1
+
+
+def _cast_preset_save(args, cast_presets) -> int:
+    """cast-preset save <name> [--from-project PATH]."""
+    from audiobooker import AudiobookProject
+
+    seed = getattr(args, "from_project", None)
+    project_path = find_project_file(seed or getattr(args, "project", None))
+    project = AudiobookProject.load(project_path)
+
+    casting_list = project._casting_as_list()
+    if not casting_list:
+        _out("No characters to save — the casting table is empty.")
+        return 0
+
+    cast_presets.save_preset(args.name, casting_list)
+    _out(
+        f"Saved preset '{args.name}' with {len(casting_list)} character(s) "
+        f"(source: {project_path})."
+    )
+    return 0
+
+
+def _cast_preset_list(args, cast_presets) -> int:
+    """cast-preset list."""
+    names = cast_presets.list_presets() or []
+
+    if getattr(args, "json_output", False):
+        import json as json_mod
+        print(json_mod.dumps({"presets": names}, indent=2, ensure_ascii=False))
+        return 0
+
+    if not names:
+        _out("No casting presets saved.")
+        _out(f"Preset directory: {cast_presets.preset_dir()}")
+        return 0
+
+    _out(f"Saved casting presets ({len(names)}):\n")
+    for name in sorted(names):
+        _out(f"  {name}")
+    _out(f"\nPreset directory: {cast_presets.preset_dir()}")
+    return 0
+
+
+def _cast_preset_apply(args, cast_presets) -> int:
+    """cast-preset apply <name> — merge by normalized name/alias.
+
+    Matched: an entry whose name (or one of its aliases) resolves to a speaker
+    detected in the project. Unmatched entries are still added to the cast (so
+    the preset is fully applied) but reported separately so the user sees which
+    preset characters did not correspond to a detected speaker.
+    """
+    from audiobooker import AudiobookProject
+
+    project_path = find_project_file(getattr(args, "project", None))
+    project = AudiobookProject.load(project_path)
+
+    entries = cast_presets.load_preset(args.name) or []
+    if not entries:
+        _out(f"Preset '{args.name}' is empty — nothing to apply.")
+        return 0
+
+    # Compile (if needed) so we can report matched-vs-unmatched against the
+    # speakers actually detected in the book.
+    if not any(c.is_compiled for c in project.chapters):
+        _out("Compiling to detect speakers...")
+        project.compile()
+
+    detected = {
+        project.casting.normalize_key(s) for s in project.get_detected_speakers()
+    }
+
+    matched: list[str] = []
+    unmatched: list[str] = []
+    for entry in entries:
+        if not isinstance(entry, dict) or "name" not in entry or "voice" not in entry:
+            continue
+        name = entry["name"]
+        keys = {project.casting.normalize_key(name)}
+        for alias in entry.get("aliases", []) or []:
+            keys.add(project.casting.normalize_key(alias))
+
+        project.cast(
+            name=name,
+            voice=entry["voice"],
+            emotion=entry.get("emotion"),
+            description=entry.get("description"),
+            speed=entry.get("speed", 1.0),
+        )
+        if keys & detected:
+            matched.append(name)
+        else:
+            unmatched.append(name)
+
+    project.save()
+
+    _out(f"Applied preset '{args.name}' to {project.title}:")
+    _out(f"  Matched detected speakers: {len(matched)}")
+    if matched:
+        _out(f"    {', '.join(sorted(matched))}")
+    _out(f"  Added but not detected:    {len(unmatched)}")
+    if unmatched:
+        _out(f"    {', '.join(sorted(unmatched))}")
+    return 0
+
+
+def _cast_preset_delete(args, cast_presets) -> int:
+    """cast-preset delete <name>."""
+    cast_presets.delete_preset(args.name)
+    _out(f"Deleted preset '{args.name}'.")
+    return 0
+
+
+def cmd_cast_fill(args) -> int:
+    """
+    CASTING-DEPTH v2.1: bulk-assign voices to uncast speakers.
+
+    Requires explicit voice pools — no silent magic. Routes the work to the
+    casting voice_suggester bulk helper (casting-owned) and prints a summary
+    table of what was assigned.
+
+    Pools:
+      --voices a,b,c   round-robin pool for ordinary speakers.
+      --narrator       voice for the narrator role.
+      --minor-voice    voice for minor speakers (<= --minor-threshold lines).
+      --gender         restrict the round-robin to one gender (passed through).
+      --overwrite      also reassign already-cast speakers.
+    """
+    from audiobooker import AudiobookProject
+
+    try:
+        voices = _parse_voice_pool(getattr(args, "voices", None))
+        narrator = getattr(args, "narrator", None)
+        minor_voice = getattr(args, "minor_voice", None)
+
+        # Require an explicit pool: at least one of --voices / --narrator /
+        # --minor-voice must be given so the fill is never magic. Checked BEFORE
+        # loading the project or importing the bulk helper so a bare invocation
+        # fails fast with guidance.
+        if not voices and not narrator and not minor_voice:
+            print(
+                "Error: cast-fill needs an explicit voice pool. Provide at least "
+                "one of --voices a,b,c / --narrator <voice> / --minor-voice <voice>."
+            )
+            return 1
+
+        # Imported here (after validation) — casting-owned helper.
+        from audiobooker.casting.voice_suggester import bulk_fill_voices
+
+        project_path = find_project_file(getattr(args, "project", None))
+        project = AudiobookProject.load(project_path)
+
+        # Compile so speakers + line counts exist for minor/major routing.
+        if not any(c.is_compiled for c in project.chapters):
+            _out("Compiling to detect speakers...")
+            project.compile()
+            project.save()
+
+        assignments = bulk_fill_voices(
+            project,
+            voices=voices,
+            narrator=narrator,
+            minor_voice=minor_voice,
+            minor_threshold=getattr(args, "minor_threshold", 5),
+            gender=getattr(args, "gender", None),
+            overwrite=getattr(args, "overwrite", False),
+        )
+        assignments = assignments or {}
+
+        project.save()
+
+        if not assignments:
+            _out("No speakers were assigned (all already cast? use --overwrite).")
+            return 0
+
+        _out(f"cast-fill assigned {len(assignments)} speaker(s):\n")
+        _out(f"  {'Speaker':<24} {'Voice'}")
+        _out(f"  {'-'*24} {'-'*16}")
+        for speaker in sorted(assignments.keys()):
+            _out(f"  {speaker:<24} {assignments[speaker]}")
+        return 0
+
+    except USER_ERROR_TYPES as e:
+        _report_error(e, args)
+        return 1
+
+
+def _parse_voice_pool(raw: Optional[str]) -> list[str]:
+    """Parse a comma-separated --voices pool into a clean list."""
+    if not raw:
+        return []
+    return [v.strip() for v in raw.split(",") if v.strip()]
+
+
 def cmd_emotions(args) -> int:
     """Emotion management commands."""
     from audiobooker import AudiobookProject
 
     emotions_command = getattr(args, "emotions_command", None)
     if emotions_command is None:
-        print("Usage: audiobooker emotions {list|override}")
+        print("Usage: audiobooker emotions {list|override|mood-span|presets}")
         return 1
+
+    # CASTING-DEPTH v2.1: `emotions presets` lists static pack info and needs no
+    # project file, so handle it before find_project_file().
+    if emotions_command == "presets":
+        return _emotions_presets(args)
 
     try:
         project_path = find_project_file(args.project)
         project = AudiobookProject.load(project_path)
+
+        if emotions_command == "mood-span":
+            # CASTING-DEPTH v2.1: mark a chapter character-span with a mood.
+            fragment = project.set_mood_span(
+                args.chapter, args.start, args.end, args.emotion
+            )
+            project.save()
+            preview = fragment[:60] + ("..." if len(fragment) > 60 else "")
+            _out(
+                f"Applied mood '{args.emotion}' to chapter {args.chapter} "
+                f"span [{args.start}, {args.end}):"
+            )
+            _out(f"  {preview!r}")
+            _out("  (re-compile to apply the mood to that span's lines)")
+            return 0
 
         if emotions_command == "list":
             emotions = project.list_emotions()
@@ -2650,6 +3182,69 @@ def cmd_emotions(args) -> int:
         return 1
 
     return 1
+
+
+def _known_emotion_vocabulary() -> list[str]:
+    """CASTING-DEPTH v2.1: best-effort list of the known emotion labels.
+
+    Prefers a vocabulary published by the emotion module (casting-owned); falls
+    back to the built-in baseline labels so the command always lists something
+    even before the casting side exposes a richer vocabulary.
+    """
+    try:
+        from audiobooker.nlp import emotion as _emotion_mod
+
+        for attr in ("EMOTION_VOCABULARY", "KNOWN_EMOTIONS", "_EMOTION_LEXICON"):
+            vocab = getattr(_emotion_mod, attr, None)
+            if isinstance(vocab, dict) and vocab:
+                return sorted(vocab.keys())
+            if isinstance(vocab, (list, tuple, set, frozenset)) and vocab:
+                return sorted(str(v) for v in vocab)
+    except Exception:
+        pass
+    # Baseline fallback (matches the built-in lexicon's labels).
+    return ["angry", "excited", "fearful", "happy", "neutral", "sad", "whisper"]
+
+
+def _emotion_presets() -> list[str]:
+    """CASTING-DEPTH v2.1: the available emotion preset packs.
+
+    Sourced from ProjectConfig's validated set so the CLI and the model never
+    drift. Falls back to the known names if the attribute is unavailable.
+    """
+    from audiobooker.models import ProjectConfig
+
+    packs = getattr(ProjectConfig, "_VALID_EMOTION_PRESETS", None)
+    if packs:
+        return list(packs)
+    return ["neutral", "literary", "dramatic", "children"]
+
+
+def _emotions_presets(args) -> int:
+    """CASTING-DEPTH v2.1: `emotions presets` — list packs + emotion vocabulary."""
+    packs = _emotion_presets()
+    vocab = _known_emotion_vocabulary()
+
+    if getattr(args, "json_output", False):
+        import json as json_mod
+        print(json_mod.dumps(
+            {"presets": packs, "emotions": vocab},
+            indent=2,
+            ensure_ascii=False,
+        ))
+        return 0
+
+    _out("Emotion preset packs:\n")
+    for pack in packs:
+        marker = " (default)" if pack == "neutral" else ""
+        _out(f"  {pack}{marker}")
+    _out("\nKnown emotion vocabulary:\n")
+    _out(f"  {', '.join(vocab)}")
+    _out(
+        "\nSet a preset on compile/make with --emotion-preset <pack>, "
+        "or per project via the emotion_preset config field."
+    )
+    return 0
 
 
 def cmd_pronunciation(args) -> int:
@@ -3248,6 +3843,7 @@ def _process_book(
     overrides: Optional[dict] = None,
     render_overrides: Optional[dict] = None,
     output_path: Optional[Path] = None,
+    emotion_preset: Optional[str] = None,
 ) -> dict:
     """Create + compile + auto-cast + render a single source file.
 
@@ -3297,7 +3893,11 @@ def _process_book(
         file_config = _load_config_file(str(source))
         config = _build_config_from(
             file_config,
-            cli_overrides={"output_format": overrides.get("format") or fmt},
+            cli_overrides={
+                "output_format": overrides.get("format") or fmt,
+                # CASTING-DEPTH v2.1: --emotion-preset flows through make.
+                "emotion_preset": emotion_preset,
+            },
             base_kwargs={"language_code": overrides.get("lang") or lang},
         )
 
@@ -3724,6 +4324,7 @@ def _run_make_once(args) -> dict:
         lang=lang,
         render_overrides=render_overrides,
         output_path=Path(output_path) if output_path else None,
+        emotion_preset=getattr(args, "emotion_preset", None),
     )
 
 
@@ -4081,6 +4682,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         "cast-apply": cmd_cast_apply,
         "cast-export": cmd_cast_export,
         "cast-import": cmd_cast_import,
+        "cast-preset": cmd_cast_preset,
+        "cast-fill": cmd_cast_fill,
         "compile": cmd_compile,
         "render": cmd_render,
         "info": cmd_info,

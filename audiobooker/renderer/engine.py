@@ -46,7 +46,10 @@ VALID_OUTPUT_FORMATS = {"m4b", "m4a", "mp3", "wav", "opus", "ogg", "flac"}
 # FT-RENDER-015: SSML preprocessing
 # ---------------------------------------------------------------------------
 
-# Emotion → SSML emphasis level mapping
+# Emotion → SSML emphasis level mapping.
+# This is the DEFAULT ('neutral' preset) map and the historical behavior: it is
+# the emphasis used for a bare emotion whose intensity is None. Changing these
+# values changes regression-critical output, so don't.
 _EMOTION_EMPHASIS = {
     "angry": "strong",
     "excited": "strong",
@@ -58,23 +61,121 @@ _EMOTION_EMPHASIS = {
     "calm": "reduced",
 }
 
+# FT-CAST-026: Per-preset emphasis maps. 'neutral' IS _EMOTION_EMPHASIS, so a
+# render with preset='neutral' (the default) is byte-identical to the historical
+# engine. Other packs scale the same emotions hotter or cooler. Emotions absent
+# from a pack's map fall back to _EMOTION_EMPHASIS, then to "moderate".
+_EMOTION_EMPHASIS_PRESETS: dict[str, dict[str, str]] = {
+    "neutral": _EMOTION_EMPHASIS,
+    "literary": {
+        # Restrained reading: pull the loudest emotions down a notch.
+        "angry": "moderate",
+        "excited": "moderate",
+        "happy": "moderate",
+        "sad": "moderate",
+        "whisper": "reduced",
+        "calm": "reduced",
+        "somber": "moderate",
+        "nervous": "moderate",
+    },
+    "dramatic": {
+        # Bigger swings for a performance read.
+        "angry": "strong",
+        "excited": "strong",
+        "happy": "strong",
+        "sad": "strong",
+        "fearful": "strong",
+        "whisper": "reduced",
+        "calm": "reduced",
+        "somber": "moderate",
+        "nervous": "moderate",
+    },
+    "children": {
+        # Bright and lively, but soft on the scary stuff.
+        "happy": "strong",
+        "excited": "strong",
+        "sad": "moderate",
+        "fearful": "reduced",
+        "whisper": "reduced",
+        "calm": "reduced",
+    },
+}
+
+# FT-CAST-023: intensity → emphasis ceiling. A low-intensity emotion is read
+# softer than the same emotion at full strength. Bands:
+#   intensity is None        -> use the preset/default map verbatim (today's
+#                               behavior; regression-critical).
+#   intensity <  LOW_BAND    -> "reduced"  (barely-there)
+#   intensity <  MID_BAND    -> "moderate"
+#   intensity >= MID_BAND    -> the preset/default map (full strength)
+_INTENSITY_LOW_BAND = 0.34
+_INTENSITY_MID_BAND = 0.67
+
 # Narrator vs dialogue prosody rates
 _NARRATOR_RATE = "medium"
 _DIALOGUE_RATE = "105%"
 
 
-def preprocess_ssml(utterances: list["Utterance"]) -> str:
+def _emphasis_for(
+    emotion: str,
+    intensity: Optional[float],
+    preset: str = "neutral",
+) -> str:
+    """
+    Resolve the SSML emphasis level for an (emotion, intensity) pair.
+
+    FT-CAST-023 + FT-CAST-026.
+
+    Regression contract: when ``intensity is None`` and ``preset == 'neutral'``
+    this returns exactly ``_EMOTION_EMPHASIS.get(emotion.lower(), "moderate")``
+    — identical to the historical engine.
+
+    Args:
+        emotion: Emotion label (already known to be truthy by the caller).
+        intensity: Graded intensity 0.0-1.0, or None for "unspecified".
+        preset: Emotion preset name selecting the base emphasis map.
+
+    Returns:
+        SSML emphasis level: "reduced" | "moderate" | "strong".
+    """
+    emo = emotion.lower()
+    base_map = _EMOTION_EMPHASIS_PRESETS.get(preset, _EMOTION_EMPHASIS)
+    # Per-preset map first, then the historical default map, then "moderate".
+    full_level = base_map.get(emo) or _EMOTION_EMPHASIS.get(emo, "moderate")
+
+    # None / unspecified intensity → today's behavior (full preset level).
+    if intensity is None:
+        return full_level
+
+    if intensity < _INTENSITY_LOW_BAND:
+        return "reduced"
+    if intensity < _INTENSITY_MID_BAND:
+        return "moderate"
+    return full_level
+
+
+def preprocess_ssml(
+    utterances: list["Utterance"],
+    emotion_preset: str = "neutral",
+) -> str:
     """
     Transform utterances into an SSML document.
 
     Inserts:
     - <speak> wrapper
     - <break> tags at paragraph boundaries (between utterances)
-    - <emphasis> for emotion-tagged text
+    - <emphasis> for emotion-tagged text (FT-CAST-023: emphasis level scales
+      with the utterance's intensity; FT-CAST-026: the base emphasis map is
+      selected by ``emotion_preset``)
     - <prosody rate> for narrator (medium) vs dialogue (slightly faster)
+
+    Regression contract: with ``emotion_preset='neutral'`` (default) and
+    utterances whose ``intensity`` is None (or absent on legacy models), the
+    emphasis levels are byte-identical to the historical engine.
 
     Args:
         utterances: List of Utterance objects to convert.
+        emotion_preset: Emotion preset selecting the emphasis map (FT-CAST-026).
 
     Returns:
         SSML string wrapped in <speak> tags.
@@ -99,7 +200,10 @@ def preprocess_ssml(utterances: list["Utterance"]) -> str:
         # containing them produces well-formed SSML.
         text = _xml_escape(utt.text)
         if utt.emotion:
-            level = _EMOTION_EMPHASIS.get(utt.emotion.lower(), "moderate")
+            # FT-CAST-023: intensity is None on legacy/bare-emotion utterances,
+            # which keeps the historical emphasis level (regression-critical).
+            intensity = getattr(utt, "intensity", None)
+            level = _emphasis_for(utt.emotion, intensity, emotion_preset)
             text = f'<emphasis level="{level}">{text}</emphasis>'
 
         # Wrap in prosody
@@ -278,6 +382,7 @@ def render_chapter(
     progress_callback: Optional[Callable[[int, int], None]] = None,
     *,
     engine: Optional[TTSEngine] = None,
+    emotion_preset: str = "neutral",
 ) -> Path:
     """
     Render a single chapter to audio.
@@ -288,6 +393,8 @@ def render_chapter(
         output_path: Output audio file path.
         progress_callback: Callback(current_utterance, total_utterances).
         engine: Injected TTSEngine (defaults to voice-soundboard).
+        emotion_preset: FT-CAST-026 emotion preset selecting the SSML emphasis
+            map. 'neutral' (default) reproduces historical emphasis levels.
 
     Returns:
         Path to rendered audio file.
@@ -314,7 +421,10 @@ def render_chapter(
 
         # FT-RENDER-015: Use SSML preprocessing if engine supports it
         if should_use_ssml(engine):
-            script = preprocess_ssml(chapter.utterances)
+            # FT-CAST-026: select the emphasis map by the active emotion preset.
+            # Defaults to 'neutral', which reproduces the historical emphasis
+            # levels exactly (regression-critical).
+            script = preprocess_ssml(chapter.utterances, emotion_preset)
             logger.info(f"RENDER_SSML: chapter={chapter.index} using SSML preprocessing")
         else:
             script = utterances_to_script(chapter.utterances)
