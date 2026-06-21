@@ -98,7 +98,7 @@ class RenderFailureReport:
         """Serialize to JSON string."""
         return json.dumps(self.to_dict(), indent=2, ensure_ascii=False)
 
-    def save(self, path: Optional[Path] = None) -> Path:
+    def save(self, path: Optional[Path] = None) -> Optional[Path]:
         """
         Write report to disk.
 
@@ -106,18 +106,24 @@ class RenderFailureReport:
             path: Output path (default: render_failure_report.json in cache_dir).
 
         Returns:
-            Path to written report.
+            Path to the written report, or None if no report was written
+            (no cache_dir and no explicit path). Callers MUST treat None as
+            "no report on disk" and must not advertise a path to the user.
         """
         if path is None:
             if self.cache_dir:
                 path = Path(self.cache_dir) / "render_failure_report.json"
             else:
-                # F-RENDER-B-018: Log warning and skip when falling back to cwd
+                # FAILREPORT-C-006 / F-RENDER-B-018: with no cache_dir and no
+                # explicit path there is nowhere stable to write. Return None as
+                # a sentinel so the caller can tell the user no report was saved,
+                # rather than handing back a path to a file that never existed.
                 logger.warning(
-                    "No cache_dir set for failure report — skipping write to cwd. "
-                    "Set cache_dir on the report to persist failure details."
+                    "No cache_dir set for failure report — no report file was "
+                    "written. Pass an explicit path to save(), or set cache_dir "
+                    "on the report, to persist failure details."
                 )
-                return Path("render_failure_report.json")
+                return None
 
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)

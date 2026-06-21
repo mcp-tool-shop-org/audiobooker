@@ -47,6 +47,51 @@ from pathlib import Path
 from typing import Optional
 
 
+# Canonical install hint for the optional TTS backend. voice-soundboard IS on
+# PyPI, so always point users at the published package, never a local path.
+VOICE_SOUNDBOARD_INSTALL_HINT = (
+    "Install with: pip install voice-soundboard  "
+    "(or: pip install 'audiobooker-ai[render]'). "
+    "Run 'audiobooker diagnose' to check your environment."
+)
+
+# Module-level quiet flag. main() sets this from --silent so the _out() wrapper
+# can suppress normal progress/success output without touching error paths.
+_QUIET = False
+
+# Exit-code taxonomy: these are "the user gave us something wrong" errors
+# (missing file, bad index/value, missing key). Handlers catch these and
+# return 1. Anything else propagates to main()'s outer handler -> exit 2,
+# distinguishing user mistakes from unexpected internal failures.
+USER_ERROR_TYPES = (FileNotFoundError, ValueError, IndexError, KeyError)
+
+
+def _out(*args, **kwargs) -> None:
+    """Print normal (non-error) output unless --silent suppressed it.
+
+    Errors and warnings always go through plain print()/stderr so --silent
+    never hides a problem the user needs to see.
+    """
+    if not _QUIET:
+        print(*args, **kwargs)
+
+
+def _report_error(e: BaseException, args: "argparse.Namespace | None" = None) -> None:
+    """Print a structured, user-facing error message.
+
+    Prints "Error: {e}", then a "Hint: {hint}" line if the exception carries a
+    structured .hint attribute, and the full traceback when --debug is set.
+    Errors always print (never suppressed by --silent).
+    """
+    print(f"Error: {e}")
+    hint = getattr(e, "hint", None)
+    if hint:
+        print(f"Hint: {hint}")
+    if getattr(args, "debug", False):
+        import traceback
+        traceback.print_exc()
+
+
 # Patterns that look like secrets/tokens — redacted in all log output
 _SECRET_PATTERNS = re.compile(
     r"((?:token|key|secret|password|credential|auth)[=:\s]+)\S+",
@@ -85,7 +130,37 @@ def create_parser() -> argparse.ArgumentParser:
         help="Enable debug output including stack traces",
     )
 
+    # Shared parent parser so --silent/--debug also work AFTER the subcommand
+    # (e.g. `audiobooker render --debug`, not only `audiobooker --debug render`).
+    # default=SUPPRESS so a subparser's copy of these flags only lands in the
+    # namespace when actually passed — otherwise it would clobber a value set
+    # by the top-level parser (making `audiobooker --debug render` silently
+    # drop --debug).
+    common = argparse.ArgumentParser(add_help=False)
+    common_group = common.add_mutually_exclusive_group()
+    common_group.add_argument(
+        "--silent", action="store_true", default=argparse.SUPPRESS,
+        help="Suppress all output except errors",
+    )
+    common_group.add_argument(
+        "--debug", action="store_true", default=argparse.SUPPRESS,
+        help="Enable debug output including stack traces",
+    )
+
     subparsers = parser.add_subparsers(dest="command", help="Commands")
+
+    # Every top-level subcommand inherits --silent/--debug from `common`.
+    # Wrap add_parser so each subparser gets parents=[common] automatically
+    # (sub-subparsers like `cache info` inherit through their own parent).
+    _orig_add_parser = subparsers.add_parser
+
+    def _add_parser(name, **kwargs):
+        parents = list(kwargs.pop("parents", []))
+        if common not in parents:
+            parents.append(common)
+        return _orig_add_parser(name, parents=parents, **kwargs)
+
+    subparsers.add_parser = _add_parser  # type: ignore[assignment]
 
     # --- new ---
     new_parser = subparsers.add_parser(
@@ -242,6 +317,9 @@ def create_parser() -> argparse.ArgumentParser:
     info_parser.add_argument(
         "-v", "--verbose", action="store_true", help="Show detailed info"
     )
+    info_parser.add_argument(
+        "--json", dest="json_output", action="store_true", help="Output as JSON"
+    )
 
     # --- voices ---
     voices_parser = subparsers.add_parser("voices", help="List available voices")
@@ -289,6 +367,9 @@ def create_parser() -> argparse.ArgumentParser:
         "status", help="Show render cache status and project overview"
     )
     status_parser.add_argument("-p", "--project", help="Project file")
+    status_parser.add_argument(
+        "--json", dest="json_output", action="store_true", help="Output as JSON"
+    )
 
     # --- cache (FT-RENDER-009) ---
     cache_parser = subparsers.add_parser(
@@ -306,6 +387,16 @@ def create_parser() -> argparse.ArgumentParser:
         "clean-failed", help="Delete failed cache entries and reset them"
     )
     cache_clean_failed_parser.add_argument("-p", "--project", help="Project file")
+
+    # --- report (FT-CAST-014 wiring) ---
+    report_parser = subparsers.add_parser(
+        "report",
+        help="Show compile quality report (unknown rate, unattributed lines, emotions)",
+    )
+    report_parser.add_argument("-p", "--project", help="Project file")
+    report_parser.add_argument(
+        "--json", dest="json_output", action="store_true", help="Output as JSON"
+    )
 
     # --- diagnose ---
     diagnose_parser = subparsers.add_parser(
@@ -350,6 +441,10 @@ def create_parser() -> argparse.ArgumentParser:
         "--dry-run",
         action="store_true",
         help="Show what would be processed without rendering",
+    )
+    batch_parser.add_argument(
+        "--json", dest="json_output", action="store_true",
+        help="Emit the per-book results array as JSON",
     )
 
     # --- FT-RENDER-007: preview ---
@@ -527,7 +622,7 @@ def cmd_new(args) -> int:
 
     suffix = source.suffix.lower()
 
-    print(f"Creating project from: {source}")
+    _out(f"Creating project from: {source}")
 
     try:
         from audiobooker.language.profile import get_profile, available_profiles
@@ -559,22 +654,22 @@ def cmd_new(args) -> int:
         output_path = args.output or source.with_suffix(".audiobooker")
         project.save(output_path)
 
-        print(f"\nProject created: {output_path}")
-        print(f"  Title: {project.title}")
-        print(f"  Chapters: {len(project.chapters)}")
-        print(f"  Words: ~{project.total_words:,}")
-        print(
+        _out(f"\nProject created: {output_path}")
+        _out(f"  Title: {project.title}")
+        _out(f"  Chapters: {len(project.chapters)}")
+        _out(f"  Words: ~{project.total_words:,}")
+        _out(
             f"  Estimated duration: ~{project.estimated_duration_minutes:.0f} min (at {project.config.estimated_wpm} wpm, varies by voice)"
         )
-        print("\nNext steps:")
-        print("  1. Cast voices: audiobooker cast narrator af_heart")
-        print("  2. Compile: audiobooker compile")
-        print("  3. Render: audiobooker render")
+        _out("\nNext steps:")
+        _out("  1. Cast voices: audiobooker cast narrator af_heart")
+        _out("  2. Compile: audiobooker compile")
+        _out("  3. Render: audiobooker render")
 
         return 0
 
-    except Exception as e:
-        print(f"Error: {e}")
+    except USER_ERROR_TYPES as e:
+        _report_error(e, args)
         return 1
 
 
@@ -595,14 +690,14 @@ def cmd_cast(args) -> int:
 
         project.save()
 
-        print(f"Cast {args.character} as {args.voice}")
+        _out(f"Cast {args.character} as {args.voice}")
         if args.emotion:
-            print(f"  Default emotion: {args.emotion}")
+            _out(f"  Default emotion: {args.emotion}")
 
         return 0
 
-    except Exception as e:
-        print(f"Error: {e}")
+    except USER_ERROR_TYPES as e:
+        _report_error(e, args)
         return 1
 
 
@@ -618,7 +713,7 @@ def cmd_compile(args) -> int:
         if getattr(args, "dry_run", False):
             dry_result = project.compile(dry_run=True)
             if dry_result is None:
-                print("No chapters to compile.")
+                _out("No chapters to compile.")
                 return 0
 
             # Gather speaker stats from dry-run result
@@ -632,45 +727,69 @@ def cmd_compile(args) -> int:
                     if not speaker_stats[key]["sample"]:
                         speaker_stats[key]["sample"] = utt.text[:60]
 
-            print(f"\nDRY RUN — Compile preview for {project.title}")
-            print(f"{'='*70}")
-            print(f"  {'Speaker':<20} {'Lines':<8} {'Sample'}")
-            print(f"  {'-'*20} {'-'*8} {'-'*40}")
+            _out(f"\nDRY RUN — Compile preview for {project.title}")
+            _out(f"{'='*70}")
+            _out(f"  {'Speaker':<20} {'Lines':<8} {'Sample'}")
+            _out(f"  {'-'*20} {'-'*8} {'-'*40}")
             for speaker in sorted(speaker_stats.keys()):
                 info = speaker_stats[speaker]
                 sample = info["sample"]
                 if len(sample) > 40:
                     sample = sample[:37] + "..."
-                print(f"  {speaker:<20} {info['lines']:<8} {sample}")
+                _out(f"  {speaker:<20} {info['lines']:<8} {sample}")
             total = sum(s["lines"] for s in speaker_stats.values())
-            print(f"  {'-'*20} {'-'*8}")
-            print(f"  {'TOTAL':<20} {total:<8}")
-            print(f"{'='*70}")
+            _out(f"  {'-'*20} {'-'*8}")
+            _out(f"  {'TOTAL':<20} {total:<8}")
+            _out(f"{'='*70}")
             return 0
 
-        print(f"Compiling {len(project.chapters)} chapters...")
+        _out(f"Compiling {len(project.chapters)} chapters...")
 
         def progress(current, total, title):
-            print(f"  [{current}/{total}] {title}")
+            _out(f"  [{current}/{total}] {title}")
 
         project.compile(progress_callback=progress)
         project.save()
 
+        # FT-CORE-022: Surface compile observability summary.
+        summary = getattr(project, "compile_summary", {}) or {}
+        total_utterances = sum(len(c.utterances) for c in project.chapters)
+        _out(
+            f"\nCompiled {total_utterances} utterances: "
+            f"{summary.get('speakers_resolved', 0)} speakers resolved, "
+            f"{summary.get('low_confidence', 0)} low-confidence, "
+            f"{summary.get('emotions_inferred', 0)} emotions inferred"
+        )
+
+        near_miss = summary.get("emotions_near_miss", 0)
+        if near_miss:
+            _out(
+                f"  ({near_miss} more utterance(s) were just below the emotion "
+                "confidence threshold — run 'audiobooker report' to review them.)"
+            )
+
+        # NLP errors are warnings, not failures — but the user should know
+        # which chapters fell back to heuristic attribution.
+        nlp_errors = summary.get("nlp_errors") or []
+        if nlp_errors:
+            print(
+                f"WARNING: speaker resolution had problems on "
+                f"{len(nlp_errors)} chapter(s); kept heuristic attribution. "
+                "Run 'audiobooker report' for details."
+            )
+
         # Show uncast speakers
         uncast = project.get_uncast_speakers()
         if uncast:
-            print("\nDetected speakers without voice assignments:")
+            _out("\nDetected speakers without voice assignments:")
             for speaker in sorted(uncast):
-                print(f"  - {speaker}")
-            print("\nAssign voices with: audiobooker cast <speaker> <voice>")
-
-        total_utterances = sum(len(c.utterances) for c in project.chapters)
-        print(f"\nCompiled {total_utterances} utterances")
+                _out(f"  - {speaker}")
+            _out("\nAssign voices with: audiobooker cast <speaker> <voice>")
 
         return 0
 
-    except Exception as e:
-        print(f"Error: {e}")
+    except USER_ERROR_TYPES as e:
+        _report_error(e, args)
         return 1
 
 
@@ -701,9 +820,9 @@ def cmd_render(args) -> int:
                     )
                     return 1
                 shutil.rmtree(cache_dir)
-                print(f"Cache cleared: {cache_dir}")
+                _out(f"Cache cleared: {cache_dir}")
             else:
-                print("No cache to clean.")
+                _out("No cache to clean.")
 
         # FT-RENDER-011: Auto-apply voice suggestions if --cast-suggest
         if getattr(args, "cast_suggest", False):
@@ -711,14 +830,14 @@ def cmd_render(args) -> int:
 
             uncast = project.get_uncast_speakers()
             if uncast:
-                print(f"Auto-casting {len(uncast)} uncast speakers...")
+                _out(f"Auto-casting {len(uncast)} uncast speakers...")
                 already_cast = project.casting.get_voice_mapping()
                 suggester = VoiceSuggester(max_suggestions=1)
                 results = suggester.suggest_all(sorted(uncast), already_cast=already_cast)
                 for result in results:
                     if result.top:
                         project.cast(result.speaker, result.top.voice_id)
-                        print(f"  Cast {result.speaker} as {result.top.voice_id}")
+                        _out(f"  Cast {result.speaker} as {result.top.voice_id}")
                 project.save()
 
         # OUTPUT-A-006: Validate cover path early so a typo doesn't silently
@@ -744,14 +863,14 @@ def cmd_render(args) -> int:
                 include_ranges=chapters_flag,
                 exclude_ranges=exclude_chapters_flag,
             )
-            print(f"Chapter selection: {len(project.chapters)} of {original_count} chapters")
+            _out(f"Chapter selection: {len(project.chapters)} of {original_count} chapters")
 
         if args.chapter is not None:
             # Render single chapter
-            print(f"Rendering chapter {args.chapter}...")
+            _out(f"Rendering chapter {args.chapter}...")
             output = args.output or f"chapter_{args.chapter:03d}.wav"
             path = project.render_chapter(args.chapter, output)
-            print(f"Output: {path}")
+            _out(f"Output: {path}")
         else:
             # Render full audiobook
             fmt = getattr(args, "output_format", None) or project.config.output_format
@@ -775,7 +894,10 @@ def cmd_render(args) -> int:
                 dry_run_render(project, resume=resume, from_chapter=from_chapter)
                 return 0
 
-            # FT-RENDER-018: Render time estimation
+            # FT-RENDER-018: Audiobook playback-length estimate.
+            # This is PLAYBACK length (words/wpm), NOT render wall-clock, which
+            # depends entirely on the TTS backend and hardware — relabel so the
+            # user isn't misled into expecting the render to take this long.
             total_words = sum(ch.word_count for ch in project.chapters)
             wpm = project.config.estimated_wpm or 150
             est_minutes = total_words / wpm
@@ -783,13 +905,16 @@ def cmd_render(args) -> int:
                 est_str = f"~{est_minutes / 60:.1f} hours"
             else:
                 est_str = f"~{est_minutes:.0f} minutes"
-            print(f"Estimated render time: {est_str} ({total_words:,} words)")
+            _out(
+                f"Audiobook length: {est_str} ({total_words:,} words). "
+                "Render time depends on your TTS backend and hardware."
+            )
 
-            print(f"Rendering audiobook to: {output}")
+            _out(f"Rendering audiobook to: {output}")
             if not resume:
-                print("  (cache disabled — full re-render)")
+                _out("  (cache disabled — full re-render)")
             if jobs > 1:
-                print(f"  (parallel rendering: {jobs} workers)")
+                _out(f"  (parallel rendering: {jobs} workers)")
 
             # FT-RENDER-005: Rich progress bar (conditional import)
             progress_bar = None
@@ -876,8 +1001,8 @@ def cmd_render(args) -> int:
             project.chapters = full_chapters
             project.save()
 
-            print(f"\nAudiobook created: {path}")
-            print(f"Duration: {project.total_duration_seconds / 60:.1f} minutes")
+            _out(f"\nAudiobook created: {path}")
+            _out(f"Duration: {project.total_duration_seconds / 60:.1f} minutes")
 
             # FT-RENDER-020: Desktop notification on success
             if notify:
@@ -899,10 +1024,7 @@ def cmd_render(args) -> int:
         return 1
 
     except Exception as e:
-        print(f"Error: {e}")
-        if getattr(args, "debug", False):
-            import traceback
-            traceback.print_exc()
+        _report_error(e, args)
         if getattr(args, "notify", False):
             _send_notification(
                 title="Audiobooker",
@@ -953,8 +1075,14 @@ def _print_render_failure(e: "RenderError") -> None:
     if summary.manifest_path:
         print(f"Manifest: {summary.manifest_path}")
 
-    print("\nTo resume: audiobooker render")
-    print("To force:  audiobooker render --no-resume")
+    # Prefer the structured hint carried on the RenderError (it names the
+    # exact resume flag, e.g. --from-chapter) over the generic resume text.
+    hint = getattr(e, "hint", None)
+    if hint:
+        print(f"\nHint: {hint}")
+    else:
+        print("\nTo resume: audiobooker render")
+        print("To force:  audiobooker render --no-resume")
 
 
 def _sanitize_notification_text(text: str) -> str:
@@ -1090,31 +1218,37 @@ def cmd_info(args) -> int:
 
         info = project.info()
 
-        print(f"Title: {info['title']}")
+        # --json: project.info() already returns a dict.
+        if getattr(args, "json_output", False):
+            import json as json_mod
+            print(json_mod.dumps(info, indent=2, ensure_ascii=False))
+            return 0
+
+        _out(f"Title: {info['title']}")
         if info["author"]:
-            print(f"Author: {info['author']}")
-        print(f"Source: {info['source']}")
-        print(f"Chapters: {info['chapters']}")
-        print(f"Words: ~{info['total_words']:,}")
-        print(
+            _out(f"Author: {info['author']}")
+        _out(f"Source: {info['source']}")
+        _out(f"Chapters: {info['chapters']}")
+        _out(f"Words: ~{info['total_words']:,}")
+        _out(
             f"Estimated duration: ~{info['estimated_duration_minutes']:.0f} min (varies by voice)"
         )
-        print(f"Characters cast: {info['characters_cast']}")
-        print(f"Compiled: {'Yes' if info['compiled'] else 'No'}")
-        print(f"Rendered: {'Yes' if info['rendered'] else 'No'}")
+        _out(f"Characters cast: {info['characters_cast']}")
+        _out(f"Compiled: {'Yes' if info['compiled'] else 'No'}")
+        _out(f"Rendered: {'Yes' if info['rendered'] else 'No'}")
 
         if info["uncast_speakers"]:
-            print(f"\nUncast speakers: {', '.join(info['uncast_speakers'])}")
+            _out(f"\nUncast speakers: {', '.join(info['uncast_speakers'])}")
 
         if args.verbose and project.casting.characters:
-            print("\nCasting:")
+            _out("\nCasting:")
             for name, char in project.casting.characters.items():
-                print(f"  {char.name}: {char.voice} ({char.line_count} lines)")
+                _out(f"  {char.name}: {char.voice} ({char.line_count} lines)")
 
         return 0
 
-    except Exception as e:
-        print(f"Error: {e}")
+    except USER_ERROR_TYPES as e:
+        _report_error(e, args)
         return 1
 
 
@@ -1133,27 +1267,27 @@ def cmd_load(args) -> int:
         project = AudiobookProject.load(project_path)
 
         info = project.info()
-        print(f"Loaded project: {project_path}")
-        print(f"Title: {info['title']}")
+        _out(f"Loaded project: {project_path}")
+        _out(f"Title: {info['title']}")
         if info["author"]:
-            print(f"Author: {info['author']}")
-        print(f"Source: {info['source']}")
-        print(f"Chapters: {info['chapters']}")
-        print(f"Words: ~{info['total_words']:,}")
-        print(
+            _out(f"Author: {info['author']}")
+        _out(f"Source: {info['source']}")
+        _out(f"Chapters: {info['chapters']}")
+        _out(f"Words: ~{info['total_words']:,}")
+        _out(
             f"Estimated duration: ~{info['estimated_duration_minutes']:.0f} min (varies by voice)"
         )
-        print(f"Characters cast: {info['characters_cast']}")
-        print(f"Compiled: {'Yes' if info['compiled'] else 'No'}")
-        print(f"Rendered: {'Yes' if info['rendered'] else 'No'}")
+        _out(f"Characters cast: {info['characters_cast']}")
+        _out(f"Compiled: {'Yes' if info['compiled'] else 'No'}")
+        _out(f"Rendered: {'Yes' if info['rendered'] else 'No'}")
 
         if info["uncast_speakers"]:
-            print(f"\nUncast speakers: {', '.join(info['uncast_speakers'])}")
+            _out(f"\nUncast speakers: {', '.join(info['uncast_speakers'])}")
 
         return 0
 
-    except Exception as e:
-        print(f"Error: {e}")
+    except USER_ERROR_TYPES as e:
+        _report_error(e, args)
         return 1
 
 
@@ -1163,10 +1297,10 @@ def cmd_voices(args) -> int:
         from voice_soundboard.config import VOICES
     except ImportError:
         print("Error: voice-soundboard not installed")
-        print("Install with: pip install -e F:/AI/voice-soundboard")
+        print(VOICE_SOUNDBOARD_INSTALL_HINT)
         return 1
 
-    print("Available voices:\n")
+    _out("Available voices:\n")
 
     for voice_id, info in sorted(VOICES.items()):
         # Filter by gender if specified
@@ -1188,7 +1322,7 @@ def cmd_voices(args) -> int:
             ):
                 continue
 
-        print(f"  {voice_id}")
+        _out(f"  {voice_id}")
 
     return 0
 
@@ -1206,11 +1340,11 @@ def cmd_chapters(args) -> int:
             project = AudiobookProject.load(project_path)
             merged = project.merge_chapters(args.start, args.end)
             project.save()
-            print(f"Merged chapters {args.start}-{args.end} into: {merged.title}")
-            print(f"  New chapter count: {len(project.chapters)}")
+            _out(f"Merged chapters {args.start}-{args.end} into: {merged.title}")
+            _out(f"  New chapter count: {len(project.chapters)}")
             return 0
-        except Exception as e:
-            print(f"Error: {e}")
+        except USER_ERROR_TYPES as e:
+            _report_error(e, args)
             return 1
 
     elif chapters_command == "split":
@@ -1219,13 +1353,13 @@ def cmd_chapters(args) -> int:
             project = AudiobookProject.load(project_path)
             first, second = project.split_chapter(args.index, args.paragraph)
             project.save()
-            print(f"Split chapter {args.index} at paragraph {args.paragraph}:")
-            print(f"  [{first.index}] {first.title} ({first.word_count} words)")
-            print(f"  [{second.index}] {second.title} ({second.word_count} words)")
-            print(f"  New chapter count: {len(project.chapters)}")
+            _out(f"Split chapter {args.index} at paragraph {args.paragraph}:")
+            _out(f"  [{first.index}] {first.title} ({first.word_count} words)")
+            _out(f"  [{second.index}] {second.title} ({second.word_count} words)")
+            _out(f"  New chapter count: {len(project.chapters)}")
             return 0
-        except Exception as e:
-            print(f"Error: {e}")
+        except USER_ERROR_TYPES as e:
+            _report_error(e, args)
             return 1
 
     elif chapters_command == "exclude":
@@ -1235,10 +1369,10 @@ def cmd_chapters(args) -> int:
             project.exclude_chapter(args.index)
             project.save()
             ch = project.chapters[args.index]
-            print(f"Excluded chapter {args.index}: {ch.title}")
+            _out(f"Excluded chapter {args.index}: {ch.title}")
             return 0
-        except Exception as e:
-            print(f"Error: {e}")
+        except USER_ERROR_TYPES as e:
+            _report_error(e, args)
             return 1
 
     elif chapters_command == "include":
@@ -1248,10 +1382,10 @@ def cmd_chapters(args) -> int:
             project.include_chapter(args.index)
             project.save()
             ch = project.chapters[args.index]
-            print(f"Included chapter {args.index}: {ch.title}")
+            _out(f"Included chapter {args.index}: {ch.title}")
             return 0
-        except Exception as e:
-            print(f"Error: {e}")
+        except USER_ERROR_TYPES as e:
+            _report_error(e, args)
             return 1
 
     # Default: list chapters
@@ -1259,7 +1393,7 @@ def cmd_chapters(args) -> int:
         project_path = find_project_file(args.project)
         project = AudiobookProject.load(project_path)
 
-        print(f"Chapters in {project.title}:\n")
+        _out(f"Chapters in {project.title}:\n")
 
         for chapter in project.chapters:
             status = ""
@@ -1270,14 +1404,14 @@ def cmd_chapters(args) -> int:
             elif chapter.is_compiled:
                 status = " [compiled]"
 
-            print(
+            _out(
                 f"  {chapter.index + 1}. {chapter.title} ({chapter.word_count} words){status}"
             )
 
         return 0
 
-    except Exception as e:
-        print(f"Error: {e}")
+    except USER_ERROR_TYPES as e:
+        _report_error(e, args)
         return 1
 
 
@@ -1291,27 +1425,27 @@ def cmd_speakers(args) -> int:
 
         # Compile if needed
         if not any(c.is_compiled for c in project.chapters):
-            print("Compiling to detect speakers...")
+            _out("Compiling to detect speakers...")
             project.compile()
             project.save()
 
         speakers = project.get_detected_speakers()
         cast_speakers = set(project.casting.characters.keys())
 
-        print(f"Speakers in {project.title}:\n")
+        _out(f"Speakers in {project.title}:\n")
 
         for speaker in sorted(speakers):
             normalized = project.casting.normalize_key(speaker)
             if normalized in cast_speakers:
                 char = project.casting.characters[normalized]
-                print(f"  {speaker}: {char.voice} ({char.line_count} lines)")
+                _out(f"  {speaker}: {char.voice} ({char.line_count} lines)")
             else:
-                print(f"  {speaker}: [uncast]")
+                _out(f"  {speaker}: [uncast]")
 
         return 0
 
-    except Exception as e:
-        print(f"Error: {e}")
+    except USER_ERROR_TYPES as e:
+        _report_error(e, args)
         return 1
 
 
@@ -1327,7 +1461,7 @@ def cmd_review_export(args) -> int:
         if output:
             output = Path(output)
 
-        print("Exporting review file...")
+        _out("Exporting review file...")
 
         review_path = project.export_for_review(output)
         project.save()
@@ -1336,24 +1470,21 @@ def cmd_review_export(args) -> int:
         total_utterances = sum(len(c.utterances) for c in project.chapters)
         speakers = project.get_detected_speakers()
 
-        print(f"\nReview file created: {review_path}")
-        print(f"  Chapters: {len(project.chapters)}")
-        print(f"  Utterances: {total_utterances}")
-        print(f"  Speakers: {', '.join(sorted(speakers))}")
-        print("\nEdit the file to:")
-        print("  - Change speaker names: @OldName -> @NewName")
-        print("  - Add/change emotions: @Name -> @Name (emotion)")
-        print("  - Delete unwanted lines by removing the block")
-        print(f"\nThen import: audiobooker review-import {review_path.name}")
+        _out(f"\nReview file created: {review_path}")
+        _out(f"  Chapters: {len(project.chapters)}")
+        _out(f"  Utterances: {total_utterances}")
+        _out(f"  Speakers: {', '.join(sorted(speakers))}")
+        _out("\nEdit the file to:")
+        _out("  - Change speaker names: @OldName -> @NewName")
+        _out("  - Add/change emotions: @Name -> @Name (emotion)")
+        _out("  - Delete unwanted lines by removing the block")
+        _out(f"\nThen import: audiobooker review-import {review_path.name}")
 
         return 0
 
-    except Exception as e:
-        print(f"Error: {e}")
-        if getattr(args, "debug", False):
-            import traceback
-            traceback.print_exc()
-        return 2
+    except USER_ERROR_TYPES as e:
+        _report_error(e, args)
+        return 1
 
 
 def cmd_review_import(args) -> int:
@@ -1369,25 +1500,40 @@ def cmd_review_import(args) -> int:
             print(f"Error: Review file not found: {review_path}")
             return 1
 
-        print(f"Importing review file: {review_path}")
+        _out(f"Importing review file: {review_path}")
 
         stats = project.import_reviewed(review_path)
         project.save()
 
-        print("\nImport complete:")
-        print(f"  Chapters updated: {stats['chapters_updated']}")
-        print(f"  Utterances imported: {stats['utterances_imported']}")
-        print(f"  Speakers: {', '.join(sorted(stats['speakers_found']))}")
-        print("\nProject saved. Ready to render: audiobooker render")
+        _out("\nImport complete:")
+        _out(f"  Chapters updated: {stats['chapters_updated']}")
+        _out(f"  Utterances imported: {stats['utterances_imported']}")
+        _out(f"  Speakers: {', '.join(sorted(stats['speakers_found']))}")
+
+        # Warn loudly if any edited blocks did not match a chapter. A silent
+        # skip means the user's edits were dropped without their knowledge.
+        skipped = stats.get("chapters_skipped", 0)
+        if skipped:
+            skipped_titles = stats.get("skipped_titles") or []
+            print(
+                f"\nWARNING: {skipped} edited block(s) did not match any chapter "
+                "and were NOT applied:"
+            )
+            for title in skipped_titles:
+                print(f"  - {title}")
+            print(
+                'Hint: These blocks did not match any chapter by id or title — '
+                'restore the original "=== Title === [id:...]" header to apply '
+                "your edits."
+            )
+
+        _out("\nProject saved. Ready to render: audiobooker render")
 
         return 0
 
-    except Exception as e:
-        print(f"Error: {e}")
-        if getattr(args, "debug", False):
-            import traceback
-            traceback.print_exc()
-        return 2
+    except USER_ERROR_TYPES as e:
+        _report_error(e, args)
+        return 1
 
 
 def cmd_cast_suggest(args) -> int:
@@ -1401,7 +1547,7 @@ def cmd_cast_suggest(args) -> int:
 
         # Compile if needed
         if not any(c.is_compiled for c in project.chapters):
-            print("Compiling to detect speakers...")
+            _out("Compiling to detect speakers...")
             project.compile()
             project.save()
 
@@ -1422,7 +1568,7 @@ def cmd_cast_suggest(args) -> int:
         suggester = VoiceSuggester(max_suggestions=getattr(args, "top", 3))
         results = suggester.suggest_all(speakers, speaker_utterances, already_cast)
 
-        print(f"Voice suggestions for {project.title}:\n")
+        _out(f"Voice suggestions for {project.title}:\n")
         for result in results:
             cast_key = project.casting.normalize_key(result.speaker)
             is_cast = cast_key in project.casting.characters
@@ -1431,16 +1577,16 @@ def cmd_cast_suggest(args) -> int:
                 if is_cast
                 else " [uncast]"
             )
-            print(f"  {result.speaker}{status}")
+            _out(f"  {result.speaker}{status}")
             for i, s in enumerate(result.suggestions):
                 marker = ">>>" if i == 0 else "   "
-                print(f"    {marker} {s.voice_id} (score: {s.score:.2f}) - {s.reason}")
-            print()
+                _out(f"    {marker} {s.voice_id} (score: {s.score:.2f}) - {s.reason}")
+            _out()
 
         return 0
 
-    except Exception as e:
-        print(f"Error: {e}")
+    except USER_ERROR_TYPES as e:
+        _report_error(e, args)
         return 1
 
 
@@ -1454,17 +1600,17 @@ def cmd_cast_apply(args) -> int:
         project = AudiobookProject.load(project_path)
 
         if not getattr(args, "auto", False):
-            print("Use --auto to apply top suggestions for all uncast speakers.")
+            _out("Use --auto to apply top suggestions for all uncast speakers.")
             return 0
 
         # Compile if needed
         if not any(c.is_compiled for c in project.chapters):
-            print("Compiling to detect speakers...")
+            _out("Compiling to detect speakers...")
             project.compile()
 
         uncast = project.get_uncast_speakers()
         if not uncast:
-            print("All speakers are already cast.")
+            _out("All speakers are already cast.")
             return 0
 
         already_cast = project.casting.get_voice_mapping()
@@ -1475,17 +1621,17 @@ def cmd_cast_apply(args) -> int:
         for result in results:
             if result.top:
                 project.cast(result.speaker, result.top.voice_id)
-                print(
+                _out(
                     f"  Cast {result.speaker} as {result.top.voice_id} ({result.top.reason})"
                 )
                 applied += 1
 
         project.save()
-        print(f"\nApplied {applied} voice assignments.")
+        _out(f"\nApplied {applied} voice assignments.")
         return 0
 
-    except Exception as e:
-        print(f"Error: {e}")
+    except USER_ERROR_TYPES as e:
+        _report_error(e, args)
         return 1
 
 
@@ -1502,11 +1648,11 @@ def cmd_cast_export(args) -> int:
         project.save()
 
         count = len(project.casting.characters)
-        print(f"Exported {count} character(s) to {path}")
+        _out(f"Exported {count} character(s) to {path}")
         return 0
 
-    except Exception as e:
-        print(f"Error: {e}")
+    except USER_ERROR_TYPES as e:
+        _report_error(e, args)
         return 1
 
 
@@ -1523,12 +1669,12 @@ def cmd_cast_import(args) -> int:
         project.save()
 
         count = len(project.casting.characters)
-        print(f"Imported casting table from {path}")
-        print(f"  Total characters: {count}")
+        _out(f"Imported casting table from {path}")
+        _out(f"  Total characters: {count}")
         return 0
 
-    except Exception as e:
-        print(f"Error: {e}")
+    except USER_ERROR_TYPES as e:
+        _report_error(e, args)
         return 1
 
 
@@ -1548,10 +1694,10 @@ def cmd_emotions(args) -> int:
         if emotions_command == "list":
             emotions = project.list_emotions()
             if not emotions:
-                print("No compiled chapters with emotion data. Run compile first.")
+                _out("No compiled chapters with emotion data. Run compile first.")
                 return 0
 
-            print(f"Emotion summary for {project.title}:\n")
+            _out(f"Emotion summary for {project.title}:\n")
             for ch_idx in sorted(emotions.keys()):
                 chapter = project.chapters[ch_idx]
                 counts = emotions[ch_idx]
@@ -1559,7 +1705,7 @@ def cmd_emotions(args) -> int:
                 emotion_parts = ", ".join(
                     f"{e}: {c}" for e, c in sorted(counts.items(), key=lambda x: -x[1])
                 )
-                print(f"  [{ch_idx}] {chapter.title} ({total} lines): {emotion_parts}")
+                _out(f"  [{ch_idx}] {chapter.title} ({total} lines): {emotion_parts}")
             return 0
 
         elif emotions_command == "override":
@@ -1567,14 +1713,14 @@ def cmd_emotions(args) -> int:
             project.save()
             ch = project.chapters[args.chapter]
             utt = ch.utterances[args.line]
-            print(
+            _out(
                 f"Set emotion to '{args.emotion}' on chapter {args.chapter}, "
                 f"line {args.line} (speaker: {utt.speaker})"
             )
             return 0
 
-    except Exception as e:
-        print(f"Error: {e}")
+    except USER_ERROR_TYPES as e:
+        _report_error(e, args)
         return 1
 
     return 1
@@ -1599,7 +1745,7 @@ def cmd_pronunciation(args) -> int:
             # writing to the dict directly would bypass).
             project.add_pronunciation(args.word, args.replacement)
             project.save()
-            print(
+            _out(
                 f"Added pronunciation override: "
                 f"'{args.word.strip()}' -> '{args.replacement.strip()}'"
             )
@@ -1609,28 +1755,28 @@ def cmd_pronunciation(args) -> int:
             if args.word in project.config.pronunciation_overrides:
                 del project.config.pronunciation_overrides[args.word]
                 project.save()
-                print(f"Removed pronunciation override for '{args.word}'")
+                _out(f"Removed pronunciation override for '{args.word}'")
             else:
-                print(f"No override found for '{args.word}'")
+                _out(f"No override found for '{args.word}'")
                 # List existing ones for reference
                 if project.config.pronunciation_overrides:
-                    print("\nExisting overrides:")
+                    _out("\nExisting overrides:")
                     for w, r in sorted(project.config.pronunciation_overrides.items()):
-                        print(f"  '{w}' -> '{r}'")
+                        _out(f"  '{w}' -> '{r}'")
             return 0
 
         elif pronunciation_command == "list":
             overrides = project.config.pronunciation_overrides
             if not overrides:
-                print("No pronunciation overrides configured.")
+                _out("No pronunciation overrides configured.")
                 return 0
-            print(f"Pronunciation overrides ({len(overrides)}):\n")
+            _out(f"Pronunciation overrides ({len(overrides)}):\n")
             for word, replacement in sorted(overrides.items()):
-                print(f"  '{word}' -> '{replacement}'")
+                _out(f"  '{word}' -> '{replacement}'")
             return 0
 
-    except Exception as e:
-        print(f"Error: {e}")
+    except USER_ERROR_TYPES as e:
+        _report_error(e, args)
         return 1
 
     return 1
@@ -1658,19 +1804,22 @@ def cmd_from_stdin(args) -> int:
             lang=args.lang,
         )
 
-        output_path = args.output or f"{args.title}.audiobooker"
+        # Route the title through the filename sanitizer so titles with
+        # slashes/colons/etc. don't produce an invalid default output path.
+        from audiobooker.project import _sanitize_filename
+        output_path = args.output or f"{_sanitize_filename(args.title)}.audiobooker"
         project.save(output_path)
 
-        print(f"Project created: {output_path}")
-        print(f"  Title: {project.title}")
-        print(f"  Chapters: {len(project.chapters)}")
-        print(f"  Words: ~{project.total_words:,}")
-        print(f"  Language: {args.lang}")
+        _out(f"Project created: {output_path}")
+        _out(f"  Title: {project.title}")
+        _out(f"  Chapters: {len(project.chapters)}")
+        _out(f"  Words: ~{project.total_words:,}")
+        _out(f"  Language: {args.lang}")
 
         return 0
 
-    except Exception as e:
-        print(f"Error: {e}")
+    except USER_ERROR_TYPES as e:
+        _report_error(e, args)
         return 1
 
 
@@ -1685,36 +1834,58 @@ def cmd_status(args) -> int:
         project_path = find_project_file(args.project)
         project = AudiobookProject.load(project_path)
 
-        print(f"Project: {project.title}")
-        if project.author:
-            print(f"Author:  {project.author}")
-        print(f"Format:  {project.config.output_format}")
-        print(f"Chapters: {len(project.chapters)}")
         total_words = sum(ch.word_count for ch in project.chapters)
-        print(f"Words:   ~{total_words:,}")
+        json_output = getattr(args, "json_output", False)
 
         # Cache info
         cache_root = get_cache_root(project_path.parent)
-        if not cache_root.exists():
-            print("\nCache: not created yet (no renders)")
-            return 0
-
-        manifest_path = get_manifest_path(cache_root)
-        manifest = load_manifest(manifest_path)
+        cache_exists = cache_root.exists()
 
         ok_count = 0
         failed_count = 0
         last_render = ""
-        if manifest:
-            ok_count = len(manifest.ok_chapters())
-            failed_count = len(manifest.failed_chapters())
-            last_render = manifest.last_updated or "(unknown)"
-
-        # Disk usage of cache dir
         total_size = 0
-        for f in cache_root.rglob("*"):
-            if f.is_file():
-                total_size += f.stat().st_size
+        if cache_exists:
+            manifest_path = get_manifest_path(cache_root)
+            manifest = load_manifest(manifest_path)
+            if manifest:
+                ok_count = len(manifest.ok_chapters())
+                failed_count = len(manifest.failed_chapters())
+                last_render = manifest.last_updated or "(unknown)"
+            for f in cache_root.rglob("*"):
+                if f.is_file():
+                    total_size += f.stat().st_size
+
+        pending = len(project.chapters) - ok_count - failed_count
+
+        if json_output:
+            import json as json_mod
+            payload = {
+                "title": project.title,
+                "author": project.author,
+                "format": project.config.output_format,
+                "chapters": len(project.chapters),
+                "words": total_words,
+                "cache_exists": cache_exists,
+                "rendered_cached": ok_count,
+                "failed": failed_count,
+                "pending": pending,
+                "cache_bytes": total_size,
+                "last_render": last_render or None,
+            }
+            print(json_mod.dumps(payload, indent=2, ensure_ascii=False))
+            return 0
+
+        _out(f"Project: {project.title}")
+        if project.author:
+            _out(f"Author:  {project.author}")
+        _out(f"Format:  {project.config.output_format}")
+        _out(f"Chapters: {len(project.chapters)}")
+        _out(f"Words:   ~{total_words:,}")
+
+        if not cache_exists:
+            _out("\nCache: not created yet (no renders)")
+            return 0
 
         if total_size >= 1024 * 1024:
             size_str = f"{total_size / (1024 * 1024):.1f} MB"
@@ -1723,18 +1894,18 @@ def cmd_status(args) -> int:
         else:
             size_str = f"{total_size} bytes"
 
-        print(f"\nRender Cache: {cache_root}")
-        print(f"  Rendered (cached): {ok_count}")
-        print(f"  Failed:            {failed_count}")
-        print(f"  Pending:           {len(project.chapters) - ok_count - failed_count}")
-        print(f"  Disk usage:        {size_str}")
+        _out(f"\nRender Cache: {cache_root}")
+        _out(f"  Rendered (cached): {ok_count}")
+        _out(f"  Failed:            {failed_count}")
+        _out(f"  Pending:           {pending}")
+        _out(f"  Disk usage:        {size_str}")
         if last_render:
-            print(f"  Last render:       {last_render}")
+            _out(f"  Last render:       {last_render}")
 
         return 0
 
-    except Exception as e:
-        print(f"Error: {e}")
+    except USER_ERROR_TYPES as e:
+        _report_error(e, args)
         return 1
 
 
@@ -1758,7 +1929,7 @@ def cmd_cache(args) -> int:
 
         if cache_command == "info":
             if not cache_root.exists():
-                print("No cache directory found.")
+                _out("No cache directory found.")
                 return 0
 
             manifest_path = get_manifest_path(cache_root)
@@ -1776,18 +1947,18 @@ def cmd_cache(args) -> int:
             else:
                 size_str = f"{total_size / 1024:.1f} KB"
 
-            print(f"Cache directory: {cache_root}")
-            print(f"  Files: {file_count}")
-            print(f"  Total size: {size_str}")
+            _out(f"Cache directory: {cache_root}")
+            _out(f"  Files: {file_count}")
+            _out(f"  Total size: {size_str}")
             if manifest:
-                print(f"  OK chapters: {len(manifest.ok_chapters())}")
-                print(f"  Failed chapters: {len(manifest.failed_chapters())}")
-                print(f"  Last updated: {manifest.last_updated}")
+                _out(f"  OK chapters: {len(manifest.ok_chapters())}")
+                _out(f"  Failed chapters: {len(manifest.failed_chapters())}")
+                _out(f"  Last updated: {manifest.last_updated}")
             return 0
 
         elif cache_command == "clean":
             if not cache_root.exists():
-                print("No cache to clean.")
+                _out("No cache to clean.")
                 return 0
             # Safety check for lockfile
             lock_path = cache_root / ".render.lock"
@@ -1798,23 +1969,23 @@ def cmd_cache(args) -> int:
                 )
                 return 1
             shutil.rmtree(cache_root)
-            print(f"Cache deleted: {cache_root}")
+            _out(f"Cache deleted: {cache_root}")
             return 0
 
         elif cache_command == "clean-failed":
             if not cache_root.exists():
-                print("No cache directory found.")
+                _out("No cache directory found.")
                 return 0
 
             manifest_path = get_manifest_path(cache_root)
             manifest = load_manifest(manifest_path)
             if manifest is None:
-                print("No manifest found.")
+                _out("No manifest found.")
                 return 0
 
             failed = manifest.failed_chapters()
             if not failed:
-                print("No failed entries to clean.")
+                _out("No failed entries to clean.")
                 return 0
 
             cleaned = 0
@@ -1834,14 +2005,77 @@ def cmd_cache(args) -> int:
                 cleaned += 1
 
             save_manifest(manifest, manifest_path)
-            print(f"Cleaned {cleaned} failed entries. They will be re-rendered on next run.")
+            _out(f"Cleaned {cleaned} failed entries. They will be re-rendered on next run.")
             return 0
 
-    except Exception as e:
-        print(f"Error: {e}")
+    except USER_ERROR_TYPES as e:
+        _report_error(e, args)
         return 1
 
     return 0
+
+
+def cmd_report(args) -> int:
+    """Show a compile quality report (FT-CAST-014).
+
+    Wires the existing casting.compile_report() into the CLI: unknown
+    attribution rate, the top unattributed lines with context, and the
+    overall emotion distribution.
+    """
+    from audiobooker import AudiobookProject
+    from audiobooker.casting import compile_report
+
+    try:
+        project_path = find_project_file(args.project)
+        project = AudiobookProject.load(project_path)
+
+        json_output = getattr(args, "json_output", False)
+
+        # Need compiled utterances to report on.
+        if not any(c.is_compiled for c in project.chapters):
+            # Suppress the prep message under --json so stdout stays pure JSON.
+            if not json_output:
+                _out("Compiling to generate report...")
+            project.compile()
+            project.save()
+
+        report = compile_report(project.chapters, project.casting)
+
+        if json_output:
+            import json as json_mod
+            print(json_mod.dumps(report, indent=2, ensure_ascii=False))
+            return 0
+
+        unknown_pct = report["unknown_rate"] * 100
+        _out(f"Compile report for {project.title}:\n")
+        _out(f"  Total utterances:  {report['total_utterances']}")
+        _out(f"  Dialogue / narration: {report['total_dialogue']} / {report['total_narration']}")
+        _out(f"  Unattributed rate: {unknown_pct:.1f}%")
+
+        emotion_dist = report.get("emotion_distribution") or {}
+        if emotion_dist:
+            parts = ", ".join(
+                f"{e}: {c}"
+                for e, c in sorted(emotion_dist.items(), key=lambda x: -x[1])
+            )
+            _out(f"  Emotions:          {parts}")
+
+        top = report.get("top_unattributed") or []
+        if top:
+            _out("\nTop unattributed lines (assign a speaker to fix):")
+            for item in top:
+                text = item["text"]
+                _out(
+                    f"  ch{item['chapter_index']} line {item['line_index']}: {text!r}"
+                )
+                if item.get("context"):
+                    _out(f"    context: {item['context']!r}")
+
+        return 0
+
+    except USER_ERROR_TYPES as e:
+        _report_error(e, args)
+        return 1
 
 
 def cmd_diagnose(args: argparse.Namespace) -> int:
@@ -1893,7 +2127,32 @@ def cmd_diagnose(args: argparse.Namespace) -> int:
         )
         all_ok = False
 
+    # Optional: pymupdf (PDF sources)
+    try:
+        import fitz  # noqa: F401  (pymupdf)
+
+        checks.append(
+            {
+                "check": "dep.pymupdf",
+                "status": "ok",
+                "value": "installed",
+                "hint": None,
+            }
+        )
+    except ImportError:
+        checks.append(
+            {
+                "check": "dep.pymupdf",
+                "status": "info",
+                "value": "not installed",
+                "hint": "pip install pymupdf — required for PDF sources",
+            }
+        )
+
     # Optional: voice-soundboard
+    # Narrowed: a missing package is "info"/not installed, but an unexpected
+    # error (broken install, model load failure) should report the ACTUAL
+    # error rather than masquerading as "not installed".
     try:
         from audiobooker.casting.voice_registry import get_available_voices
 
@@ -1906,15 +2165,26 @@ def cmd_diagnose(args: argparse.Namespace) -> int:
                 "hint": None,
             }
         )
-    except (ImportError, Exception):
+    except ImportError:
         checks.append(
             {
                 "check": "voice_engine",
                 "status": "info",
-                "value": "voice-soundboard not installed",
-                "hint": "pip install voice-soundboard (required for rendering)",
+                "value": "not installed",
+                "hint": VOICE_SOUNDBOARD_INSTALL_HINT,
             }
         )
+    except Exception as e:
+        checks.append(
+            {
+                "check": "voice_engine",
+                "status": "fail",
+                "value": f"error: {e}",
+                "hint": "voice-soundboard is installed but failed to load. "
+                        "Run with --debug for the full traceback.",
+            }
+        )
+        all_ok = False
 
     # ffmpeg
     ffmpeg_path = shutil.which("ffmpeg")
@@ -1929,6 +2199,22 @@ def cmd_diagnose(args: argparse.Namespace) -> int:
                 "status": "info",
                 "value": "not found",
                 "hint": "Install ffmpeg for M4B assembly",
+            }
+        )
+
+    # ffprobe (used for duration/metadata probing during assembly)
+    ffprobe_path = shutil.which("ffprobe")
+    if ffprobe_path:
+        checks.append(
+            {"check": "ffprobe", "status": "ok", "value": ffprobe_path, "hint": None}
+        )
+    else:
+        checks.append(
+            {
+                "check": "ffprobe",
+                "status": "info",
+                "value": "not found",
+                "hint": "Install ffmpeg (ffprobe ships with it) for audio probing",
             }
         )
 
@@ -1999,18 +2285,20 @@ def cmd_batch(args) -> int:
         print("No supported source files found (EPUB/TXT/MD/PDF).")
         return 1
 
+    json_output = getattr(args, "json_output", False)
+
     # --dry-run: show what would be processed without rendering
     dry_run = getattr(args, "dry_run", False)
     if dry_run:
-        print(f"DRY RUN — {len(source_files)} file(s) would be processed:\n")
+        _out(f"DRY RUN — {len(source_files)} file(s) would be processed:\n")
         for i, source in enumerate(source_files, 1):
-            print(f"  [{i}/{len(source_files)}] {source.name} ({source.suffix})")
-        print(f"\nFormat: {getattr(args, 'output_format', None) or 'm4b'}")
-        print(f"Language: {getattr(args, 'lang', 'en')}")
-        print(f"Workers: {getattr(args, 'jobs', 1)}")
+            _out(f"  [{i}/{len(source_files)}] {source.name} ({source.suffix})")
+        _out(f"\nFormat: {getattr(args, 'output_format', None) or 'm4b'}")
+        _out(f"Language: {getattr(args, 'lang', 'en')}")
+        _out(f"Workers: {getattr(args, 'jobs', 1)}")
         return 0
 
-    print(f"Batch processing {len(source_files)} file(s)...\n")
+    _out(f"Batch processing {len(source_files)} file(s)...\n")
 
     results: list[dict] = []
     fmt = getattr(args, "output_format", None) or "m4b"
@@ -2020,7 +2308,7 @@ def cmd_batch(args) -> int:
 
     for i, source in enumerate(source_files, 1):
         book_start = _time.time()
-        print(f"[{i}/{len(source_files)}] {source.name}")
+        _out(f"[{i}/{len(source_files)}] {source.name}")
         book_result = {
             "file": str(source),
             "name": source.stem,
@@ -2047,7 +2335,7 @@ def cmd_batch(args) -> int:
                 book_result["error"] = f"Unsupported format: {suffix}"
                 book_result["duration_s"] = _time.time() - book_start
                 results.append(book_result)
-                print(f"  Skipped: unsupported format {suffix}")
+                _out(f"  Skipped: unsupported format {suffix}")
                 continue
 
             book_result["name"] = project.title
@@ -2067,7 +2355,7 @@ def cmd_batch(args) -> int:
                         if sr.top:
                             project.cast(sr.speaker, sr.top.voice_id)
                 except Exception as cast_err:
-                    print(f"  Warning: Auto-cast failed ({cast_err}), using fallback voices")
+                    _out(f"  Warning: Auto-cast failed ({cast_err}), using fallback voices")
 
             # Step 4: Save project
             project_path = source.with_suffix(".audiobooker")
@@ -2090,27 +2378,45 @@ def cmd_batch(args) -> int:
             book_result["output"] = str(path)
             book_result["duration_s"] = _time.time() - book_start
             elapsed = book_result["duration_s"]
-            print(f"  OK: {path} ({elapsed:.1f}s)")
+            _out(f"  OK: {path} ({elapsed:.1f}s)")
 
         except RenderError as e:
             book_result["status"] = "failed"
             book_result["error"] = str(e)[:200]
             book_result["duration_s"] = _time.time() - book_start
-            print(f"  FAILED: {e}")
+            _out(f"  FAILED: {e}")
 
         except Exception as e:
             book_result["status"] = "error"
             book_result["error"] = str(e)[:200]
             book_result["duration_s"] = _time.time() - book_start
-            print(f"  ERROR: {e}")
+            _out(f"  ERROR: {e}")
 
         results.append(book_result)
 
-    # Summary table
+    # Summary
     total_elapsed = _time.time() - batch_start
     success = sum(1 for r in results if r["status"] == "success")
     failed = sum(1 for r in results if r["status"] in ("failed", "error"))
     skipped = sum(1 for r in results if r["status"] == "skipped")
+
+    # --json: emit the results array (machine-readable) instead of the table.
+    if json_output:
+        import json as json_mod
+        print(json_mod.dumps(
+            {
+                "succeeded": success,
+                "failed": failed,
+                "skipped": skipped,
+                "total_elapsed_s": round(total_elapsed, 2),
+                "results": results,
+            },
+            indent=2,
+            ensure_ascii=False,
+        ))
+        if failed == 0:
+            return 0
+        return 3 if success > 0 else 1
 
     def _fmt_duration(s: float) -> str:
         if s >= 3600:
@@ -2119,19 +2425,19 @@ def cmd_batch(args) -> int:
             return f"{s / 60:.1f}m"
         return f"{s:.1f}s"
 
-    print(f"\n{'='*72}")
-    print(f"  BATCH SUMMARY — {success} succeeded, {failed} failed, {skipped} skipped")
-    print(f"  Total elapsed: {_fmt_duration(total_elapsed)}")
-    print(f"{'='*72}")
-    print(f"  {'#':<4} {'Status':<10} {'Duration':<10} {'Title':<28} {'Output'}")
-    print(f"  {'-'*4} {'-'*10} {'-'*10} {'-'*28} {'-'*20}")
+    _out(f"\n{'='*72}")
+    _out(f"  BATCH SUMMARY — {success} succeeded, {failed} failed, {skipped} skipped")
+    _out(f"  Total elapsed: {_fmt_duration(total_elapsed)}")
+    _out(f"{'='*72}")
+    _out(f"  {'#':<4} {'Status':<10} {'Duration':<10} {'Title':<28} {'Output'}")
+    _out(f"  {'-'*4} {'-'*10} {'-'*10} {'-'*28} {'-'*20}")
     for idx, r in enumerate(results, 1):
         status = r["status"].upper()
         dur = _fmt_duration(r["duration_s"])
         name = r["name"][:27]
         out = r["output"] if r["status"] == "success" else r.get("error", "")[:40]
-        print(f"  {idx:<4} {status:<10} {dur:<10} {name:<28} {out}")
-    print(f"{'='*72}")
+        _out(f"  {idx:<4} {status:<10} {dur:<10} {name:<28} {out}")
+    _out(f"{'='*72}")
 
     if failed == 0:
         return 0
@@ -2166,7 +2472,7 @@ def cmd_preview(args) -> int:
 
         # Compile if needed
         if not chapter.is_compiled:
-            print("Compiling chapter...")
+            _out("Compiling chapter...")
             project.compile()
             project.save()
             chapter = project.chapters[chapter_idx]
@@ -2200,9 +2506,9 @@ def cmd_preview(args) -> int:
 
         output_path = Path(args.output or "preview.wav")
 
-        print(f"Previewing chapter {chapter_idx}: {chapter.title}")
-        print(f"  Utterances: {len(preview_chapter.utterances)} of {len(chapter.utterances)}")
-        print(f"  Target duration: ~{target_seconds}s")
+        _out(f"Previewing chapter {chapter_idx}: {chapter.title}")
+        _out(f"  Utterances: {len(preview_chapter.utterances)} of {len(chapter.utterances)}")
+        _out(f"  Target duration: ~{target_seconds}s")
 
         path = render_chapter(
             preview_chapter,
@@ -2210,18 +2516,19 @@ def cmd_preview(args) -> int:
             output_path,
         )
 
-        print(f"\nPreview saved: {path}")
+        _out(f"\nPreview saved: {path}")
         return 0
 
     except RenderError as e:
-        print(f"Render failed: {e}")
+        _report_error(e, args)
+        return 1
+
+    except USER_ERROR_TYPES as e:
+        _report_error(e, args)
         return 1
 
     except Exception as e:
-        print(f"Error: {e}")
-        if getattr(args, "debug", False):
-            import traceback
-            traceback.print_exc()
+        _report_error(e, args)
         return 2
 
 
@@ -2236,6 +2543,10 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     # --- Configure logging levels (silent < normal < verbose < debug) ---
     import logging as _logging
+
+    # Set the module-level quiet flag so _out() suppresses normal output.
+    global _QUIET
+    _QUIET = getattr(args, "silent", False)
 
     if getattr(args, "silent", False):
         _logging.basicConfig(level=_logging.CRITICAL)
@@ -2269,6 +2580,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         "review-import": cmd_review_import,
         "status": cmd_status,
         "cache": cmd_cache,
+        "report": cmd_report,
         "diagnose": cmd_diagnose,
         "batch": cmd_batch,
         "preview": cmd_preview,
@@ -2283,10 +2595,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             return 1
         except Exception as e:
             # Unexpected runtime error — exit code 2
-            print(f"Error: {e}")
-            if getattr(args, "debug", False):
-                import traceback
-                traceback.print_exc()
+            _report_error(e, args)
             return 2
     else:
         print(f"Unknown command: {args.command}")

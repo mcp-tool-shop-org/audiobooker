@@ -53,8 +53,8 @@ pip install -e ".[pdf]"    # PDF input support (pymupdf)
 pip install -e ".[rich]"   # Rich progress bars
 pip install -e ".[nlp]"    # BookNLP speaker resolution
 
-# Install voice-soundboard (required for rendering)
-pip install -e ../voice-soundboard
+# Install the voice engine (required for rendering; published on PyPI)
+pip install -e ".[render]"
 
 # Run tests
 pytest tests/ -v
@@ -114,8 +114,8 @@ When testing with real books:
 
 1. Update version in `pyproject.toml`
 2. Update CHANGELOG.md
-3. Create git tag: `git tag v1.x.x`
-4. Push tag: `git push origin v1.x.x`
+3. Create git tag: `git tag v2.x.x`
+4. Push tag: `git push origin v2.x.x`
 5. GitHub Actions publishes to PyPI via trusted publishing (`.github/workflows/publish.yml`)
 6. Docker image is built and pushed to GHCR (`.github/workflows/docker.yml`)
 
@@ -129,6 +129,6 @@ Open an issue or start a discussion. We're here to help!
 
 ## Related Projects
 
-- [voice-soundboard](https://github.com/mcp-tool-shop-org/voice-soundboard) - AI-powered voice synthesis engine
+- [voice-soundboard](https://pypi.org/project/voice-soundboard/) - AI-powered voice synthesis engine (the TTS backend; `pip install voice-soundboard`)
 - [a11y-lint](https://github.com/mcp-tool-shop-org/a11y-lint) - Accessibility linter for CLI output
 - [a11y-assist](https://github.com/mcp-tool-shop-org/a11y-assist) - Low-vision-first CLI assistant

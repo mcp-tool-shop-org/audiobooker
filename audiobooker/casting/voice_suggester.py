@@ -112,9 +112,18 @@ _STYLE_PREFERENCE: dict[str, dict[str, float]] = {
 class VoiceSuggestion:
     """A single voice suggestion with reason."""
     voice_id: str
-    score: float            # 0.0 - 1.0
+    score: float            # 0.0 - 1.0 (normalized)
     reason: str             # Human-readable explanation
     tags: list[str] = field(default_factory=list)
+    low_confidence: bool = False  # True when the pick has no real matching signal
+
+
+# Reasons that carry no speaker-specific matching signal — a pick whose ONLY
+# reasons are these is a baseline guess, not a real match.
+_BASELINE_REASONS: frozenset[str] = frozenset({
+    "default suggestion",
+    "curated voice",
+})
 
 
 @dataclass
@@ -400,6 +409,15 @@ class VoiceSuggester:
                 reasons.append("curated voice")
 
             reason_str = "; ".join(reasons) if reasons else "default suggestion"
+
+            # Low-confidence flag: the pick has no real matching signal when
+            # every reason it carries is a baseline ("default suggestion" /
+            # "curated voice"). Derived from the RAW reasons, not the
+            # normalized score (which floors a no-signal pick at ~0.50 and
+            # makes a blind guess look like a real match).
+            effective_reasons = reasons or ["default suggestion"]
+            low_confidence = all(r in _BASELINE_REASONS for r in effective_reasons)
+
             scored.append((
                 score,
                 VoiceSuggestion(
@@ -407,6 +425,7 @@ class VoiceSuggester:
                     score=max(0.0, min(1.0, (score + 1.0) / 2.0)),  # normalize to 0-1
                     reason=reason_str,
                     tags=info.tags,
+                    low_confidence=low_confidence,
                 ),
             ))
 
@@ -566,6 +585,7 @@ def audition_voices(
             - style: str
             - sample_text: str (first utterance truncated to 100 chars)
             - score: float (0.0-1.0)
+            - low_confidence: bool (no real matching signal — a baseline guess)
     """
     suggester = VoiceSuggester(
         registry=registry,
@@ -599,6 +619,7 @@ def audition_voices(
             "style": info.style,
             "sample_text": sample_text,
             "score": suggestion.score,
+            "low_confidence": suggestion.low_confidence,
         })
 
     return audition_list

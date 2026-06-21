@@ -107,6 +107,10 @@ class AudiobookProject:
     progress: RenderProgress = field(default_factory=RenderProgress)
     output_path: Optional[Path] = None
 
+    # FT-CORE-022: Transient compile observability summary (not persisted).
+    # Populated by compile() with speaker-resolution / emotion-inference counts.
+    compile_summary: dict = field(default_factory=dict)
+
     # Internal
     _output_dir: Optional[Path] = None
 
@@ -179,6 +183,7 @@ class AudiobookProject:
             Initialized AudiobookProject
         """
         from audiobooker.parser.epub import parse_epub
+        from audiobooker.language.profile import get_profile
 
         path = Path(path)
         if not path.exists():
@@ -190,11 +195,50 @@ class AudiobookProject:
         # Extract config to pass EPUB parsing thresholds
         config = kwargs.pop("config", ProjectConfig())
 
-        metadata, chapters = parse_epub(
-            path,
-            min_chapter_words=config.min_chapter_words,
-            keep_titled_short_chapters=config.keep_titled_short_chapters,
-        )
+        # Thread the language profile into the parser so language-specific
+        # tokenization/heading rules apply. parse_epub accepts profile= once
+        # the parser exposes it; fall back gracefully if it doesn't yet.
+        profile = get_profile(config.language_code)
+        try:
+            metadata, chapters = parse_epub(
+                path,
+                min_chapter_words=config.min_chapter_words,
+                keep_titled_short_chapters=config.keep_titled_short_chapters,
+                profile=profile,
+            )
+        except TypeError:
+            metadata, chapters = parse_epub(
+                path,
+                min_chapter_words=config.min_chapter_words,
+                keep_titled_short_chapters=config.keep_titled_short_chapters,
+            )
+
+        # Reconcile the EPUB's declared language. If the EPUB declares a
+        # language and the caller did NOT explicitly request one (config still
+        # at the "en" default), adopt the EPUB's language so downstream
+        # compilation uses the right profile. If the user DID request a
+        # language that conflicts, keep theirs but warn.
+        declared = (metadata.get("language") or "").strip().lower()
+        if declared:
+            declared_code = declared.split("-")[0]  # "en-US" -> "en"
+            user_set_lang = config.language_code != "en"
+            try:
+                get_profile(declared_code)
+                known = True
+            except ValueError:
+                known = False
+            if known and not user_set_lang and declared_code != config.language_code:
+                logger.info(
+                    "Adopting EPUB declared language %r (was %r)",
+                    declared_code, config.language_code,
+                )
+                config.language_code = declared_code
+            elif known and user_set_lang and declared_code != config.language_code:
+                logger.warning(
+                    "EPUB declares language %r but --lang %r was requested; "
+                    "using %r.",
+                    declared_code, config.language_code, config.language_code,
+                )
 
         # Build BookMetadata from EPUB metadata (FT-CORE-014)
         book_metadata = kwargs.pop("metadata", BookMetadata())
@@ -243,6 +287,7 @@ class AudiobookProject:
             ValueError: If the PDF is scanned/image-only or corrupt.
         """
         from audiobooker.parser.pdf import parse_pdf
+        from audiobooker.language.profile import get_profile
 
         path = Path(path)
         if not path.exists():
@@ -253,10 +298,20 @@ class AudiobookProject:
 
         config = kwargs.pop("config", ProjectConfig())
 
-        metadata, chapters = parse_pdf(
-            path,
-            min_chapter_words=config.min_chapter_words,
-        )
+        # Thread the language profile into the parser. parse_pdf accepts
+        # profile= once the parser exposes it; fall back if it doesn't yet.
+        profile = get_profile(config.language_code)
+        try:
+            metadata, chapters = parse_pdf(
+                path,
+                min_chapter_words=config.min_chapter_words,
+                profile=profile,
+            )
+        except TypeError:
+            metadata, chapters = parse_pdf(
+                path,
+                min_chapter_words=config.min_chapter_words,
+            )
 
         project = cls(
             title=metadata.get("title", path.stem),
@@ -411,6 +466,28 @@ class AudiobookProject:
         return project
 
     @classmethod
+    def _migrate(cls, data: dict, from_version: int) -> dict:
+        """Migrate a loaded project dict from an older schema version.
+
+        Migration seam (FT-CORE): dispatched from load() when a project file's
+        schema_version is below SCHEMA_VERSION. Currently a no-op that just
+        records the upgrade; future schema bumps add their transforms here.
+
+        Args:
+            data: The raw project dict as loaded from JSON.
+            from_version: The schema version stored in the file.
+
+        Returns:
+            The (possibly transformed) project dict.
+        """
+        logger.info(
+            "Upgrading project from schema v%d to v%d", from_version, SCHEMA_VERSION
+        )
+        # No transforms needed yet — versions are backward-compatible.
+        data["schema_version"] = SCHEMA_VERSION
+        return data
+
+    @classmethod
     def load(cls, path: str | Path) -> "AudiobookProject":
         """
         Load project from JSON file.
@@ -454,6 +531,11 @@ class AudiobookProject:
                 f"Project file uses schema v{schema_version}, "
                 f"but this version only supports up to v{SCHEMA_VERSION}"
             )
+        # Upgrade older project files through the migration seam. Currently a
+        # no-op stub, but it establishes the dispatch point so future schema
+        # bumps have a single place to add upgrade steps.
+        if schema_version < SCHEMA_VERSION:
+            data = cls._migrate(data, from_version=schema_version)
 
         def _validated_path(raw: str | None) -> Path | None:
             """Validate a deserialized path is safe to use.
@@ -1222,11 +1304,30 @@ class AudiobookProject:
         if dry_run:
             return dry_run_result
 
+        # FT-CORE-022: Capture a small compile summary the CLI can surface
+        # (speaker resolution stats + emotions inferred + any NLP errors).
+        # Previously the stats returned by resolve()/apply_to_utterances()
+        # were discarded, so the user got no observability into what compile
+        # actually did.
+        self.compile_summary = {
+            "speakers_resolved": 0,
+            "low_confidence": 0,
+            "emotions_inferred": 0,
+            "emotions_near_miss": 0,
+            "nlp_errors": [],
+        }
+
         # Optional NLP speaker resolution (BookNLP)
         if self.config.booknlp_mode != "off":
             from audiobooker.nlp.speaker_resolver import SpeakerResolver
             resolver = SpeakerResolver(mode=self.config.booknlp_mode)
-            resolver.resolve(self.chapters, self.casting)
+            res_stats = resolver.resolve(self.chapters, self.casting)
+            self.compile_summary["speakers_resolved"] = res_stats.speakers_resolved
+            # Borderline fuzzy matches (accepted, but just over the threshold)
+            # are the attributions a human should spot-check. The resolver
+            # records them directly in stats.low_confidence.
+            self.compile_summary["low_confidence"] = len(res_stats.low_confidence)
+            self.compile_summary["nlp_errors"] = list(res_stats.nlp_errors)
 
         # Optional emotion inference
         if self.config.emotion_mode != "off":
@@ -1246,8 +1347,17 @@ class AudiobookProject:
                 threshold=self.config.emotion_confidence_threshold,
                 profile=inference_profile,
             )
+            emotions_inferred = 0
+            emotions_near_miss = 0
             for chapter in self.chapters:
-                inferencer.apply_to_utterances(chapter.utterances, chapter.raw_text)
+                emotions_inferred += inferencer.apply_to_utterances(
+                    chapter.utterances, chapter.raw_text
+                )
+                run_stats = getattr(inferencer, "last_run_stats", None)
+                if run_stats is not None:
+                    emotions_near_miss += run_stats.near_miss
+            self.compile_summary["emotions_inferred"] = emotions_inferred
+            self.compile_summary["emotions_near_miss"] = emotions_near_miss
 
         self.progress.status = "idle"
         self.modified_at = datetime.now().isoformat()

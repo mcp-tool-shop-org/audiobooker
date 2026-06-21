@@ -74,9 +74,8 @@ git clone https://github.com/mcp-tool-shop-org/audiobooker
 cd audiobooker
 pip install -e .
 
-# Required: voice-soundboard for TTS
-git clone https://github.com/mcp-tool-shop-org/voice-soundboard.git ../voice-soundboard
-pip install -e ../voice-soundboard
+# Required for rendering: voice-soundboard (TTS engine, installed from PyPI)
+pip install -e '.[render]'
 
 # Required: FFmpeg for audio assembly
 # Windows: winget install ffmpeg
@@ -250,7 +249,7 @@ Chapter Audio (cached) -> FFmpeg -> M4B with Chapters
 | Problem | Fix |
 |---------|-----|
 | **FFmpeg not found** | Install via your package manager: `winget install ffmpeg` (Windows), `brew install ffmpeg` (macOS), `apt install ffmpeg` (Linux). FFmpeg must be on PATH. |
-| **voice-soundboard not installed** | Clone and install the sibling repo: `git clone https://github.com/mcp-tool-shop-org/voice-soundboard.git ../voice-soundboard && pip install -e ../voice-soundboard`. Or install with `pip install -e '.[render]'`. |
+| **voice-soundboard not installed** | Install the TTS engine from PyPI: `pip install voice-soundboard` (or `pip install -e '.[render]'`). Run `audiobooker diagnose` to verify your environment. |
 | **BookNLP errors or slow startup** | BookNLP is optional. If you don't need NLP speaker resolution, set `--booknlp off` or leave it at `auto` (graceful fallback). Install with `pip install -e '.[nlp]'` only if needed. |
 
 See the [handbook](docs/handbook.md#15-troubleshooting) for full troubleshooting guidance.

@@ -142,11 +142,30 @@ _PROFILES: dict[str, LanguageProfile] = {}
 
 
 def register_profile(profile: LanguageProfile) -> None:
+    """Register a LanguageProfile so get_profile(code) can find it.
+
+    Adding a language
+    -----------------
+    1. Create ``audiobooker/language/<code>.py`` (e.g. ``it.py`` for Italian),
+       using ``en.py`` as a template.
+    2. Build a ``LanguageProfile(code="<code>", name="...", ...)`` with that
+       language's dialogue quotes, speaker verbs, emotion hints, name pattern,
+       and — for chapter detection — its ``chapter_patterns`` (the localized
+       heading words, e.g. "Capitolo" for Italian).
+    3. Call ``register_profile(<PROFILE>)`` at module bottom.
+    The discovery scan (``available_profiles``/``get_profile``) imports the new
+    module automatically; no central list needs editing.
+    """
     _PROFILES[profile.code] = profile
 
 
-def _discover_profiles() -> None:
-    """Scan audiobooker.language.* submodules to populate the registry."""
+def _discover_profiles(requested_code: Optional[str] = None) -> None:
+    """Scan audiobooker.language.* submodules to populate the registry.
+
+    If ``requested_code`` is given and the module of that exact name fails to
+    import, the failure is logged at WARNING (not DEBUG) so a user who asked for
+    a specific language sees why it was unavailable.
+    """
     try:
         import audiobooker.language as lang_pkg
         for importer, modname, ispkg in pkgutil.iter_modules(lang_pkg.__path__):
@@ -155,7 +174,13 @@ def _discover_profiles() -> None:
             try:
                 importlib.import_module(f"audiobooker.language.{modname}")
             except Exception:
-                logger.debug("Failed to import language module %r", modname, exc_info=True)
+                if modname == requested_code:
+                    logger.warning(
+                        "Language module %r failed to import; %r is unavailable.",
+                        modname, requested_code, exc_info=True,
+                    )
+                else:
+                    logger.debug("Failed to import language module %r", modname, exc_info=True)
     except Exception:
         logger.debug("Language profile discovery failed", exc_info=True)
 
@@ -170,7 +195,7 @@ def get_profile(code: str = "en") -> LanguageProfile:
             pass
     if code not in _PROFILES:
         # Fall back to full discovery scan
-        _discover_profiles()
+        _discover_profiles(requested_code=code)
     if code not in _PROFILES:
         raise ValueError(
             f"Unsupported language: {code!r}. "

@@ -5,9 +5,10 @@ COPY pyproject.toml README.md LICENSE ./
 COPY audiobooker/ audiobooker/
 RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
-# Install core + dev extras only. The [render] extra requires voice-soundboard
-# which is NOT on PyPI — mount it via a volume or install it separately at
-# runtime (e.g. from a local wheel or git clone).
+# Install core only (keeps the image slim). voice-soundboard (the TTS engine the
+# `render` command needs) is on PyPI but pulls heavy ML deps, so it is left out
+# by design — add it at runtime with `pip install voice-soundboard`, or mount a
+# wheel at /ext. Everything except `render` works in this image as-is.
 RUN pip install --no-cache-dir --upgrade pip && pip install --no-cache-dir '.[dev]'
 
 # Pin to same slim tag as builder.

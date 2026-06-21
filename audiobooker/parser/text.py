@@ -62,6 +62,10 @@ def detect_chapter_pattern(
         return None
     best_pattern = max(pattern_counts, key=pattern_counts.get)
     if pattern_counts[best_pattern] > 1:
+        logger.info(
+            "Detected chapter pattern (%d matches): %s",
+            pattern_counts[best_pattern], best_pattern,
+        )
         return re.compile(best_pattern, re.MULTILINE)
 
     return None
@@ -139,19 +143,35 @@ def split_into_chapters(
         pattern = detect_chapter_pattern(text, profile=profile)
 
     if pattern is None:
-        # No chapters detected - treat as single chapter
+        # No chapters detected - treat as single chapter. Warn so the user knows
+        # detection found nothing rather than silently assuming one chapter.
+        if delimiter_pattern:
+            logger.warning(
+                "Chapter delimiter %r matched no lines — treating the whole file "
+                "as a single chapter. Check the pattern against your headings.",
+                delimiter_pattern,
+            )
+        else:
+            logger.warning(
+                "No chapter headings detected — treating the whole file as a "
+                "single chapter. If it has chapters, check that the heading style "
+                "is recognized (e.g. 'Chapter 1', '# Title') or set --lang to the "
+                "file's language.",
+            )
         return [("Chapter 1", text)]
 
     chapters = []
     lines = text.split("\n")
     current_title = None
     current_content = []
+    matched_any = False
 
     for line in lines:
         # Check if this line is a chapter delimiter
         match = pattern.match(line.strip())
 
         if match:
+            matched_any = True
             # Save previous chapter if exists
             if current_title is not None or current_content:
                 title = current_title or "Untitled"
@@ -180,6 +200,15 @@ def split_into_chapters(
         content = "\n".join(current_content).strip()
         if content:
             chapters.append((title, content))
+
+    # An explicit delimiter that matched no line yields a single untitled
+    # chapter — warn so the user knows their pattern did nothing.
+    if delimiter_pattern and not matched_any:
+        logger.warning(
+            "Chapter delimiter %r matched no lines — treating the whole file "
+            "as a single chapter. Check the pattern against your headings.",
+            delimiter_pattern,
+        )
 
     return chapters
 
@@ -216,10 +245,23 @@ def parse_text(
             "process each part separately."
         )
 
-    # F-CORE-B-002: Catch encoding errors with helpful message
+    # F-CORE-B-002 + BOM sniff: honor a UTF-16 LE/BE or UTF-8 BOM before falling
+    # back to strict UTF-8. Notepad's "Unicode" save format is UTF-16 LE with a
+    # BOM, which strict utf-8 would reject; the same BOM handling the EPUB parser
+    # uses lets those files work.
+    raw = path.read_bytes()
+    if not raw:
+        raise ValueError(
+            f"'{path.name}' is empty — no text to convert."
+        )
     try:
-        with open(path, "r", encoding="utf-8") as f:
-            text = f.read()
+        if raw.startswith((b"\xff\xfe", b"\xfe\xff")):
+            # "utf-16" consumes the BOM and infers LE/BE from it.
+            text = raw.decode("utf-16")
+        elif raw.startswith(b"\xef\xbb\xbf"):
+            text = raw.decode("utf-8-sig")
+        else:
+            text = raw.decode("utf-8")
     except UnicodeDecodeError as e:
         raise ValueError(
             f"Cannot read '{path.name}' — the file is not valid UTF-8 (error at byte {e.start}). "
@@ -249,5 +291,14 @@ def parse_text(
             source_file=str(path),
         )
         chapters.append(chapter)
+
+    # Parse-observability summary (PARSER-C).
+    profile_code = profile.code if profile is not None else "en"
+    single_chapter = len(chapters) == 1 and chapters[0].title == "Chapter 1"
+    logger.info(
+        "Parsed text '%s': %d chapter(s), profile=%s, headings=%s",
+        path.name, len(chapters), profile_code,
+        "none (single-chapter fallback)" if single_chapter else "detected",
+    )
 
     return metadata, chapters

@@ -13,6 +13,7 @@ from html.parser import HTMLParser
 from io import StringIO
 
 from audiobooker.models import Chapter
+from audiobooker.language.profile import LanguageProfile
 
 logger = logging.getLogger("audiobooker.parser")
 
@@ -257,6 +258,8 @@ def parse_epub(
     path: Path,
     min_chapter_words: int = 50,
     keep_titled_short_chapters: bool = True,
+    *,
+    profile: Optional[LanguageProfile] = None,
 ) -> tuple[dict, list[Chapter]]:
     """
     Parse an EPUB file into chapters.
@@ -265,6 +268,9 @@ def parse_epub(
         path: Path to EPUB file
         min_chapter_words: Minimum word count for a section to be kept.
         keep_titled_short_chapters: Keep short sections that have a heading/title.
+        profile: Language profile (used for the parse summary; EPUB chapter
+            boundaries come from the book's own spine/document structure rather
+            than heading-pattern detection, so this does not change splitting).
 
     Returns:
         Tuple of (metadata dict, list of Chapters)
@@ -483,5 +489,23 @@ def parse_epub(
             f"(Current minimum: {min_chapter_words} words per chapter — "
             "try lowering min_chapter_words in ProjectConfig if the book has short sections.)"
         )
+
+    # Single-chapter EPUBs are usually genuine (one big document), but warn so
+    # the user can tell detection apart from a one-section file.
+    if len(chapters) == 1:
+        logger.warning(
+            "Only one chapter found in '%s' — the whole book is being treated as "
+            "a single chapter. If it should have multiple chapters, the EPUB may "
+            "store them in one document; check the file in Calibre.",
+            path.name,
+        )
+
+    # Parse-observability summary (PARSER-C). EPUB splits on document structure,
+    # so there is no heading 'pattern' to report.
+    profile_code = profile.code if profile is not None else "en"
+    logger.info(
+        "Parsed EPUB '%s': %d chapter(s), profile=%s, pattern=spine/structure",
+        path.name, len(chapters), profile_code,
+    )
 
     return metadata, chapters

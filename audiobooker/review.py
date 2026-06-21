@@ -28,6 +28,7 @@ Rules:
 - Change @Unknown to @ActualName to fix attribution
 """
 
+import logging
 import re
 from pathlib import Path
 from typing import Optional, TYPE_CHECKING
@@ -36,6 +37,8 @@ from audiobooker.models import Utterance, UtteranceType
 
 if TYPE_CHECKING:
     from audiobooker.project import AudiobookProject
+
+logger = logging.getLogger("audiobooker.review")
 
 
 # Pattern for speaker tag: @SpeakerName or @SpeakerName (emotion)
@@ -95,6 +98,9 @@ def export_for_review(project: "AudiobookProject", output_path: Optional[Path] =
     lines.append("#   - Delete entire speaker blocks to remove them")
     lines.append("#   - Add emotions: @narrator -> @narrator (somber)")
     lines.append("#   - Lines starting with # are comments (ignored)")
+    lines.append("#   - Do NOT edit the '=== Title === [id:...]' line — the id is")
+    lines.append("#     how import matches each block back to its chapter. Change")
+    lines.append("#     it and that chapter will be skipped on import.")
     lines.append("#")
     lines.append(f"# After editing, import with: audiobooker review-import {output_path.name}")
     lines.append("")
@@ -245,6 +251,11 @@ def import_reviewed(project: "AudiobookProject", review_path: Path) -> dict:
         "chapters_updated": 0,
         "utterances_imported": 0,
         "speakers_found": set(),
+        # REVIEW-C-005: blocks in the review file that match no existing chapter
+        # (by id or title) are silently dropped today. Count and name them so the
+        # CLI can warn the user instead of leaving them wondering where edits went.
+        "chapters_skipped": 0,
+        "skipped_titles": [],
     }
 
     for chapter_data in chapters_data:
@@ -265,6 +276,18 @@ def import_reviewed(project: "AudiobookProject", review_path: Path) -> dict:
                     break
 
         if matching_chapter is None:
+            # REVIEW-C-005: no chapter matched this block by id or title. Don't
+            # drop it silently — record it so the CLI can tell the user which
+            # edits were not applied (usually a renamed title or a mangled id).
+            skipped_title = chapter_data.get("title") or "(untitled)"
+            stats["chapters_skipped"] += 1
+            stats["skipped_titles"].append(skipped_title)
+            logger.warning(
+                "Review block %r matched no existing chapter (by id or title) — "
+                "skipped. Restore the original '=== Title === [id:...]' line to "
+                "re-link it.",
+                skipped_title,
+            )
             continue
 
         # REVIEW-A-001: If the block count is unchanged, the user only edited

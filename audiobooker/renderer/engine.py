@@ -27,6 +27,18 @@ if TYPE_CHECKING:
     from audiobooker.models import Chapter, CastingTable, Utterance
 
 
+# Canonical install instruction for the voice-soundboard TTS dependency.
+# Shown whenever rendering is attempted without it installed.
+VOICE_SOUNDBOARD_INSTALL_HINT = (
+    "Install with: pip install voice-soundboard  "
+    "(or: pip install audiobooker-ai[render])"
+)
+
+# Output formats that require ffmpeg for assembly. 'wav' chapters are written
+# directly by the TTS engine and need no ffmpeg step.
+_FFMPEG_FORMATS = {"m4b", "m4a", "mp3"}
+
+
 # ---------------------------------------------------------------------------
 # FT-RENDER-015: SSML preprocessing
 # ---------------------------------------------------------------------------
@@ -224,8 +236,7 @@ class _VoiceSoundboardEngine:
         except ImportError:
             raise ImportError(
                 "voice-soundboard is required for rendering. "
-                "Ensure it's installed and accessible:\n"
-                "  pip install -e F:/AI/voice-soundboard"
+                f"{VOICE_SOUNDBOARD_INSTALL_HINT}"
             )
         self._engine = DialogueEngine()
 
@@ -573,6 +584,25 @@ def render_project(
         else:
             assembler = _m4b_assembler
 
+    # ENGINE-C-001: ffmpeg preflight. When the output format needs ffmpeg for
+    # assembly, fail fast BEFORE rendering the whole book — otherwise the user
+    # waits through a full render only to hit a missing-ffmpeg wall at assembly.
+    # Skipped when a custom assembler is injected (tests / non-ffmpeg backends).
+    if assembler in (_m4b_assembler, _mp3_assembler) and fmt in _FFMPEG_FORMATS:
+        from audiobooker.renderer.output import check_ffmpeg
+        if not check_ffmpeg():
+            raise RenderError(
+                "ffmpeg is required to assemble the audiobook but was not found "
+                f"on PATH (output format: {fmt}).",
+                code="DEP_FFMPEG_MISSING",
+                retryable=True,
+                hint=(
+                    "Install ffmpeg (https://ffmpeg.org/download.html), then "
+                    "re-run audiobooker render — already-rendered chapters are "
+                    "cached and will be skipped."
+                ),
+            )
+
     output_path = Path(output_path)
 
     # Determine cache root
@@ -676,8 +706,13 @@ def render_project(
             tracker.start_chapter(i, chapter.title, word_count=chapter.word_count)
 
             if progress_callback:
+                # ENGINE-C-004: use the monotonic completed count for the bar
+                # position (not i+1, which is non-monotonic under as_completed),
+                # while keeping the chapter title in the status string.
+                with manifest_lock:
+                    done_count = tracker.completed_count + tracker.failed_count
                 status = tracker.format_chapter_status(i, f"Rendering: {chapter.title}")
-                progress_callback(i + 1, len(project.chapters), status)
+                progress_callback(done_count, len(project.chapters), status)
 
             target_path = get_chapter_wav_path(cache_root, i)
             tmp_path = target_path.with_suffix(".wav.tmp")
@@ -717,10 +752,19 @@ def render_project(
                 # FT-RENDER-001 / ENGINE-A-005: counter increment must be under
                 # the lock — parallel workers otherwise lose increments via the
                 # read-modify-write race on summary.rendered.
+                # ENGINE-C-004: also read a monotonic completed count under the
+                # lock. Under as_completed(), chapters finish out of order, so
+                # using each chapter's own index (i+1) makes the progress bar
+                # jump backwards. completed_count+failed_count only ever rises.
                 with manifest_lock:
                     manifest.set_entry(entry)
                     save_manifest(manifest, manifest_path)
                     summary.rendered += 1
+                    done_count = tracker.completed_count + tracker.failed_count
+
+                if progress_callback:
+                    status = tracker.format_chapter_status(i, f"Rendered: {chapter.title}")
+                    progress_callback(done_count, len(project.chapters), status)
 
                 logger.info(
                     f"RENDER_OK: chapter={i} title={chapter.title!r} "
@@ -819,11 +863,31 @@ def render_project(
             assembler_kwargs["normalize"] = normalize
 
         try:
-            assembly = assembler(**assembler_kwargs)
-        except TypeError:
-            # Assembler doesn't accept cover_art — call without it
-            assembler_kwargs.pop("cover_art", None)
-            assembly = assembler(**assembler_kwargs)
+            try:
+                assembly = assembler(**assembler_kwargs)
+            except TypeError:
+                # Assembler doesn't accept cover_art — call without it
+                assembler_kwargs.pop("cover_art", None)
+                assembly = assembler(**assembler_kwargs)
+        except RuntimeError as assembly_err:
+            # ENGINE-C-001: assembly can fail on missing ffmpeg AFTER a full,
+            # successful render. Wrap it in RenderError so the recoverable path
+            # (chapters are cached on disk) is surfaced instead of a raw
+            # RuntimeError — re-running skips the cached WAVs.
+            if "ffmpeg" in str(assembly_err).lower():
+                raise RenderError(
+                    "Chapters rendered successfully, but assembling the "
+                    f"audiobook failed: {assembly_err}",
+                    summary=summary,
+                    code="DEP_FFMPEG_MISSING",
+                    retryable=True,
+                    hint=(
+                        "Install ffmpeg (https://ffmpeg.org/download.html), then "
+                        "re-run audiobooker render — your rendered chapters are "
+                        "cached and will be skipped, so only assembly re-runs."
+                    ),
+                ) from assembly_err
+            raise
 
         project.output_path = assembly.output_path
         summary.output_path = assembly.output_path
@@ -1107,7 +1171,10 @@ def dry_run_render(
     # Rough disk estimate: ~1 MB per minute of audio at 24kHz mono WAV
     est_disk_mb = est_minutes * 1.0
 
-    print(f"Estimated render time: {est_str} ({total_words_render:,} words to render)")
+    # ENGINE-C-003: words/wpm yields playback length, not render wall-time —
+    # label it as the resulting audiobook length so users aren't misled into
+    # expecting the render to take this long.
+    print(f"Audiobook length: {est_str} ({total_words_render:,} words to render)")
     print(f"Estimated disk usage:  ~{est_disk_mb:.0f} MB (chapter WAVs)")
     print(f"{'='*60}")
 

@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional, TYPE_CHECKING
 
 from audiobooker.language.profile import LanguageProfile, get_profile
@@ -35,6 +35,23 @@ class EmotionResult:
     label: str          # e.g., "angry", "sad", "happy", "neutral"
     confidence: float   # 0.0 - 1.0
     source: str         # "verb", "lexicon", "punctuation", "none"
+
+
+@dataclass
+class EmotionRunStats:
+    """
+    Stats from one apply_to_utterances() pass.
+
+    near_miss counts utterances whose best-inferred emotion fell just below
+    the confidence threshold (0 < confidence < threshold) — a real candidate
+    that infer() computed but conservatively left as neutral. The CLI can use
+    this to hint that lowering --emotion-threshold may tag more lines.
+    """
+    applied: int = 0
+    examined: int = 0
+    near_miss: int = 0
+    # Distribution of near-miss labels, e.g. {"sad": 3, "angry": 1}
+    near_miss_labels: dict[str, int] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -140,6 +157,10 @@ class EmotionInferencer:
         self.mode = mode
         self.threshold = threshold
         self.profile = profile or get_profile("en")
+        # Stats from the most recent apply_to_utterances() pass. project.py /
+        # the CLI can read this after a run to surface near-miss hints without
+        # changing the int return contract of apply_to_utterances().
+        self.last_run_stats: EmotionRunStats = EmotionRunStats()
 
         # F-CORE-B-011: Log when lexicon won't match non-English text
         lang = getattr(self.profile, "code", "en")
@@ -250,14 +271,19 @@ class EmotionInferencer:
             chapter_text: Full chapter text for context.
 
         Returns:
-            Number of emotions applied.
+            Number of emotions applied (int). For richer stats — including the
+            count of near-miss utterances that fell just below the threshold —
+            read ``self.last_run_stats`` after the call. The bare-int return is
+            preserved for backward compatibility.
         """
-        applied = 0
+        stats = EmotionRunStats()
         context_window = 200  # chars around the utterance position
 
         for utt in utterances:
             if utt.emotion:
                 continue  # Already has emotion — don't override
+
+            stats.examined += 1
 
             # Scope context to a narrow window around the utterance
             # to avoid false-positive emotion tagging from distant text.
@@ -272,6 +298,39 @@ class EmotionInferencer:
             result = self.infer(utt.text, context=context)
             if result.label != "neutral" and result.confidence >= self.threshold:
                 utt.emotion = result.label
-                applied += 1
+                stats.applied += 1
+            elif 0.0 < result.confidence < self.threshold and result.source != "none":
+                # Near miss: infer() computed a real candidate but
+                # conservatively returned neutral because it was below
+                # threshold. infer() reports the candidate's source/confidence
+                # while relabelling to "neutral", so recover the candidate
+                # label from the original source.
+                near_label = self._near_miss_label(utt.text, context)
+                stats.near_miss += 1
+                if near_label:
+                    stats.near_miss_labels[near_label] = (
+                        stats.near_miss_labels.get(near_label, 0) + 1
+                    )
 
-        return applied
+        self.last_run_stats = stats
+        return stats.applied
+
+    def _near_miss_label(self, utterance_text: str, context: str) -> Optional[str]:
+        """
+        Recover the candidate emotion label for a near-miss utterance.
+
+        infer() relabels below-threshold candidates to "neutral" but keeps the
+        source/confidence, so the original label is recomputed here for the
+        near-miss distribution. Returns None if no candidate label is found.
+        """
+        combined = f"{context} {utterance_text}".strip()
+        verb_result = self._check_verb_hints(combined)
+        if verb_result and verb_result.confidence > 0:
+            return verb_result.label
+        lex_result = self._check_lexicon(combined)
+        if lex_result and lex_result.confidence > 0:
+            return lex_result.label
+        punct_result = _punctuation_emotion(utterance_text)
+        if punct_result and punct_result.confidence > 0:
+            return punct_result.label
+        return None

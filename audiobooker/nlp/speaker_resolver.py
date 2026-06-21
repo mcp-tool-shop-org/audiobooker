@@ -23,6 +23,15 @@ logger = logging.getLogger("audiobooker.nlp.resolver")
 
 
 @dataclass
+class LowConfidenceMatch:
+    """A resolution that landed near the fuzzy threshold — worth a human glance."""
+    speaker: str
+    confidence: float
+    chapter_index: int
+    line_index: int
+
+
+@dataclass
 class ResolutionStats:
     """Statistics from a speaker resolution pass."""
     chapters_processed: int = 0
@@ -32,6 +41,10 @@ class ResolutionStats:
     nlp_used: bool = False
     nlp_errors: list[str] = field(default_factory=list)  # F-CORE-B-017: accumulate errors
     match_confidence: list[float] = field(default_factory=list)  # FT-CORE-022: per-resolution confidence
+    # Resolutions whose fuzzy-match confidence landed below LOW_CONFIDENCE_BAND
+    # (i.e. just over the FUZZY_THRESHOLD). The CLI can surface these so the
+    # user can spot-check borderline attributions.
+    low_confidence: list[LowConfidenceMatch] = field(default_factory=list)
 
 
 class SpeakerResolver:
@@ -137,6 +150,15 @@ class SpeakerResolver:
                     utterance.speaker = improved
                     stats.speakers_resolved += 1
                     stats.match_confidence.append(confidence)
+                    if confidence < self.LOW_CONFIDENCE_BAND:
+                        stats.low_confidence.append(
+                            LowConfidenceMatch(
+                                speaker=improved,
+                                confidence=confidence,
+                                chapter_index=chapter.index,
+                                line_index=utterance.line_index,
+                            )
+                        )
                     logger.debug(
                         f"Resolved unknown → {improved!r} (confidence={confidence:.2f}) "
                         f"in ch{chapter.index} line {utterance.line_index}"
@@ -152,6 +174,10 @@ class SpeakerResolver:
 
     # Minimum fuzzy match ratio for FT-CORE-009
     FUZZY_THRESHOLD: float = 0.85
+
+    # Resolutions accepted (>= FUZZY_THRESHOLD) but below this band are flagged
+    # as low-confidence so the CLI can surface them for a human spot-check.
+    LOW_CONFIDENCE_BAND: float = 0.92
 
     @staticmethod
     def _normalize_for_match(text: str) -> str:
