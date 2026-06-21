@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <img src="assets/audiobooker-logo.jpg" alt="Audiobooker" width="400" />
+  <img src="assets/audiobooker-logo.png" alt="Audiobooker" width="500" />
 </p>
 
 <h1 align="center">Audiobooker</h1>
