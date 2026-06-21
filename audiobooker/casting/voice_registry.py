@@ -46,16 +46,37 @@ class VoiceNotFoundError(Exception):
         }
 
 
-def get_available_voices() -> set[str]:
+def get_available_voices(engine: object | None = None) -> set[str]:
     """
-    Query voice-soundboard for available voice IDs.
+    Query the active TTS engine (or voice-soundboard) for available voice IDs.
+
+    FT-ENGINE-001: when ``engine`` exposes a ``list_voices()`` method, its
+    result is used (a pluggable engine advertises its own catalog). Otherwise
+    — including the default ``engine=None`` path and engines that don't
+    implement ``list_voices()`` — this falls back to importing the
+    voice-soundboard catalog, exactly as before.
+
+    Args:
+        engine: Optional TTS engine. When it has a ``list_voices()`` method,
+            that method supplies the voice IDs. Defaults to None, which
+            preserves the historical voice-soundboard import behavior.
 
     Returns:
         Set of available voice ID strings.
 
     Raises:
-        ImportError: If voice-soundboard is not installed.
+        ImportError: If no engine is given (or the engine lacks ``list_voices``)
+            and voice-soundboard is not installed.
     """
+    # FT-ENGINE-001: prefer an engine that advertises its own voices. Callers
+    # must tolerate the method's absence, so probe with hasattr() rather than
+    # assuming it exists on the Protocol.
+    if engine is not None and hasattr(engine, "list_voices"):
+        voices = engine.list_voices()
+        # Engines return a list (voice_suggester protocol); normalize to a set
+        # so downstream set algebra (validate_voices) keeps working unchanged.
+        return set(voices)
+
     try:
         from voice_soundboard.config import VOICES
         return set(VOICES.keys())

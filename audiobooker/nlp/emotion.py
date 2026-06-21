@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional, TYPE_CHECKING
 
 from audiobooker.language.profile import LanguageProfile, get_profile
@@ -35,6 +35,23 @@ class EmotionResult:
     label: str          # e.g., "angry", "sad", "happy", "neutral"
     confidence: float   # 0.0 - 1.0
     source: str         # "verb", "lexicon", "punctuation", "none"
+
+
+@dataclass
+class EmotionRunStats:
+    """
+    Stats from one apply_to_utterances() pass.
+
+    near_miss counts utterances whose best-inferred emotion fell just below
+    the confidence threshold (0 < confidence < threshold) — a real candidate
+    that infer() computed but conservatively left as neutral. The CLI can use
+    this to hint that lowering --emotion-threshold may tag more lines.
+    """
+    applied: int = 0
+    examined: int = 0
+    near_miss: int = 0
+    # Distribution of near-miss labels, e.g. {"sad": 3, "angry": 1}
+    near_miss_labels: dict[str, int] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -90,6 +107,106 @@ def _get_lexicon() -> dict[str, list[tuple[re.Pattern, float]]]:
 
 
 # ---------------------------------------------------------------------------
+# FT-CAST-026: Emotion preset packs
+# ---------------------------------------------------------------------------
+#
+# A preset pack parametrizes the inference WITHOUT changing the default
+# behavior: the 'neutral' pack uses the historical 0.75 threshold and the full
+# label set, so a run with preset='neutral' is byte-for-byte identical to the
+# pre-pack engine. Other packs tune the threshold and optionally restrict the
+# set of labels that may be applied (labels outside `allowed_labels` are
+# suppressed back to neutral).
+#
+# `allowed_labels=None` means "all labels" (no restriction).
+
+@dataclass
+class EmotionPreset:
+    """A named emotion inference profile (FT-CAST-026)."""
+    name: str
+    threshold: float
+    # When None, every inferred label is allowed. When a frozenset, only labels
+    # in the set are applied; anything else is suppressed to neutral.
+    allowed_labels: Optional[frozenset[str]] = None
+
+
+# All emotion labels the lexicon + punctuation + verb hints can produce.
+_ALL_EMOTION_LABELS: frozenset[str] = frozenset({
+    "angry", "sad", "happy", "fearful", "whisper", "excited",
+})
+
+_EMOTION_PRESETS: dict[str, EmotionPreset] = {
+    # Default — identical to historical behavior (0.75 threshold, all labels).
+    "neutral": EmotionPreset(name="neutral", threshold=0.75, allowed_labels=None),
+    # Literary fiction — more conservative; only the calmer, high-precision
+    # labels apply so prose narration is not over-emoted.
+    "literary": EmotionPreset(
+        name="literary",
+        threshold=0.85,
+        allowed_labels=frozenset({"sad", "happy", "whisper", "fearful"}),
+    ),
+    # Dramatic — lower threshold so more lines pick up emotion; full label set.
+    "dramatic": EmotionPreset(
+        name="dramatic",
+        threshold=0.65,
+        allowed_labels=None,
+    ),
+    # Children's books — bright, simple palette; excited/happy/sad lean in,
+    # darker labels are dropped.
+    "children": EmotionPreset(
+        name="children",
+        threshold=0.70,
+        allowed_labels=frozenset({"happy", "excited", "sad"}),
+    ),
+}
+
+# Valid preset names (mirrors ProjectConfig.emotion_preset validation).
+VALID_EMOTION_PRESETS: tuple[str, ...] = tuple(_EMOTION_PRESETS.keys())
+
+
+def get_emotion_preset(name: str) -> EmotionPreset:
+    """
+    Resolve a named emotion preset, defaulting to 'neutral' on unknown names.
+
+    Unknown names fall back to 'neutral' (current behavior) with a warning
+    rather than raising — preset validation lives on ProjectConfig.
+    """
+    preset = _EMOTION_PRESETS.get(name)
+    if preset is None:
+        logger.warning(
+            "Unknown emotion preset %r — falling back to 'neutral'. "
+            "Valid presets: %s",
+            name, ", ".join(VALID_EMOTION_PRESETS),
+        )
+        return _EMOTION_PRESETS["neutral"]
+    return preset
+
+
+def _band_intensity(confidence: float) -> float:
+    """
+    Band a raw confidence (already 0-1) into the utterance intensity range.
+
+    Confidence is already 0.0-1.0 from EmotionResult, so banding is a clamp;
+    kept as a named helper so the contract ("intensity from graded confidence,
+    banded to 0-1") is explicit and easy to tune.
+    """
+    return max(0.0, min(1.0, float(confidence)))
+
+
+def _set_intensity(utt: "Utterance", value: float) -> None:
+    """
+    Set ``utt.intensity`` if the model supports the field.
+
+    models.py is owned by integration and gains ``intensity`` in the same v2.1
+    drop; until then this guards against AttributeError on slotted/legacy
+    Utterances. With the field present it is a plain assignment.
+    """
+    try:
+        setattr(utt, "intensity", value)
+    except (AttributeError, TypeError):  # pragma: no cover - slotted dataclass guard
+        logger.debug("Utterance has no settable 'intensity' field; skipping")
+
+
+# ---------------------------------------------------------------------------
 # Punctuation cues
 # ---------------------------------------------------------------------------
 
@@ -127,19 +244,39 @@ class EmotionInferencer:
         mode: "off" | "rule" | "auto" (default "rule").
         threshold: Minimum confidence to apply (default 0.75).
         profile: Optional LanguageProfile for verb-based hints.
+        preset: FT-CAST-026 emotion preset name. 'neutral' (default) reproduces
+            the historical behavior exactly. Other packs ('literary',
+            'dramatic', 'children') tune the threshold and restrict the label
+            set. When a preset is given AND ``threshold`` is left at its default
+            (0.75), the preset's threshold is used; an explicitly-passed
+            non-default threshold always wins so callers keep full control.
     """
+
+    _DEFAULT_THRESHOLD = 0.75
 
     def __init__(
         self,
         mode: str = "rule",
         threshold: float = 0.75,
         profile: Optional[LanguageProfile] = None,
+        preset: str = "neutral",
     ) -> None:
         if mode not in ("off", "rule", "auto"):
             raise ValueError(f"Invalid emotion_mode: {mode!r}. Must be off|rule|auto.")
         self.mode = mode
-        self.threshold = threshold
+        self.preset = get_emotion_preset(preset)
+        # An explicit non-default threshold always wins; otherwise the preset's
+        # threshold drives inference. 'neutral' carries 0.75, so this keeps the
+        # default path byte-identical to the historical engine.
+        if threshold != self._DEFAULT_THRESHOLD:
+            self.threshold = threshold
+        else:
+            self.threshold = self.preset.threshold
         self.profile = profile or get_profile("en")
+        # Stats from the most recent apply_to_utterances() pass. project.py /
+        # the CLI can read this after a run to surface near-miss hints without
+        # changing the int return contract of apply_to_utterances().
+        self.last_run_stats: EmotionRunStats = EmotionRunStats()
 
         # F-CORE-B-011: Log when lexicon won't match non-English text
         lang = getattr(self.profile, "code", "en")
@@ -204,6 +341,11 @@ class EmotionInferencer:
 
         return EmotionResult(label="neutral", confidence=0.0, source="none")
 
+    def _label_allowed(self, label: str) -> bool:
+        """FT-CAST-026: True when the active preset permits this emotion label."""
+        allowed = self.preset.allowed_labels
+        return allowed is None or label in allowed
+
     def _check_verb_hints(self, text: str) -> Optional[EmotionResult]:
         """Check if text contains emotion-hinting verbs from the profile."""
         pattern = self.profile.build_emotion_verb_pattern()
@@ -250,14 +392,19 @@ class EmotionInferencer:
             chapter_text: Full chapter text for context.
 
         Returns:
-            Number of emotions applied.
+            Number of emotions applied (int). For richer stats — including the
+            count of near-miss utterances that fell just below the threshold —
+            read ``self.last_run_stats`` after the call. The bare-int return is
+            preserved for backward compatibility.
         """
-        applied = 0
+        stats = EmotionRunStats()
         context_window = 200  # chars around the utterance position
 
         for utt in utterances:
             if utt.emotion:
                 continue  # Already has emotion — don't override
+
+            stats.examined += 1
 
             # Scope context to a narrow window around the utterance
             # to avoid false-positive emotion tagging from distant text.
@@ -270,8 +417,51 @@ class EmotionInferencer:
                     context = chapter_text[start:end]
 
             result = self.infer(utt.text, context=context)
-            if result.label != "neutral" and result.confidence >= self.threshold:
+            if (
+                result.label != "neutral"
+                and result.confidence >= self.threshold
+                and self._label_allowed(result.label)
+            ):
                 utt.emotion = result.label
-                applied += 1
+                # FT-CAST-023: record the graded confidence as the utterance
+                # intensity (banded to 0-1). setattr is used so this is a no-op
+                # on a legacy Utterance that has no `intensity` field yet, and a
+                # real assignment once models.py grows the field — keeping the
+                # two parallel changes decoupled.
+                _set_intensity(utt, _band_intensity(result.confidence))
+                stats.applied += 1
+            elif 0.0 < result.confidence < self.threshold and result.source != "none":
+                # Near miss: infer() computed a real candidate but
+                # conservatively returned neutral because it was below
+                # threshold. infer() reports the candidate's source/confidence
+                # while relabelling to "neutral", so recover the candidate
+                # label from the original source.
+                near_label = self._near_miss_label(utt.text, context)
+                stats.near_miss += 1
+                if near_label:
+                    stats.near_miss_labels[near_label] = (
+                        stats.near_miss_labels.get(near_label, 0) + 1
+                    )
 
-        return applied
+        self.last_run_stats = stats
+        return stats.applied
+
+    def _near_miss_label(self, utterance_text: str, context: str) -> Optional[str]:
+        """
+        Recover the candidate emotion label for a near-miss utterance.
+
+        infer() relabels below-threshold candidates to "neutral" but keeps the
+        source/confidence, so the original label is recomputed here for the
+        near-miss distribution. Returns None if no candidate label is found.
+        """
+        combined = f"{context} {utterance_text}".strip()
+        verb_result = self._check_verb_hints(combined)
+        if verb_result and verb_result.confidence > 0:
+            return verb_result.label
+        lex_result = self._check_lexicon(combined)
+        if lex_result and lex_result.confidence > 0:
+            return lex_result.label
+        punct_result = _punctuation_emotion(utterance_text)
+        if punct_result and punct_result.confidence > 0:
+            return punct_result.label
+        return None

@@ -136,6 +136,69 @@ def is_valid_speaker_name(
 
 
 # ---------------------------------------------------------------------------
+# FT-CAST-023: Emotion + intensity script tag (de)serialization
+# ---------------------------------------------------------------------------
+
+# Matches the leading emotion tag in a script line: '(angry)' or '(angry:0.7)'.
+# The intensity group is optional so legacy '(emotion)' tags parse unchanged.
+_EMOTION_SCRIPT_TAG_RE = re.compile(
+    r'^\(([^():]+?)(?::([0-9]*\.?[0-9]+))?\)\s*'
+)
+
+
+def _format_emotion_tag(
+    emotion: Optional[str],
+    intensity: Optional[float] = None,
+) -> str:
+    """
+    Serialize an emotion (+ optional intensity) into the script tag prefix.
+
+    FT-CAST-023. Examples:
+        ("angry", None) -> "(angry) "      (byte-identical to legacy format)
+        ("angry", 0.7)  -> "(angry:0.7) "
+
+    Returns an empty string when there is no emotion.
+    """
+    if not emotion:
+        return ""
+    if intensity is None:
+        return f"({emotion}) "
+    return f"({emotion}:{_fmt_intensity(intensity)}) "
+
+
+def _fmt_intensity(intensity: float) -> str:
+    """Format an intensity for the script tag: one decimal, trailing-zero trimmed."""
+    text = f"{float(intensity):.2f}".rstrip("0").rstrip(".")
+    return text or "0"
+
+
+def parse_emotion_tag(text: str) -> tuple[Optional[str], Optional[float], str]:
+    """
+    Parse a leading '(emotion)' or '(emotion:intensity)' tag from a script line.
+
+    FT-CAST-023 — the inverse of :func:`_format_emotion_tag`.
+
+    Args:
+        text: A script-line body possibly starting with an emotion tag.
+
+    Returns:
+        (emotion, intensity, remainder). emotion is None when no tag is present;
+        intensity is None for a bare '(emotion)' tag.
+    """
+    match = _EMOTION_SCRIPT_TAG_RE.match(text)
+    if not match:
+        return None, None, text
+    emotion = match.group(1).strip()
+    intensity: Optional[float] = None
+    if match.group(2) is not None:
+        try:
+            intensity = max(0.0, min(1.0, float(match.group(2))))
+        except ValueError:
+            intensity = None
+    return (emotion or None), intensity, text[match.end():]
+
+
+# ---------------------------------------------------------------------------
 # Inline override parsing
 # ---------------------------------------------------------------------------
 
@@ -366,6 +429,13 @@ _EMDASH_PATTERN = re.compile(r'\u2014["\u201d]\s*')
 _PAUSE_TAG_RE = re.compile(r'\[pause:(\d+(?:\.\d+)?)(s|ms)\]')
 _SFX_TAG_RE = re.compile(r'\[sfx:([^\]]+)\]')
 
+# FT-CAST-024: Scene emotion span tags — [scene:<emotion>] ... [/scene].
+# Mirrors the _PAUSE_TAG_RE / _SFX_TAG_RE convention. The emotion inside the
+# span is applied only as a FALLBACK (precedence: explicit/inline > scene >
+# chapter mood); it never overrides a user-set or attribution-derived emotion.
+_SCENE_OPEN_TAG_RE = re.compile(r'\[scene:([^\]]+)\]')
+_SCENE_CLOSE_TAG_RE = re.compile(r'\[/scene\]')
+
 
 def compile_chapter(
     chapter: Chapter,
@@ -388,9 +458,14 @@ def compile_chapter(
     Character offsets (start_pos, end_pos) are recorded on each Utterance
     for downstream context windowing and review matching.
 
-    This function does NOT mutate the CastingTable (safe for parallel use).
-    Callers who need per-character line counts should tally from the
-    returned utterances.
+    Side effect (CAST-DIAL-A-003): for backward compatibility this updates
+    ``casting.characters[key].line_count`` for any cast speaker, setting it to
+    this chapter's line count for that speaker. Because the mutation happens
+    on whatever CastingTable object is passed in, it is observable in the
+    SEQUENTIAL compile path but LOST in the parallel path (where each worker
+    receives a pickled copy of the table). Callers who need authoritative,
+    cross-chapter line counts should NOT rely on this side effect and should
+    instead tally from the returned utterances.
 
     Args:
         chapter: Chapter to compile
@@ -418,6 +493,11 @@ def compile_chapter(
     # Stack of last 2 attributed speakers for alternation inference
     speaker_stack: list[str] = []
     consecutive_narration_paragraphs = 0
+
+    # FT-CAST-024: Active scene emotion. Set by a [scene:<emotion>] open tag and
+    # cleared by [/scene]; persists across paragraphs within the span. Applied
+    # only as a FALLBACK (precedence: explicit/inline > scene > chapter mood).
+    active_scene_emotion: Optional[str] = None
 
     def _reset_turn_stack() -> None:
         nonlocal speaker_stack, consecutive_narration_paragraphs
@@ -456,6 +536,11 @@ def compile_chapter(
             para_start = para_offset
         para_offset = para_start + len(para)
 
+        # CAST-DIAL-A-002: para_start points at the UN-stripped paragraph.
+        # Capture the leading whitespace that strip() removes so absolute
+        # offsets line up with the original raw_text (preserving the invariant
+        # raw_text[start_pos:end_pos] == utterance text for indented paragraphs).
+        para_lead = len(para) - len(para.lstrip())
         para = para.strip()
         if not para:
             continue
@@ -465,6 +550,30 @@ def compile_chapter(
             _reset_turn_stack()
             logger.debug("Scene break detected at offset %d — turn stack reset", para_start)
             continue
+
+        # FT-CAST-024: Process scene emotion span tags BEFORE the inline-override
+        # parse (the override pattern would otherwise swallow '[scene:tense]' as
+        # a '[character]' tag). [scene:<emotion>] sets the active fallback
+        # emotion; [/scene] clears it. Tags are stripped from the text. Multiple
+        # tags in one paragraph apply in order — the LAST wins for trailing text.
+        if _SCENE_OPEN_TAG_RE.search(para) or _SCENE_CLOSE_TAG_RE.search(para):
+            scene_events: list[tuple[int, Optional[str]]] = []
+            for m in _SCENE_OPEN_TAG_RE.finditer(para):
+                scene_events.append((m.start(), m.group(1).strip() or None))
+            for m in _SCENE_CLOSE_TAG_RE.finditer(para):
+                scene_events.append((m.start(), None))
+            scene_events.sort(key=lambda x: x[0])
+            for _pos, emotion_val in scene_events:
+                active_scene_emotion = emotion_val
+                logger.debug(
+                    "FT-CAST-024: scene emotion -> %r at offset %d",
+                    active_scene_emotion, para_start,
+                )
+            para = _SCENE_OPEN_TAG_RE.sub('', para)
+            para = _SCENE_CLOSE_TAG_RE.sub('', para)
+            para = para.strip()
+            if not para:
+                continue
 
         # Check for inline override at start of paragraph
         override_char, override_emotion, para = parse_inline_override(para)
@@ -493,8 +602,8 @@ def compile_chapter(
 
             # Create special utterances for each tag
             for _ts, _te, tag_type, tag_content in tag_items:
-                abs_start = para_start + _ts
-                abs_end = para_start + _te
+                abs_start = para_start + para_lead + _ts
+                abs_end = para_start + para_lead + _te
                 utt_type = UtteranceType.PAUSE if tag_type == 'pause' else UtteranceType.DIRECTION
                 utterances.append(Utterance(
                     speaker="narrator",
@@ -539,8 +648,8 @@ def compile_chapter(
                 emotion=override_emotion,
                 chapter_index=chapter.index,
                 line_index=line_index,
-                start_pos=para_start,
-                end_pos=para_start + len(para),
+                start_pos=para_start + para_lead,
+                end_pos=para_start + para_lead + len(para),
             )
             utterances.append(utterance)
             line_index += 1
@@ -555,20 +664,34 @@ def compile_chapter(
                 continue
 
             # FT-CAST-012: Compute absolute character offsets
-            abs_start = para_start + start
-            abs_end = para_start + end
+            abs_start = para_start + para_lead + start
+            abs_end = para_start + para_lead + end
 
             if is_dialogue:
                 # Try to attribute speaker
                 if override_char:
                     speaker = override_char
                     emotion = override_emotion
+                    # FT-CAST-024: an inline [Char] override with no emotion is
+                    # not a user-set emotion, so the scene fallback may fill it
+                    # (still below explicit/inline; chapter mood stays lowest).
+                    if emotion is None and active_scene_emotion:
+                        emotion = active_scene_emotion
+                    elif emotion is None and chapter_mood:
+                        emotion = chapter_mood
                 else:
                     speaker, emotion = extract_speaker_from_context(
                         para, start, end, casting, profile=profile,
                     )
-                    # FT-CAST-015: Apply chapter mood as fallback emotion hint
-                    if emotion is None and chapter_mood:
+                    # FT-CAST-024 / FT-CAST-015: emotion fallback precedence —
+                    # explicit/attribution (above) > scene > chapter mood.
+                    if emotion is None and active_scene_emotion:
+                        emotion = active_scene_emotion
+                        logger.debug(
+                            "FT-CAST-024: Using scene emotion %r as fallback at offset %d",
+                            active_scene_emotion, abs_start,
+                        )
+                    elif emotion is None and chapter_mood:
                         emotion = chapter_mood
                         logger.debug(
                             "FT-CAST-015: Using chapter mood %r as emotion hint at offset %d",
@@ -632,7 +755,11 @@ def compile_chapter(
         if utterance.speaker == "unknown":
             unknown_count += 1
 
-    # Update casting table line counts from computed dict (backward compat)
+    # CAST-DIAL-A-003: Update casting table line counts from the computed dict.
+    # Kept for backward compatibility (CLI `info`/`speakers` display and the
+    # existing line-count contract). Observable in the sequential compile path
+    # only; the parallel path operates on a pickled copy where this is lost.
+    # See the docstring caveat; authoritative counts come from the utterances.
     for key, count in line_counts.items():
         if key in casting.characters:
             casting.characters[key].line_count = count
@@ -837,7 +964,12 @@ def utterances_to_script(
         sid = speaker_ids[speaker]
 
         # Build line
-        emotion_part = f"({utterance.emotion}) " if utterance.emotion else ""
+        # FT-CAST-023: serialize intensity alongside the emotion when present
+        # ('(angry:0.7)'). A bare emotion with no intensity stays '(angry)' —
+        # byte-identical to the historical script format.
+        emotion_part = _format_emotion_tag(
+            utterance.emotion, getattr(utterance, "intensity", None)
+        )
 
         # FT-CAST-011: Per-character voice parameter hints
         param_parts = []

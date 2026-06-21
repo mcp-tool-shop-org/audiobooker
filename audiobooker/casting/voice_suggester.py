@@ -112,9 +112,18 @@ _STYLE_PREFERENCE: dict[str, dict[str, float]] = {
 class VoiceSuggestion:
     """A single voice suggestion with reason."""
     voice_id: str
-    score: float            # 0.0 - 1.0
+    score: float            # 0.0 - 1.0 (normalized)
     reason: str             # Human-readable explanation
     tags: list[str] = field(default_factory=list)
+    low_confidence: bool = False  # True when the pick has no real matching signal
+
+
+# Reasons that carry no speaker-specific matching signal — a pick whose ONLY
+# reasons are these is a baseline guess, not a real match.
+_BASELINE_REASONS: frozenset[str] = frozenset({
+    "default suggestion",
+    "curated voice",
+})
 
 
 @dataclass
@@ -400,6 +409,15 @@ class VoiceSuggester:
                 reasons.append("curated voice")
 
             reason_str = "; ".join(reasons) if reasons else "default suggestion"
+
+            # Low-confidence flag: the pick has no real matching signal when
+            # every reason it carries is a baseline ("default suggestion" /
+            # "curated voice"). Derived from the RAW reasons, not the
+            # normalized score (which floors a no-signal pick at ~0.50 and
+            # makes a blind guess look like a real match).
+            effective_reasons = reasons or ["default suggestion"]
+            low_confidence = all(r in _BASELINE_REASONS for r in effective_reasons)
+
             scored.append((
                 score,
                 VoiceSuggestion(
@@ -407,6 +425,7 @@ class VoiceSuggester:
                     score=max(0.0, min(1.0, (score + 1.0) / 2.0)),  # normalize to 0-1
                     reason=reason_str,
                     tags=info.tags,
+                    low_confidence=low_confidence,
                 ),
             ))
 
@@ -465,6 +484,125 @@ class VoiceSuggester:
                 cast_so_far[speaker] = suggestions.top.voice_id
 
         return results
+
+    def bulk_assign(
+        self,
+        speakers: list[str],
+        *,
+        line_counts: Optional[dict[str, int]] = None,
+        speaker_utterances: Optional[dict[str, list[str]]] = None,
+        voice_pools: Optional[dict[str, list[str]]] = None,
+        major_line_threshold: int = 10,
+        already_cast: Optional[dict[str, str]] = None,
+    ) -> dict[str, str]:
+        """
+        FT-CAST-021: Bulk cast-fill. Auto-assign a voice to every speaker.
+
+        Speakers are bucketed by inferred gender (``_infer_gender``) and by
+        whether their line count clears ``major_line_threshold`` (major vs minor
+        roles). Each bucket round-robins through a provided voice pool, and the
+        existing diversity penalty (via ``suggest_for_speaker``) is reused to
+        avoid reassigning a voice that is already in use — so the same voice is
+        not handed to two speakers in the same pass.
+
+        Args:
+            speakers: Speaker names to assign.
+            line_counts: {speaker: line_count}. Missing speakers count as 0.
+            speaker_utterances: {speaker: [sample_lines]} for gender inference.
+            voice_pools: Per-bucket voice pools. Keys are bucket labels
+                ("male_major", "male_minor", "female_major", "female_minor",
+                "unknown_major", "unknown_minor"); a "default" key (or None) is
+                the fallback pool. When None, the full registry is the pool for
+                every bucket and the diversity-aware suggester picks the voice.
+            major_line_threshold: Line count at/above which a speaker is "major".
+            already_cast: {speaker: voice_id} pre-existing assignments, honored
+                and counted toward diversity.
+
+        Returns:
+            {speaker: voice_id} — one entry per input speaker that could be
+            assigned (speakers with an empty applicable pool are skipped).
+        """
+        line_counts = line_counts or {}
+        speaker_utterances = speaker_utterances or {}
+        voice_pools = voice_pools or {}
+
+        assignments: dict[str, str] = dict(already_cast or {})
+        # Per-bucket round-robin cursor.
+        cursor: dict[str, int] = {}
+
+        # Bucket the speakers deterministically (sorted) so the round-robin and
+        # diversity penalty produce stable, reproducible casts.
+        for speaker in sorted(speakers, key=str.casefold):
+            if speaker in assignments:
+                continue  # already cast — leave it
+
+            samples = speaker_utterances.get(speaker, [])
+            gender = self._infer_gender(speaker, samples) or "unknown"
+            count = line_counts.get(speaker, 0)
+            role = "major" if count >= major_line_threshold else "minor"
+            bucket = f"{gender}_{role}"
+
+            pool = (
+                voice_pools.get(bucket)
+                or voice_pools.get("default")
+                or []
+            )
+
+            voice = self._assign_from_pool(
+                speaker, pool, bucket, cursor, samples, assignments,
+            )
+            if voice is not None:
+                assignments[speaker] = voice
+
+        # Return only the speakers we were asked about (drop pre-existing extras
+        # that were passed in via already_cast but not in `speakers`).
+        return {s: assignments[s] for s in speakers if s in assignments}
+
+    def _assign_from_pool(
+        self,
+        speaker: str,
+        pool: list[str],
+        bucket: str,
+        cursor: dict[str, int],
+        samples: list[str],
+        already_cast: dict[str, str],
+    ) -> Optional[str]:
+        """
+        Pick one voice for ``speaker`` from ``pool`` (FT-CAST-021).
+
+        When a pool is supplied, round-robin through it but skip voices already
+        used (diversity); fall back to the round-robin slot if every pool voice
+        is taken. When no pool is supplied, defer to the diversity-aware
+        suggester so the best-matching unused voice wins.
+        """
+        if not pool:
+            # No explicit pool — let the suggester pick using the diversity
+            # penalty against everything assigned so far.
+            is_narrator = speaker.lower() in ("narrator", "narration")
+            result = self.suggest_for_speaker(
+                speaker,
+                sample_utterances=samples,
+                is_narrator=is_narrator,
+                already_cast=already_cast,
+            )
+            return result.top.voice_id if result.top else None
+
+        used = set(already_cast.values())
+        n = len(pool)
+        start = cursor.get(bucket, 0)
+        # Round-robin starting at the bucket cursor, preferring an unused voice.
+        chosen: Optional[str] = None
+        for offset in range(n):
+            candidate = pool[(start + offset) % n]
+            if candidate not in used:
+                chosen = candidate
+                cursor[bucket] = (start + offset + 1) % n
+                break
+        if chosen is None:
+            # Every pool voice is taken — accept reuse at the cursor slot.
+            chosen = pool[start % n]
+            cursor[bucket] = (start + 1) % n
+        return chosen
 
     def _infer_gender(
         self,
@@ -566,6 +704,7 @@ def audition_voices(
             - style: str
             - sample_text: str (first utterance truncated to 100 chars)
             - score: float (0.0-1.0)
+            - low_confidence: bool (no real matching signal — a baseline guess)
     """
     suggester = VoiceSuggester(
         registry=registry,
@@ -599,6 +738,7 @@ def audition_voices(
             "style": info.style,
             "sample_text": sample_text,
             "score": suggestion.score,
+            "low_confidence": suggestion.low_confidence,
         })
 
     return audition_list

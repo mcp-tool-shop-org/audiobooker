@@ -12,7 +12,7 @@ import json
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from audiobooker.models import Chapter, CastingTable, ProjectConfig
+    from audiobooker.models import Chapter, CastingTable, ProjectConfig, Utterance
 
 
 def sha256_text(s: str) -> str:
@@ -41,6 +41,42 @@ def chapter_text_hash(chapter: "Chapter") -> str:
         ]
         return sha256_json(utterance_data)
     return sha256_text(chapter.raw_text)
+
+
+def utterance_hash(
+    utterance: "Utterance",
+    voice: str,
+    render_params_hash: str,
+) -> str:
+    """FT-RENDER-P-004: per-utterance cache key.
+
+    Combines everything that affects a single utterance's audio: its speaker,
+    text, emotion + graded intensity, the resolved voice ID, and the chapter's
+    render-params hash (sample rate / pauses). Two utterances that produce
+    byte-identical audio hash to the same key; changing any audio-affecting
+    field busts only that one utterance's sub-cache entry, leaving its
+    neighbors reusable.
+
+    Args:
+        utterance: The utterance to key.
+        voice: The resolved voice ID for this utterance's speaker.
+        render_params_hash: The chapter's render_params_hash (ties the
+            utterance cache to the same TTS knobs the chapter cache uses).
+
+    Returns:
+        Hex SHA-256 digest uniquely identifying this utterance's audio.
+    """
+    obj = {
+        "speaker": utterance.speaker,
+        "text": utterance.text,
+        "emotion": utterance.emotion or "",
+        # None intensity is preserved distinctly from 0.0 so a bare emotion and
+        # a fully-graded one never collide.
+        "intensity": getattr(utterance, "intensity", None),
+        "voice": voice,
+        "params": render_params_hash,
+    }
+    return sha256_json(obj)
 
 
 def casting_hash(casting: "CastingTable") -> str:

@@ -192,7 +192,8 @@ class TestCmdNew:
 
     def test_new_unsupported_format(self, tmp_path, capsys):
         """Unsupported file format returns error."""
-        source = tmp_path / "book.docx"
+        # .rtf is genuinely unsupported (epub/pdf/txt/md/docx + folders are not).
+        source = tmp_path / "book.rtf"
         source.write_text("dummy")
 
         parser = create_parser()

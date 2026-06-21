@@ -36,17 +36,17 @@ A **Project** (saved as `.audiobooker`) is the persistent state: metadata, chapt
 ## Pipeline
 
 ```
-Source (EPUB/TXT/MD)
-  -> Parser
+Source (EPUB/PDF/DOCX/TXT/MD or folder)
+  -> Parser (TOC-driven + language-aware splitting)
   -> Chapters
   -> Dialogue Detection
-  -> Speaker Attribution
+  -> Speaker Attribution + Emotion
   -> Utterances
   -> Review Export/Import (optional)
-  -> TTS (voice-soundboard)
-  -> Chapter WAVs
-  -> FFmpeg assembly
-  -> M4B (or M4A fallback when chapters cannot embed)
+  -> TTS (pluggable engine; voice-soundboard by default)
+  -> Chapter WAVs (chapter + utterance cache)
+  -> FFmpeg master + assembly
+  -> M4B / MP3 / Opus / FLAC (+ ACX mastering, podcast RSS)
 ```
 
 Key design principles:
@@ -59,7 +59,7 @@ Key design principles:
 
 ```
 audiobooker/
-  parser/            EPUB/TXT parsing
+  parser/            EPUB/PDF/DOCX/TXT/folder parsing
   casting/           dialogue detection, attribution, voice registry, voice suggester
   language/          language profiles (en, extensible)
   nlp/               BookNLP adapter, emotion inference, speaker resolver

@@ -9,7 +9,7 @@ New to Audiobooker? This page walks you through the core ideas, a first project,
 
 ## What is Audiobooker?
 
-Audiobooker is a Python tool that converts EPUB, TXT, and Markdown books into chaptered audiobooks. It uses multi-voice text-to-speech synthesis (via voice-soundboard) to give each character a distinct voice, automatically detects dialogue, infers emotions, and produces M4B files with chapter navigation.
+Audiobooker is a tool that converts EPUB, PDF, DOCX, TXT, and Markdown books into chaptered audiobooks. It uses multi-voice text-to-speech synthesis to give each character a distinct voice, automatically detects dialogue, infers emotions, and produces M4B (and MP3/Opus/FLAC) files with chapter navigation.
 
 The pipeline works in stages: parse the book, detect dialogue, assign voices, let you review and correct attributions, render audio per chapter, then assemble the final audiobook. Each stage is independent, so you can stop, fix mistakes, and resume without re-rendering completed work.
 
@@ -35,14 +35,14 @@ brew install ffmpeg
 apt install ffmpeg
 ```
 
-Install Audiobooker and voice-soundboard:
+Install Audiobooker with the voice engine:
 
 ```bash
-git clone https://github.com/mcp-tool-shop-org/audiobooker
-cd audiobooker
-pip install -e .
-pip install -e ../voice-soundboard
+pipx install audiobooker-ai            # the CLI
+pip install "audiobooker-ai[render]"   # adds the TTS voice engine for rendering
 ```
+
+Or try it with no install at all: `npx @mcptoolshop/audiobooker --help`.
 
 Run `audiobooker diagnose` to verify everything is set up correctly.
 

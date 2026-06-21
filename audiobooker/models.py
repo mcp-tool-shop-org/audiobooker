@@ -39,6 +39,11 @@ class Utterance:
         text: The text to speak
         utterance_type: Whether this is narration or dialogue
         emotion: Optional emotion override (e.g., "angry", "whisper")
+        intensity: Optional graded strength of the emotion, 0.0-1.0 (CASTING-DEPTH
+            v2.1). None preserves the current default behavior (a bare emotion
+            renders at the existing 'strong' SSML emphasis). Set by emotion
+            inference from the graded EmotionResult.confidence, or by a user via
+            the inline (emotion:0.7) script tag.
         chapter_index: Which chapter this belongs to
         line_index: Position within the chapter
     """
@@ -46,11 +51,33 @@ class Utterance:
     text: str
     utterance_type: UtteranceType = UtteranceType.NARRATION
     emotion: Optional[str] = None
+    intensity: Optional[float] = None
     chapter_index: int = 0
     line_index: int = 0
     start_pos: int = -1
     end_pos: int = -1
     id: str = field(default_factory=lambda: str(uuid.uuid4()))
+
+    def __post_init__(self):
+        """CASTING-DEPTH v2.1: validate intensity is within 0.0-1.0 when set.
+
+        None is the default (current behavior preserved); any other value must
+        be a number in [0.0, 1.0] so the renderer's emphasis-band mapping has a
+        well-defined input.
+        """
+        if self.intensity is not None:
+            if not isinstance(self.intensity, (int, float)) or isinstance(
+                self.intensity, bool
+            ):
+                raise ValueError(
+                    f"Utterance intensity must be a number between 0.0 and 1.0, "
+                    f"got {self.intensity!r}."
+                )
+            if not (0.0 <= self.intensity <= 1.0):
+                raise ValueError(
+                    f"Utterance intensity must be between 0.0 and 1.0, "
+                    f"got {self.intensity}."
+                )
 
     def to_script_line(
         self,
@@ -75,7 +102,7 @@ class Utterance:
 
     def to_dict(self) -> dict:
         """Serialize to dictionary."""
-        return {
+        data = {
             "id": self.id,
             "speaker": self.speaker,
             "text": self.text,
@@ -86,6 +113,11 @@ class Utterance:
             "start_pos": self.start_pos,
             "end_pos": self.end_pos,
         }
+        # CASTING-DEPTH v2.1: only emit intensity when set, so existing project
+        # files (intensity == None) round-trip byte-for-byte unchanged.
+        if self.intensity is not None:
+            data["intensity"] = self.intensity
+        return data
 
     @classmethod
     def from_dict(cls, data: dict) -> "Utterance":
@@ -103,6 +135,9 @@ class Utterance:
             text=data["text"],
             utterance_type=UtteranceType(data.get("type", "narration")),
             emotion=data.get("emotion"),
+            # CASTING-DEPTH v2.1: legacy files have no "intensity" key -> None,
+            # which preserves the current (bare-emotion) behavior.
+            intensity=data.get("intensity"),
             chapter_index=data.get("chapter_index", 0),
             line_index=data.get("line_index", 0),
             start_pos=data.get("start_pos", -1),
@@ -235,9 +270,19 @@ class Character:
     pitch_shift: float = 0.0
     emphasis: float = 1.0
     aliases: list[str] = field(default_factory=list)
+    # CASTING-DEPTH v2.1: default emotion intensity (0.0-1.0) for this
+    # character's lines. None preserves current behavior (a bare emotion).
+    default_intensity: Optional[float] = None
 
     def __post_init__(self):
-        """Validate speed, pitch_shift, and emphasis ranges."""
+        """Validate speed, pitch_shift, emphasis, and default_intensity ranges."""
+        if self.default_intensity is not None and not (
+            0.0 <= self.default_intensity <= 1.0
+        ):
+            raise ValueError(
+                f"Character default_intensity must be between 0.0 and 1.0, "
+                f"got {self.default_intensity}. Use None for the default behavior."
+            )
         if not (0.5 <= self.speed <= 2.0):
             raise ValueError(
                 f"Character speed must be between 0.5 and 2.0, got {self.speed}. "
@@ -256,7 +301,7 @@ class Character:
 
     def to_dict(self) -> dict:
         """Serialize to dictionary."""
-        return {
+        data = {
             "name": self.name,
             "voice": self.voice,
             "emotion": self.emotion,
@@ -267,6 +312,11 @@ class Character:
             "emphasis": self.emphasis,
             "aliases": self.aliases,
         }
+        # CASTING-DEPTH v2.1: only emit default_intensity when set, so existing
+        # casting files round-trip unchanged when it is None.
+        if self.default_intensity is not None:
+            data["default_intensity"] = self.default_intensity
+        return data
 
     @classmethod
     def from_dict(cls, data: dict) -> "Character":
@@ -289,6 +339,8 @@ class Character:
             pitch_shift=data.get("pitch_shift", 0.0),
             emphasis=data.get("emphasis", 1.0),
             aliases=data.get("aliases", []),
+            # CASTING-DEPTH v2.1: legacy entries have no key -> None (default).
+            default_intensity=data.get("default_intensity"),
         )
 
 
@@ -515,6 +567,27 @@ class ProjectConfig:
         booknlp_mode: NLP speaker resolution: "on"|"off"|"auto" (default "auto")
         emotion_mode: Emotion inference: "off"|"rule"|"auto" (default "rule")
         emotion_confidence_threshold: Minimum confidence to apply inferred emotion
+        output_profile: Mastering profile for final assembly: "podcast"
+            (EBU R128 -16 LUFS, current behavior) or "acx" (ACX retail target,
+            loudnorm I=-20:TP=-3:LRA=11). Default "podcast".
+        aac_bitrate: Override AAC bitrate for M4B/m4a output (e.g. "192k").
+            None uses the assembler default (128k, or 192k under the acx profile).
+        mp3_bitrate: Override MP3/Opus bitrate (e.g. "192k"). None uses the
+            assembler default.
+        use_toc: EPUB table-of-contents driven chapter splitting:
+            "auto" (default, use TOC when usable else spine-split), "on", or
+            "off" (always spine-split, legacy behavior).
+        phoneme_overrides: Phoneme-typed pronunciation entries, kept distinct
+            from plain spelling replacements (pronunciation_overrides). Filled
+            by import_lexicon from lexicon entries marked type=phoneme.
+        tts_engine: Pluggable TTS engine entry-point name (ECOSYSTEM v2.1).
+            The renderer resolves it through engine.get_default_engine(name).
+            "voice-soundboard" (default) is the built-in engine and preserves
+            current behavior; third-party engines register under the
+            "audiobooker.tts_engines" entry-point group.
+        utterance_cache: Per-utterance render cache opt-in (ECOSYSTEM v2.1).
+            False (default) keeps the chapter-level cache path byte-identical to
+            today. True sub-caches individual utterance WAVs (renderer-owned).
     """
     chapter_pause_ms: int = 2000
     narrator_pause_ms: int = 600
@@ -538,11 +611,39 @@ class ProjectConfig:
     compile_workers: int = 4
     user_emotion_rules: dict[str, str] = field(default_factory=dict)
     footnote_behavior: str = "inline"
+    output_profile: str = "podcast"
+    aac_bitrate: Optional[str] = None
+    mp3_bitrate: Optional[str] = None
+    # INPUT (v2.1): EPUB table-of-contents driven chapter splitting.
+    #   "auto" — use the EPUB's TOC when a usable one exists, otherwise fall
+    #            back to the current spine-splitting behavior (default).
+    #   "on"   — require/prefer TOC-based splitting.
+    #   "off"  — always use spine-splitting (legacy behavior).
+    use_toc: str = "auto"
+    # INPUT (v2.1): phoneme-typed pronunciation entries kept distinct from
+    #   plain spelling replacements (config.pronunciation_overrides). Populated
+    #   by import_lexicon from entries whose type column is "phoneme".
+    phoneme_overrides: dict[str, str] = field(default_factory=dict)
+    # CASTING-DEPTH (v2.1): emotion preset pack that parametrizes the emotion
+    #   inferencer's threshold + label set. "neutral" preserves the current
+    #   default behavior; "literary" / "dramatic" / "children" tune sensitivity.
+    emotion_preset: str = "neutral"
+    # ECOSYSTEM (v2.1): pluggable TTS engine entry-point name. The renderer
+    #   resolves this via engine.get_default_engine(name); "voice-soundboard" is
+    #   the built-in default and preserves current behavior byte-for-byte.
+    tts_engine: str = "voice-soundboard"
+    # ECOSYSTEM (v2.1): per-utterance render cache. OFF BY DEFAULT — when False
+    #   (the default) the existing chapter-level cache path is byte-identical to
+    #   today. Opt in to sub-cache individual utterance WAVs (renderer-owned).
+    utterance_cache: bool = False
 
     _VALID_OUTPUT_FORMATS = ("m4b", "mp3", "wav", "ogg", "flac")
     _VALID_BOOKNLP_MODES = ("on", "off", "auto")
     _VALID_EMOTION_MODES = ("off", "rule", "auto")
     _VALID_FOOTNOTE_BEHAVIORS = ("inline", "end", "skip")
+    _VALID_OUTPUT_PROFILES = ("podcast", "acx")
+    _VALID_USE_TOC = ("auto", "on", "off")
+    _VALID_EMOTION_PRESETS = ("neutral", "literary", "dramatic", "children")
 
     def __post_init__(self):
         """F-CORE-B-015: Validate enum-like string fields."""
@@ -571,6 +672,21 @@ class ProjectConfig:
                 f"global_speed must be between 0.5 and 2.0, got {self.global_speed}. "
                 "Use 1.0 for normal speed."
             )
+        if self.output_profile not in self._VALID_OUTPUT_PROFILES:
+            raise ValueError(
+                f"Invalid output_profile: {self.output_profile!r}. "
+                f"Must be one of: {', '.join(self._VALID_OUTPUT_PROFILES)}"
+            )
+        if self.use_toc not in self._VALID_USE_TOC:
+            raise ValueError(
+                f"Invalid use_toc: {self.use_toc!r}. "
+                f"Must be one of: {', '.join(self._VALID_USE_TOC)}"
+            )
+        if self.emotion_preset not in self._VALID_EMOTION_PRESETS:
+            raise ValueError(
+                f"Invalid emotion_preset: {self.emotion_preset!r}. "
+                f"Must be one of: {', '.join(self._VALID_EMOTION_PRESETS)}"
+            )
 
     def to_dict(self) -> dict:
         """Serialize to dictionary."""
@@ -597,6 +713,14 @@ class ProjectConfig:
             "compile_workers": self.compile_workers,
             "user_emotion_rules": self.user_emotion_rules,
             "footnote_behavior": self.footnote_behavior,
+            "output_profile": self.output_profile,
+            "aac_bitrate": self.aac_bitrate,
+            "mp3_bitrate": self.mp3_bitrate,
+            "use_toc": self.use_toc,
+            "phoneme_overrides": self.phoneme_overrides,
+            "emotion_preset": self.emotion_preset,
+            "tts_engine": self.tts_engine,
+            "utterance_cache": self.utterance_cache,
         }
 
     @classmethod
@@ -625,6 +749,17 @@ class ProjectConfig:
             compile_workers=data.get("compile_workers", 4),
             user_emotion_rules=data.get("user_emotion_rules", {}),
             footnote_behavior=data.get("footnote_behavior", "inline"),
+            output_profile=data.get("output_profile", "podcast"),
+            aac_bitrate=data.get("aac_bitrate"),
+            mp3_bitrate=data.get("mp3_bitrate"),
+            use_toc=data.get("use_toc", "auto"),
+            phoneme_overrides=data.get("phoneme_overrides", {}),
+            # CASTING-DEPTH v2.1: legacy configs default to "neutral".
+            emotion_preset=data.get("emotion_preset", "neutral"),
+            # ECOSYSTEM v2.1: legacy configs default to the built-in engine and
+            # the chapter-level cache (utterance cache off) — current behavior.
+            tts_engine=data.get("tts_engine", "voice-soundboard"),
+            utterance_cache=data.get("utterance_cache", False),
         )
 
 

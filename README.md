@@ -3,291 +3,187 @@
 </p>
 
 <p align="center">
-  <img src="assets/audiobooker-logo.jpg" alt="Audiobooker" width="400" />
+  <img src="assets/audiobooker-logo.png" alt="Audiobooker" width="500" />
 </p>
-
-<h1 align="center">Audiobooker</h1>
 
 <p align="center">
   <a href="https://github.com/mcp-tool-shop-org/audiobooker/actions/workflows/ci.yml"><img src="https://github.com/mcp-tool-shop-org/audiobooker/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <a href="https://codecov.io/gh/mcp-tool-shop-org/audiobooker"><img src="https://codecov.io/gh/mcp-tool-shop-org/audiobooker/branch/main/graph/badge.svg" alt="codecov"></a>
+  <a href="https://pypi.org/project/audiobooker-ai/"><img src="https://img.shields.io/pypi/v/audiobooker-ai" alt="PyPI"></a>
+  <a href="https://www.npmjs.com/package/@mcptoolshop/audiobooker"><img src="https://img.shields.io/npm/v/@mcptoolshop/audiobooker" alt="npm"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT License"></a>
   <a href="https://mcp-tool-shop-org.github.io/audiobooker/"><img src="https://img.shields.io/badge/Landing_Page-live-blue" alt="Landing Page"></a>
 </p>
 
 <p align="center">
-  AI Audiobook Generator — Convert EPUB/TXT/PDF books into professionally narrated audiobooks using multi-voice synthesis.
+  Turn <strong>EPUB / TXT / PDF / DOCX</strong> books into professionally narrated, multi-voice audiobooks — <strong>M4B / MP3 / Opus / FLAC</strong>, with chapter markers, cover art, and <strong>ACX/Audible-ready</strong> mastering. From one command.
 </p>
+
+```bash
+npx @mcptoolshop/audiobooker make mybook.epub --acx
+```
+
+Audiobooker detects dialogue, casts a distinct voice to each character, infers emotion, lets you review and correct everything before a single second is rendered, then masters the result to spec — so the output is a *submittable* audiobook, not just generated audio.
+
+## Install
+
+**Zero-install (Node):**
+```bash
+npx @mcptoolshop/audiobooker --help
+```
+
+**Python (CLI):**
+```bash
+pipx install audiobooker-ai            # isolated CLI
+uvx audiobooker --help                 # zero-install trial
+pip install "audiobooker-ai[render]"   # with the TTS voice engine
+```
+
+**Rendering audio** needs the [`voice-soundboard`](https://pypi.org/project/voice-soundboard/) TTS engine (the `[render]` extra) and **FFmpeg** on PATH (`winget install ffmpeg` · `brew install ffmpeg` · `apt install ffmpeg`). Everything up to render — parse, cast, compile, review — works without them. Run `audiobooker diagnose` to check your setup.
+
+<details>
+<summary>From source</summary>
+
+```bash
+git clone https://github.com/mcp-tool-shop-org/audiobooker
+cd audiobooker
+pip install -e '.[render]'
+```
+</details>
+
+## Quick start
+
+```bash
+# One command: parse -> auto-cast -> compile -> render -> master
+audiobooker make mybook.epub --acx
+
+# ...or the staged workflow, with control at each step:
+audiobooker new mybook.epub            # parse into chapters (EPUB/PDF/TXT/MD/DOCX, or a folder)
+audiobooker cast --interactive         # guided per-character casting
+audiobooker audition Sarah --render    # A/B candidate voices for one character
+audiobooker compile                    # detect dialogue, attribute speakers, infer emotion
+audiobooker report                     # what's weak? unknown-attribution rate + top lines
+audiobooker review-export              # human-editable script — fix attributions
+audiobooker review-import mybook_review.txt
+audiobooker render --acx               # render + master to ACX spec
+audiobooker master-check mybook.m4b    # PASS/FAIL vs ACX loudness/peak/noise-floor
+```
 
 ## Features
 
-### Input & Parsing
-- **EPUB / TXT / Markdown** source parsing with chapter detection
-- **PDF support** (optional): Extract text from PDF files via PyMuPDF (`pip install -e '.[pdf]'`)
-- **Text normalization**: Smart-quote cleanup, whitespace normalization, configurable text cleaners
-- **Pronunciation overrides**: Custom word-to-pronunciation mappings for proper nouns and jargon
-- **Footnote handling**: Configurable footnote behavior (`inline`, `end`, or `skip`)
+### Input & structure
+- **EPUB, TXT, Markdown, PDF, DOCX**, or a **folder of per-chapter files** (Scrivener/Obsidian/serialized fiction).
+- **TOC-driven EPUB splitting** — chapter boundaries and titles from the book's own table of contents.
+- **DOCX** splits on Word `Heading 1/2`/`Title` styles; **PDF** detects headings (with a scanned-PDF guard); custom `--chapter-delimiter`.
+- Smart text cleaning, Markdown-aware stripping, footnote handling, and a **reusable pronunciation lexicon** (`pronunciation import/export`, CSV/JSON, with phoneme passthrough).
 
-### Dialogue & Attribution
-- **Dialogue detection**: Automatically identifies quoted dialogue vs narration
-- **Advanced dialogue detection**: Conversation turn-tracking for multi-speaker scenes
-- **Stage directions**: Detects and handles bracketed stage directions in scripts
-- **BookNLP integration**: Optional NLP-powered speaker co-reference resolution
-- **Character aliases**: Map alternate names to a primary character
+### Casting & attribution
+- **Multi-voice synthesis** with explainable, ranked voice **suggestions** and an **`audition`** command to A/B candidates per character.
+- **Interactive casting**, **bulk `cast-fill`** by gender/role, **named cast presets** reusable across a series, and **CSV cast sheets** for collaborators.
+- **Dialogue detection + speaker attribution** (optional **BookNLP** co-reference), **alias auto-discovery**, and **emotion inference** with adjustable **intensity**, **scene-level mood**, and genre **preset packs**.
 
-### Voice & Casting
-- **Multi-voice synthesis**: Assign unique voices to each character
-- **Voice suggestions**: Explainable, ranked voice recommendations per speaker
-- **Emotion inference**: Rule+lexicon emotion labeling with configurable confidence
-- **Per-character voice parameters**: Speed (0.5--2.0) and emotion per speaker
-- **SSML preprocessing**: Speech Synthesis Markup Language support for fine-grained control
+### Rendering & output
+- **M4B** (chapter markers + embedded cover + series metadata), **MP3**, **Opus**, **FLAC**; per-chapter export; **podcast/RSS** feed export.
+- **ACX/Audible mastering** (`--acx`) + a **`master-check`** that reports PASS/FAIL on loudness, peak, and noise floor; retail **`sample`** clips.
+- Parallel rendering, a **persistent render cache** with resume, dynamic progress + ETA, and structured failure reports.
 
-### Rendering & Output
-- **Parallel rendering**: Multi-worker chapter rendering with `--jobs N`
-- **Multiple output formats**: MP3, M4B, WAV, OGG, FLAC
-- **Audio normalization**: Consistent volume levels across chapters
-- **Cover art embedding**: Extracted from EPUB or user-provided, embedded in M4B output
-- **Persistent render cache**: Resume failed renders without re-synthesizing completed chapters
-- **Dynamic progress & ETA**: Real-time rendering status with estimated completion time
-- **Failure reports**: Structured JSON diagnostics on render errors
+### Workflow & ecosystem
+- **`make`** one-shot pipeline · **config file** (`.audiobookerrc` / `[tool.audiobooker]`) · **`--watch`** mode · **manifest-driven batch** · shell completion.
+- **7 language profiles** (en/fr/de/es/ja/it/pt) · **pluggable TTS engines** (`--engine`, entry-points — bring Piper/Coqui/ElevenLabs) · scriptable `--json` on most commands · structured exit codes.
 
-### Language & Localization
-- **5 language profiles**: English, French, German, Spanish, Japanese (`--lang en|fr|de|es|ja`)
-- **Extensible profile system**: Add new languages via the `LanguageProfile` abstraction
+## Publishing to ACX / Audible
 
-### Workflow & Productivity
-- **Review-before-render**: Human-editable review format for correcting attributions
-- **Project diff**: Compare two project versions to see chapter and utterance changes
-- **Batch processing**: Process multiple books in one run with `audiobooker batch`
-- **Dry-run mode**: Preview render or batch operations without executing (`--dry-run`)
-- **Voice audition**: Render a short sample to validate voice assignments (`audiobooker preview`)
-- **Chapter management**: Merge, split, and exclude chapters before rendering
-- **Emotion management**: List and override emotions per-utterance after compilation
-- **Desktop notifications**: Get notified when long renders complete
-- **Project persistence**: Save/resume rendering sessions
-
-## Installation
+Audiobooker targets the measurable ACX submission specs directly:
 
 ```bash
-# Clone and install
-git clone https://github.com/mcp-tool-shop-org/audiobooker
-cd audiobooker
-pip install -e .
-
-# Required: voice-soundboard for TTS
-git clone https://github.com/mcp-tool-shop-org/voice-soundboard.git ../voice-soundboard
-pip install -e ../voice-soundboard
-
-# Required: FFmpeg for audio assembly
-# Windows: winget install ffmpeg
-# Mac: brew install ffmpeg
-# Linux: apt install ffmpeg
+audiobooker render --acx               # loudnorm -20 LUFS, -3 dBTP peak, 44.1k, 192k
+audiobooker master-check book.m4b      # PASS/FAIL: RMS [-23,-18], peak <= -3 dB, floor <= -60 dB
+audiobooker sample --duration 180      # a mastered retail sample clip
 ```
 
-## Optional Features
+`master-check` verifies the measurable requirements (loudness, peak, noise floor). ACX also has subjective/QC criteria a tool can't certify — but you'll never get bounced for a loudness violation again.
 
-| Feature | Install | Config |
-|---------|---------|--------|
-| **TTS rendering** | `pip install -e '.[render]'` or install voice-soundboard | Required for `render` |
-| **BookNLP speaker resolution** | `pip install -e '.[nlp]'` | `--booknlp on\|off\|auto` |
-| **PDF input** | `pip install -e '.[pdf]'` | `audiobooker new book.pdf` |
-| **Rich progress bars** | `pip install -e '.[rich]'` | Auto-detected at runtime |
-| **FFmpeg audio assembly** | System package (winget/brew/apt) | Required for M4B output |
+## CLI commands
 
-## Quick Start
+| Command | Description |
+|---------|-------------|
+| `make <file>` | One-shot: new → compile → auto-cast → render |
+| `new <file\|folder>` | Create a project from EPUB/TXT/MD/PDF/DOCX or a folder |
+| `from-stdin` | Create a project from piped text |
+| `cast <char> <voice>` · `cast --interactive` | Assign voices (or guided per-speaker casting) |
+| `cast-suggest` · `cast-apply --auto` · `cast-fill` | Suggest / auto-apply / bulk-assign voices |
+| `cast-preset save\|list\|apply\|delete` | Reusable cast presets across books |
+| `audition <char>` | A/B ranked candidate voices for one character (`--render`) |
+| `compile` | Detect dialogue, attribute speakers, infer emotion |
+| `report` | Compile quality: unknown rate, top unattributed lines, emotion mix |
+| `review-export` · `review-import <file>` | Human-editable review round-trip |
+| `render` | Render the audiobook (`--acx`, `--format`, `--split`, `--bitrate`, `--engine`, `--watch`, `--cover`, `-j N`) |
+| `sample` · `master-check <file>` | Mastered retail sample · ACX compliance check |
+| `export-chapters` · `podcast` | Chapter cue sheet (ffmetadata/cue/json) · podcast RSS feed |
+| `preview` · `batch` · `diagnose` | Voice QA clip · batch/`--manifest` · environment check |
+| `voices` · `chapters` · `speakers` · `info` · `status` · `cache` · `emotions` · `pronunciation` · `completion` | Inspect & manage |
+
+Every command supports `-h/--help`. Global flags: `--silent`, `--debug`. **Exit codes:** `0` ok · `1` user error · `2` runtime · `3` partial (batch).
+
+## Configuration
+
+Set defaults once instead of re-passing flags — `.audiobookerrc` (TOML) next to your book, or `[tool.audiobooker]` in `pyproject.toml`. Precedence is **CLI flag > project config > user config (`~/.audiobookerrc`) > built-in defaults**.
+
+```toml
+# .audiobookerrc
+output_format = "m4b"
+output_profile = "acx"
+lang = "en"
+jobs = 4
+booknlp_mode = "auto"
+```
+
+## Pluggable TTS engines
+
+The default engine is `voice-soundboard`, but the synthesis backend is swappable via setuptools entry-points (`audiobooker.tts_engines`):
 
 ```bash
-# 1. Create a project from your book
-audiobooker new mybook.epub
-
-# 2. Cast voices to characters
-audiobooker cast narrator bm_george --emotion calm
-audiobooker cast Alice af_bella --emotion warm
-# Or auto-cast: audiobooker cast-suggest && audiobooker cast-apply --auto
-
-# 3. Compile (dialogue detection + speaker attribution)
-audiobooker compile
-
-# 4. Review and correct the script (optional but recommended)
-audiobooker review-export        # Creates mybook_review.txt
-# Edit the file to fix attributions, then:
-audiobooker review-import mybook_review.txt
-
-# 5. Render the audiobook
-audiobooker render
+audiobooker render --engine piper      # or set AUDIOBOOKER_ENGINE=piper
 ```
 
-## Review Workflow
-
-The review workflow lets you inspect and correct the compiled script before rendering:
-
-```bash
-# Export to review format
-audiobooker review-export
-
-# Edit the file (example: mybook_review.txt)
-# === Chapter 1 ===
-#
-# @narrator
-# The door creaked open.
-#
-# @Unknown              <-- Change this to @Marcus
-# "Hello?" he whispered.
-#
-# @Sarah (worried)      <-- Emotions are preserved
-# "Is anyone there?"
-
-# Import corrections
-audiobooker review-import mybook_review.txt
-
-# Render with corrected attributions
-audiobooker render
-```
-
-**Review file format:**
-- `=== Chapter Title ===` - Chapter markers
-- `@Speaker` or `@Speaker (emotion)` - Speaker tags
-- `# comment` - Comments (ignored on import)
-- Delete blocks to remove unwanted utterances
-- Change `@Unknown` to `@ActualName` to fix attribution
+A plugin (`pip install audiobooker-piper`) registers itself; no fork required.
 
 ## Python API
 
 ```python
 from audiobooker import AudiobookProject
 
-# Create from EPUB
-project = AudiobookProject.from_epub("mybook.epub")
-
-# Or from raw text
-project = AudiobookProject.from_string("Chapter 1\n\nHello world.", title="My Book")
-
-# Cast voices
+project = AudiobookProject.from_epub("mybook.epub")   # or from_docx / from_pdf / from_folder / from_string
 project.cast("narrator", "bm_george", emotion="calm")
 project.cast("Alice", "af_bella", emotion="warm")
-
-# Compile (detect dialogue, attribute speakers, infer emotions)
-project.compile()
-
-# Review workflow
-review_path = project.export_for_review()
-# ... edit the file ...
-project.import_reviewed(review_path)
-
-# Render to M4B (with automatic resume on re-run)
-project.render("mybook.m4b")
-
-# Save project for later
+project.compile()                                     # dialogue, speakers, emotion
+project.render("mybook.m4b")                          # resumes from cache on re-run
 project.save("mybook.audiobooker")
 ```
 
-## CLI Commands
-
-| Command | Description |
-|---------|-------------|
-| `audiobooker new <file>` | Create project from EPUB/TXT/MD/PDF |
-| `audiobooker load <project>` | Load existing `.audiobooker` project |
-| `audiobooker from-stdin` | Create project from piped text |
-| `audiobooker cast <char> <voice>` | Assign voice to character |
-| `audiobooker cast-suggest` | Suggest voices for uncast speakers |
-| `audiobooker cast-apply --auto` | Auto-apply top voice suggestions |
-| `audiobooker compile` | Compile chapters to utterances |
-| `audiobooker review-export` | Export script for human review |
-| `audiobooker review-import <file>` | Import edited review file |
-| `audiobooker render` | Render audiobook (supports `--dry-run`, `--jobs N`, `--format`, `--cover`) |
-| `audiobooker preview` | Render a short sample for voice validation (`--chapter N`, `--seconds S`) |
-| `audiobooker batch <files...>` | Batch-process multiple books (supports `--dry-run`) |
-| `audiobooker info` | Show project information |
-| `audiobooker status` | Show render/cache status |
-| `audiobooker voices` | List available voices (supports `--gender`, `--search`) |
-| `audiobooker chapters` | List chapter titles and indices |
-| `audiobooker speakers` | List detected speakers |
-| `audiobooker cache info\|clean\|clean-failed` | Manage the render cache |
-| `audiobooker diagnose` | Check environment (deps, voice engine, FFmpeg) |
-
-## Full CLI Reference
-
-Every command supports `-h` / `--help` for detailed usage. Key flags:
-
-- **`new`**: `-o <project>`, `--lang <code>` (en/fr/de/es/ja)
-- **`cast`**: `--emotion <emotion>`, `--speed <0.5-2.0>`
-- **`compile`**: `--booknlp on|off|auto`
-- **`render`**: `--dry-run`, `--no-resume`, `--from-chapter N`, `--allow-partial`, `--clean-cache`, `--jobs N`, `-o <path>`, `--format mp3|m4b|wav|ogg|flac`, `--cover <image>`
-- **`preview`**: `--chapter N`, `--seconds S`, `-o <path>`
-- **`batch`**: `--dry-run`, `--jobs N`, `--format <fmt>`, `--lang <code>`, `--output-dir <dir>`
-- **`voices`**: `--gender <male|female>`, `--search <query>`
-- **`info`**: `--verbose`
-
-**Global flags** (before any command):
-- `--silent` — suppress all output except errors
-- `--debug` — enable debug logging and stack traces
-
-**Exit codes:** `0` success · `1` user error · `2` runtime error · `3` partial success (batch)
+`render(...)` and `compile(...)` accept an injected `engine=` (any object implementing the `TTSEngine` protocol) and a progress callback — embed audiobooker in a GUI or service.
 
 ## Architecture
 
 ```
 audiobooker/
-├── parser/          # EPUB, TXT, PDF parsing
-├── casting/         # Dialogue detection, voice assignment, suggestions
-├── language/        # Language profiles (en, extensible)
-├── nlp/             # BookNLP adapter, emotion inference, speaker resolver
-├── renderer/        # Audio synthesis, cache, progress, failure reports
-├── review.py        # Review format export/import
-└── cli.py           # Command-line interface
+├── parser/      # EPUB, PDF, TXT/MD, DOCX, folder, language-aware splitting
+├── language/    # 7 language profiles (quotes, speaker verbs, chapter patterns)
+├── casting/     # dialogue detection, voice suggestion, presets, cast-fill
+├── nlp/         # BookNLP adapter, emotion inference, speaker/alias resolution
+├── renderer/    # synthesis, chapter+utterance cache, mastering, assembly, RSS
+├── config_file.py · review.py · project.py · cli.py
 ```
 
-**Flow:**
 ```
-Source File (EPUB/TXT/PDF) -> Parser -> Chapters -> Dialogue Detection ->
-Speaker Resolution (BookNLP optional) -> Emotion Inference ->
-Utterances -> Review/Edit -> TTS (voice-soundboard) ->
-Chapter Audio (cached) -> FFmpeg -> M4B with Chapters
+Source (EPUB/PDF/DOCX/TXT/folder) -> Parser -> Chapters -> Dialogue & Emotion ->
+Casting -> Review/Edit -> TTS (pluggable) -> cached audio -> FFmpeg master -> M4B/MP3/Opus/FLAC
 ```
 
-## Common Issues
+## Security & data scope
 
-| Problem | Fix |
-|---------|-----|
-| **FFmpeg not found** | Install via your package manager: `winget install ffmpeg` (Windows), `brew install ffmpeg` (macOS), `apt install ffmpeg` (Linux). FFmpeg must be on PATH. |
-| **voice-soundboard not installed** | Clone and install the sibling repo: `git clone https://github.com/mcp-tool-shop-org/voice-soundboard.git ../voice-soundboard && pip install -e ../voice-soundboard`. Or install with `pip install -e '.[render]'`. |
-| **BookNLP errors or slow startup** | BookNLP is optional. If you don't need NLP speaker resolution, set `--booknlp off` or leave it at `auto` (graceful fallback). Install with `pip install -e '.[nlp]'` only if needed. |
-
-See the [handbook](docs/handbook.md#15-troubleshooting) for full troubleshooting guidance.
-
-## Troubleshooting
-
-**Render failure report**: On any render error, Audiobooker writes `render_failure_report.json` to the cache directory. This contains:
-- Chapter index and title where the error occurred
-- Utterance index, speaker, and text preview
-- Voice ID and emotion that were being synthesized
-- Full stack trace
-- Cache and manifest paths
-
-**Common FFmpeg issues**:
-- `FFmpeg not found`: Install via your package manager (winget/brew/apt)
-- `Chapter embedding failed`: Audiobooker falls back to M4A without chapter markers
-- Audio quality: Default is AAC 128kbps at 24kHz (configurable in ProjectConfig)
-
-**Cache issues**:
-- `audiobooker render --clean-cache` — clear all cached audio and re-render
-- `audiobooker render --no-resume` — ignore cache for this run only
-- `audiobooker render --from-chapter 5` — start from a specific chapter
-
-## Roadmap
-
-- [x] Core pipeline (parse, cast, compile, render)
-- [x] Review-before-render workflow
-- [x] Persistent render cache + resume
-- [x] Language profiles + input flexibility
-- [x] BookNLP, emotion inference, voice suggestions, UX polish
-- [x] v1.0.0 - Production release
-
-## Security & Data Scope
-
-- **Data accessed:** Reads EPUB/TXT files from local filesystem. Writes audio files and cache manifests to output directories. Optionally uses voice-soundboard for TTS and FFmpeg for audio assembly.
-- **Data NOT accessed:** No network requests. No telemetry. No user data storage. No credentials or tokens.
-- **Permissions required:** Read access to input book files. Write access to output directories. Optional: FFmpeg on PATH.
+- **Network:** none — no telemetry, no data storage, no credentials. Reads your book files, writes audio + cache to your output dirs.
+- **Permissions:** read access to inputs, write access to outputs; optional FFmpeg + a TTS engine on PATH.
+- See [SECURITY.md](SECURITY.md).
 
 ## Scorecard
 

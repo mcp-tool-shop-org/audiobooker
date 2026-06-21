@@ -52,6 +52,52 @@ def _sanitize_filename(name: str) -> str:
     return sanitized or "untitled"
 
 
+# ---------------------------------------------------------------------------
+# CASTING-DEPTH (v2.1): CSV cast-sheet helpers
+# ---------------------------------------------------------------------------
+
+def _gender_from_voice(voice: str) -> str:
+    """Derive an informational gender label from a voice ID prefix.
+
+    Convention (voice-soundboard): af_/bf_ -> female, am_/bm_ -> male. Anything
+    else is "unknown". Used only to populate the CSV ``gender`` column; the
+    value is ignored on import.
+    """
+    v = (voice or "").lower()
+    if v.startswith(("af_", "bf_")):
+        return "female"
+    if v.startswith(("am_", "bm_")):
+        return "male"
+    return "unknown"
+
+
+def _csv_float(value, default: float) -> float:
+    """Parse an optional CSV float cell, falling back to ``default`` when blank."""
+    if value is None or str(value).strip() == "":
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _csv_int(value, default: int) -> int:
+    """Parse an optional CSV int cell, falling back to ``default`` when blank."""
+    if value is None or str(value).strip() == "":
+        return default
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return default
+
+
+def _csv_aliases(value) -> list[str]:
+    """Split a ';'-joined CSV aliases cell into a clean list."""
+    if not value:
+        return []
+    return [a.strip() for a in str(value).split(";") if a.strip()]
+
+
 # Project file schema version for forward compatibility
 SCHEMA_VERSION = 1
 
@@ -106,6 +152,10 @@ class AudiobookProject:
     # State
     progress: RenderProgress = field(default_factory=RenderProgress)
     output_path: Optional[Path] = None
+
+    # FT-CORE-022: Transient compile observability summary (not persisted).
+    # Populated by compile() with speaker-resolution / emotion-inference counts.
+    compile_summary: dict = field(default_factory=dict)
 
     # Internal
     _output_dir: Optional[Path] = None
@@ -179,6 +229,7 @@ class AudiobookProject:
             Initialized AudiobookProject
         """
         from audiobooker.parser.epub import parse_epub
+        from audiobooker.language.profile import get_profile
 
         path = Path(path)
         if not path.exists():
@@ -190,11 +241,63 @@ class AudiobookProject:
         # Extract config to pass EPUB parsing thresholds
         config = kwargs.pop("config", ProjectConfig())
 
-        metadata, chapters = parse_epub(
-            path,
-            min_chapter_words=config.min_chapter_words,
-            keep_titled_short_chapters=config.keep_titled_short_chapters,
-        )
+        # Thread the language profile into the parser so language-specific
+        # tokenization/heading rules apply. parse_epub accepts profile= once
+        # the parser exposes it; fall back gracefully if it doesn't yet.
+        profile = get_profile(config.language_code)
+        # INPUT (v2.1): thread config.use_toc so the parser can split on the
+        # EPUB's table of contents when available. parse_epub gains use_toc=
+        # in the parser module; call defensively so an older parser signature
+        # (no use_toc / no profile) still works and preserves spine-splitting.
+        try:
+            metadata, chapters = parse_epub(
+                path,
+                min_chapter_words=config.min_chapter_words,
+                keep_titled_short_chapters=config.keep_titled_short_chapters,
+                profile=profile,
+                use_toc=config.use_toc,
+            )
+        except TypeError:
+            try:
+                metadata, chapters = parse_epub(
+                    path,
+                    min_chapter_words=config.min_chapter_words,
+                    keep_titled_short_chapters=config.keep_titled_short_chapters,
+                    profile=profile,
+                )
+            except TypeError:
+                metadata, chapters = parse_epub(
+                    path,
+                    min_chapter_words=config.min_chapter_words,
+                    keep_titled_short_chapters=config.keep_titled_short_chapters,
+                )
+
+        # Reconcile the EPUB's declared language. If the EPUB declares a
+        # language and the caller did NOT explicitly request one (config still
+        # at the "en" default), adopt the EPUB's language so downstream
+        # compilation uses the right profile. If the user DID request a
+        # language that conflicts, keep theirs but warn.
+        declared = (metadata.get("language") or "").strip().lower()
+        if declared:
+            declared_code = declared.split("-")[0]  # "en-US" -> "en"
+            user_set_lang = config.language_code != "en"
+            try:
+                get_profile(declared_code)
+                known = True
+            except ValueError:
+                known = False
+            if known and not user_set_lang and declared_code != config.language_code:
+                logger.info(
+                    "Adopting EPUB declared language %r (was %r)",
+                    declared_code, config.language_code,
+                )
+                config.language_code = declared_code
+            elif known and user_set_lang and declared_code != config.language_code:
+                logger.warning(
+                    "EPUB declares language %r but --lang %r was requested; "
+                    "using %r.",
+                    declared_code, config.language_code, config.language_code,
+                )
 
         # Build BookMetadata from EPUB metadata (FT-CORE-014)
         book_metadata = kwargs.pop("metadata", BookMetadata())
@@ -243,26 +346,191 @@ class AudiobookProject:
             ValueError: If the PDF is scanned/image-only or corrupt.
         """
         from audiobooker.parser.pdf import parse_pdf
+        from audiobooker.language.profile import get_profile
 
         path = Path(path)
         if not path.exists():
             raise FileNotFoundError(f"PDF not found: {path}")
+
+        # INPUT (v2.1): force plain text extraction even when the PDF looks
+        # scanned/image-only (skips the OCR-rejection guard). Pop before kwargs
+        # validation since it is a parse option, not an AudiobookProject field.
+        force_text = kwargs.pop("force_text", False)
 
         # F-CORE-B-020: Validate kwargs
         cls._validate_kwargs({k: v for k, v in kwargs.items() if k != "config"})
 
         config = kwargs.pop("config", ProjectConfig())
 
-        metadata, chapters = parse_pdf(
-            path,
-            min_chapter_words=config.min_chapter_words,
-        )
+        # Thread the language profile into the parser. parse_pdf accepts
+        # profile= and force_text=; fall back if an older parser lacks them.
+        profile = get_profile(config.language_code)
+        try:
+            metadata, chapters = parse_pdf(
+                path,
+                min_chapter_words=config.min_chapter_words,
+                profile=profile,
+                force_text=force_text,
+            )
+        except TypeError:
+            try:
+                metadata, chapters = parse_pdf(
+                    path,
+                    min_chapter_words=config.min_chapter_words,
+                    force_text=force_text,
+                )
+            except TypeError:
+                metadata, chapters = parse_pdf(
+                    path,
+                    min_chapter_words=config.min_chapter_words,
+                )
 
         project = cls(
             title=metadata.get("title", path.stem),
             author=metadata.get("author", ""),
             source_path=path,
             chapters=chapters,
+            config=config,
+            **kwargs,
+        )
+
+        # Auto-add narrator to casting
+        project.cast("narrator", "af_heart", emotion="calm", description="Default narrator")
+
+        return project
+
+    @classmethod
+    def from_docx(cls, path: str | Path, **kwargs) -> "AudiobookProject":
+        """
+        Create project from a Word (.docx) file (INPUT v2.1).
+
+        Mirrors from_epub: parser.docx.parse_docx returns the same
+        (metadata dict, list[Chapter]) shape, so the metadata reconciliation
+        and BookMetadata population below are identical to the EPUB path.
+
+        Args:
+            path: Path to the .docx file.
+            **kwargs: Forwarded to AudiobookProject dataclass fields.
+                Accepted keys: title, author, config (ProjectConfig),
+                casting (CastingTable), and any other AudiobookProject field.
+
+        Returns:
+            Initialized AudiobookProject.
+
+        Raises:
+            ImportError: If python-docx is not installed.
+            FileNotFoundError: If the file doesn't exist.
+            ValueError: If the document is empty or unreadable.
+        """
+        from audiobooker.parser.docx import parse_docx
+        from audiobooker.language.profile import get_profile
+
+        path = Path(path)
+        if not path.exists():
+            raise FileNotFoundError(f"DOCX not found: {path}")
+
+        # F-CORE-B-020: Validate kwargs before using them
+        cls._validate_kwargs({k: v for k, v in kwargs.items() if k != "config"})
+
+        config = kwargs.pop("config", ProjectConfig())
+
+        # Thread the language profile into the parser. parse_docx accepts
+        # profile= per the contract; fall back gracefully if it doesn't yet.
+        profile = get_profile(config.language_code)
+        try:
+            metadata, chapters = parse_docx(
+                path,
+                min_chapter_words=config.min_chapter_words,
+                profile=profile,
+            )
+        except TypeError:
+            metadata, chapters = parse_docx(
+                path,
+                min_chapter_words=config.min_chapter_words,
+            )
+
+        # Build BookMetadata from the parsed metadata (mirror from_epub).
+        book_metadata = kwargs.pop("metadata", BookMetadata())
+        cover_path_str = metadata.get("cover_art_path")
+        if cover_path_str:
+            book_metadata.cover_art_path = Path(cover_path_str)
+        if metadata.get("publisher"):
+            book_metadata.publisher = metadata["publisher"]
+        if metadata.get("year"):
+            book_metadata.year = metadata["year"]
+
+        project = cls(
+            title=metadata.get("title", path.stem),
+            author=metadata.get("author", ""),
+            source_path=path,
+            chapters=chapters,
+            config=config,
+            metadata=book_metadata,
+            **kwargs,
+        )
+
+        # Auto-add narrator to casting
+        project.cast("narrator", "af_heart", emotion="calm", description="Default narrator")
+
+        return project
+
+    @classmethod
+    def from_folder(cls, directory: str | Path, **kwargs) -> "AudiobookProject":
+        """
+        Create project from a folder of per-chapter text files (INPUT v2.1).
+
+        Each .txt/.md file in the folder becomes one chapter, naturally sorted
+        by filename (so 01_, 1., and bare numeric prefixes order correctly).
+        parser.text.read_folder_chapters returns a list of (title, text) pairs,
+        which we build into a project via from_chapters semantics.
+
+        Args:
+            directory: Path to the folder of chapter files.
+            **kwargs: Forwarded to AudiobookProject dataclass fields.
+                Accepted keys: title, author, config (ProjectConfig),
+                casting (CastingTable), and any other AudiobookProject field.
+
+        Returns:
+            Initialized AudiobookProject.
+
+        Raises:
+            FileNotFoundError: If the directory doesn't exist.
+            ValueError: If the folder contains no usable chapter files.
+        """
+        from audiobooker.parser.text import read_folder_chapters
+        from audiobooker.language.profile import get_profile
+
+        directory = Path(directory)
+        if not directory.exists() or not directory.is_dir():
+            raise FileNotFoundError(f"Folder not found: {directory}")
+
+        # F-CORE-B-020: Validate kwargs before using them
+        cls._validate_kwargs({k: v for k, v in kwargs.items() if k != "config"})
+
+        config = kwargs.pop("config", ProjectConfig())
+        profile = get_profile(config.language_code)
+
+        try:
+            chapter_pairs = read_folder_chapters(directory, profile=profile)
+        except TypeError:
+            chapter_pairs = read_folder_chapters(directory)
+
+        if not chapter_pairs:
+            raise ValueError(
+                f"No chapter files (.txt/.md) found in folder: {directory}. "
+                "Add one text file per chapter, e.g. 01_intro.txt, 02_rising.txt."
+            )
+
+        chapter_objects = [
+            Chapter(index=i, title=ch_title, raw_text=content)
+            for i, (ch_title, content) in enumerate(chapter_pairs)
+        ]
+
+        project = cls(
+            title=kwargs.pop("title", directory.name),
+            author=kwargs.pop("author", ""),
+            source_path=directory,
+            chapters=chapter_objects,
             config=config,
             **kwargs,
         )
@@ -293,13 +561,20 @@ class AudiobookProject:
         if not path.exists():
             raise FileNotFoundError(f"Text file not found: {path}")
 
+        # INPUT (v2.1): optional custom chapter-delimiter regex from the CLI.
+        # Pop it before kwargs validation since it is a parse option, not an
+        # AudiobookProject field.
+        chapter_delimiter = kwargs.pop("chapter_delimiter", None)
+
         # F-CORE-B-020: Validate kwargs
         cls._validate_kwargs({k: v for k, v in kwargs.items() if k != "config"})
 
         config = kwargs.pop("config", ProjectConfig())
         profile = get_profile(config.language_code)
 
-        metadata, chapters = parse_text(path, profile=profile)
+        metadata, chapters = parse_text(
+            path, chapter_delimiter=chapter_delimiter, profile=profile
+        )
 
         project = cls(
             title=metadata.get("title", path.stem),
@@ -340,6 +615,10 @@ class AudiobookProject:
         from audiobooker.parser.text import split_into_chapters, extract_frontmatter
         from audiobooker.language.profile import get_profile
 
+        # INPUT (v2.1): optional custom chapter-delimiter regex. Pop before
+        # kwargs validation since it is a parse option, not a project field.
+        chapter_delimiter = kwargs.pop("chapter_delimiter", None)
+
         # F-CORE-B-020: Validate kwargs
         cls._validate_kwargs({k: v for k, v in kwargs.items() if k != "config"})
 
@@ -348,7 +627,9 @@ class AudiobookProject:
         profile = get_profile(lang)
 
         metadata, body = extract_frontmatter(text)
-        chapter_data = split_into_chapters(body, profile=profile)
+        chapter_data = split_into_chapters(
+            body, delimiter_pattern=chapter_delimiter, profile=profile
+        )
 
         chapters = [
             Chapter(index=i, title=ch_title, raw_text=content)
@@ -411,6 +692,28 @@ class AudiobookProject:
         return project
 
     @classmethod
+    def _migrate(cls, data: dict, from_version: int) -> dict:
+        """Migrate a loaded project dict from an older schema version.
+
+        Migration seam (FT-CORE): dispatched from load() when a project file's
+        schema_version is below SCHEMA_VERSION. Currently a no-op that just
+        records the upgrade; future schema bumps add their transforms here.
+
+        Args:
+            data: The raw project dict as loaded from JSON.
+            from_version: The schema version stored in the file.
+
+        Returns:
+            The (possibly transformed) project dict.
+        """
+        logger.info(
+            "Upgrading project from schema v%d to v%d", from_version, SCHEMA_VERSION
+        )
+        # No transforms needed yet — versions are backward-compatible.
+        data["schema_version"] = SCHEMA_VERSION
+        return data
+
+    @classmethod
     def load(cls, path: str | Path) -> "AudiobookProject":
         """
         Load project from JSON file.
@@ -438,6 +741,15 @@ class AudiobookProject:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
 
+        # CLI-A-007: A valid-JSON-but-wrong-shape file (e.g. a top-level array)
+        # would raise a raw AttributeError on data.get(...) below. Reject it
+        # with a clear message instead, mirroring the checks in import_casting.
+        if not isinstance(data, dict):
+            raise ValueError(
+                "Project file is not a valid audiobooker project "
+                f"(expected a JSON object, got {type(data).__name__})."
+            )
+
         # Check schema version
         schema_version = data.get("schema_version", 1)
         if schema_version > SCHEMA_VERSION:
@@ -445,6 +757,11 @@ class AudiobookProject:
                 f"Project file uses schema v{schema_version}, "
                 f"but this version only supports up to v{SCHEMA_VERSION}"
             )
+        # Upgrade older project files through the migration seam. Currently a
+        # no-op stub, but it establishes the dispatch point so future schema
+        # bumps have a single place to add upgrade steps.
+        if schema_version < SCHEMA_VERSION:
+            data = cls._migrate(data, from_version=schema_version)
 
         def _validated_path(raw: str | None) -> Path | None:
             """Validate a deserialized path is safe to use.
@@ -840,17 +1157,12 @@ class AudiobookProject:
     # Batch Casting Import/Export (FT-CORE-007)
     # -------------------------------------------------------------------------
 
-    def export_casting(self, path: Path) -> None:
-        """
-        Export current casting table to a JSON file.
+    def _casting_as_list(self) -> list[dict]:
+        """Return the casting table as a list-of-dicts (export shape).
 
-        Format: JSON array of objects with keys:
-        name, voice, emotion, speed, aliases, description.
-
-        Args:
-            path: Output file path (should end in .json)
+        This is the canonical list-of-dicts shape reused by export_casting (JSON
+        + CSV branches) and by casting.presets.save_preset (CASTING-DEPTH v2.1).
         """
-        path = Path(path)
         cast_list = []
         for char in self.casting.characters.values():
             cast_list.append({
@@ -861,30 +1173,104 @@ class AudiobookProject:
                 "aliases": char.aliases,
                 "description": char.description,
             })
+        return cast_list
 
+    def export_casting(self, path: Path, fmt: Optional[str] = None) -> None:
+        """
+        Export current casting table to a JSON or CSV file.
+
+        JSON format: array of objects with keys
+        name, voice, emotion, speed, aliases, description.
+
+        CSV format (CASTING-DEPTH v2.1): columns
+        name, voice, gender, line_count, emotion, speed, emphasis,
+        aliases (';'-joined), description.
+
+        Args:
+            path: Output file path.
+            fmt: Explicit format ("json" or "csv"). When None, inferred from the
+                file extension (.csv -> CSV, anything else -> JSON).
+        """
+        path = Path(path)
+        resolved = (fmt or path.suffix.lstrip(".")).lower()
+
+        if resolved == "csv":
+            self._export_casting_csv(path)
+            return
+
+        cast_list = self._casting_as_list()
         with open(path, "w", encoding="utf-8") as f:
             json.dump(cast_list, f, indent=2, ensure_ascii=False)
 
         logger.info("Exported casting table (%d characters) to %s", len(cast_list), path)
 
-    def import_casting(self, path: Path) -> None:
-        """
-        Import casting table from a JSON file, merging with existing cast.
+    def _export_casting_csv(self, path: Path) -> None:
+        """CASTING-DEPTH v2.1: write the casting table as a CSV cast sheet.
 
-        Format: JSON array of objects with keys:
+        Columns: name, voice, gender, line_count, emotion, speed, emphasis,
+        aliases (';'-joined), description. ``gender`` is derived from the voice
+        ID prefix convention (af_/bf_ -> female, am_/bm_ -> male) so a
+        spreadsheet editor sees a useful column; it is informational only and is
+        ignored on import.
+        """
+        import csv
+
+        fieldnames = [
+            "name", "voice", "gender", "line_count", "emotion",
+            "speed", "emphasis", "aliases", "description",
+        ]
+        rows = 0
+        # newline="" per the stdlib csv docs so the writer controls line endings.
+        with open(path, "w", encoding="utf-8", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            for char in self.casting.characters.values():
+                writer.writerow({
+                    "name": char.name,
+                    "voice": char.voice,
+                    "gender": _gender_from_voice(char.voice),
+                    "line_count": char.line_count,
+                    "emotion": char.emotion or "",
+                    "speed": char.speed,
+                    "emphasis": char.emphasis,
+                    "aliases": ";".join(char.aliases),
+                    "description": char.description or "",
+                })
+                rows += 1
+        logger.info("Exported casting CSV (%d characters) to %s", rows, path)
+
+    def import_casting(self, path: Path, fmt: Optional[str] = None) -> None:
+        """
+        Import a casting table from a JSON or CSV file, merging with the cast.
+
+        JSON format: array of objects with keys
         name, voice, emotion, speed, aliases, description.
+
+        CSV format (CASTING-DEPTH v2.1): columns
+        name, voice, gender, line_count, emotion, speed, emphasis,
+        aliases (';'-joined), description. Only name + voice are required;
+        every other column is optional and tolerated when missing. ``gender``
+        is informational and ignored.
+
         On conflicts (same character name), the imported entry overwrites.
 
         Args:
-            path: Path to casting JSON file
+            path: Path to casting file (.json or .csv).
+            fmt: Explicit format ("json" or "csv"). When None, inferred from the
+                file extension (.csv -> CSV, anything else -> JSON).
 
         Raises:
-            FileNotFoundError: If the file doesn't exist
-            ValueError: If the JSON format is invalid
+            FileNotFoundError: If the file doesn't exist.
+            ValueError: If the file format is invalid.
         """
         path = Path(path)
         if not path.exists():
             raise FileNotFoundError(f"Casting file not found: {path}")
+
+        resolved = (fmt or path.suffix.lstrip(".")).lower()
+        if resolved == "csv":
+            self._import_casting_csv(path)
+            return
 
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
@@ -921,6 +1307,148 @@ class AudiobookProject:
 
         self.modified_at = datetime.now().isoformat()
         logger.info("Imported %d characters from %s", imported, path)
+
+    def _import_casting_csv(self, path: Path) -> None:
+        """CASTING-DEPTH v2.1: import a CSV cast sheet, merging into the cast.
+
+        Columns: name, voice, gender, line_count, emotion, speed, emphasis,
+        aliases (';'-joined), description. Only name + voice are required; all
+        other columns are optional and tolerated when missing/blank. The
+        ``gender`` column is informational and is ignored.
+        """
+        import csv
+
+        imported = 0
+        with open(path, "r", encoding="utf-8", newline="") as f:
+            reader = csv.DictReader(f)
+            if reader.fieldnames is None or not {
+                "name", "voice"
+            }.issubset({(fn or "").strip() for fn in reader.fieldnames}):
+                raise ValueError(
+                    "Casting CSV must have at least 'name' and 'voice' columns. "
+                    f"Got columns: {', '.join(reader.fieldnames or []) or '(none)'}"
+                )
+
+            for row in reader:
+                name = (row.get("name") or "").strip()
+                voice = (row.get("voice") or "").strip()
+                if not name or not voice:
+                    # Skip blank/incomplete rows rather than failing the import.
+                    continue
+
+                char = Character(
+                    name=name,
+                    voice=voice,
+                    emotion=(row.get("emotion") or "").strip() or None,
+                    speed=_csv_float(row.get("speed"), 1.0),
+                    emphasis=_csv_float(row.get("emphasis"), 1.0),
+                    aliases=_csv_aliases(row.get("aliases")),
+                    description=(row.get("description") or "").strip() or None,
+                    line_count=_csv_int(row.get("line_count"), 0),
+                )
+                key = self.casting.normalize_key(char.name)
+                self.casting.characters[key] = char
+                imported += 1
+
+        self.modified_at = datetime.now().isoformat()
+        logger.info("Imported %d characters from CSV %s", imported, path)
+
+    # -------------------------------------------------------------------------
+    # Pronunciation Lexicon Import/Export (INPUT v2.1)
+    # -------------------------------------------------------------------------
+
+    def export_lexicon(self, path: Path) -> None:
+        """
+        Export pronunciation overrides to a lexicon file (INPUT v2.1).
+
+        Writes both plain spelling replacements (pronunciation_overrides) and
+        phoneme-typed entries (phoneme_overrides) through the parser's
+        save_lexicon, which picks CSV vs JSON from the file extension and tags
+        phoneme entries with type=phoneme so a later import keeps them distinct.
+
+        Args:
+            path: Output file path (.csv or .json).
+        """
+        from audiobooker.parser.text_cleaners import save_lexicon
+
+        path = Path(path)
+        # Build the merged override map. Plain entries carry no type; phoneme
+        # entries are tagged so save_lexicon can round-trip the distinction.
+        # Prefer the rich {word: {"replacement", "type"}} shape; if the parser's
+        # save_lexicon only accepts a flat {word: replacement} map, fall back to
+        # that (the phoneme/spelling distinction then lives only in the file's
+        # type column when the parser writes one).
+        rich: dict[str, dict[str, str]] = {}
+        for word, replacement in self.config.pronunciation_overrides.items():
+            rich[word] = {"replacement": replacement}
+        for word, replacement in self.config.phoneme_overrides.items():
+            rich[word] = {"replacement": replacement, "type": "phoneme"}
+
+        try:
+            save_lexicon(path, rich)
+        except (TypeError, ValueError, AttributeError):
+            flat = dict(self.config.pronunciation_overrides)
+            flat.update(self.config.phoneme_overrides)
+            save_lexicon(path, flat)
+        logger.info(
+            "Exported lexicon (%d spelling, %d phoneme) to %s",
+            len(self.config.pronunciation_overrides),
+            len(self.config.phoneme_overrides),
+            path,
+        )
+
+    def import_lexicon(self, path: Path) -> None:
+        """
+        Import a pronunciation lexicon, merging into the project's overrides.
+
+        Uses the parser's load_lexicon (CSV columns word,replacement[,type] or
+        JSON). Entries marked type=phoneme are merged into config.phoneme_overrides;
+        all others merge into config.pronunciation_overrides. On conflicts the
+        imported entry overwrites the existing one.
+
+        Args:
+            path: Path to lexicon file (.csv or .json).
+
+        Raises:
+            FileNotFoundError: If the file doesn't exist.
+            ValueError: If the lexicon format is invalid.
+        """
+        from audiobooker.parser.text_cleaners import load_lexicon
+
+        path = Path(path)
+        if not path.exists():
+            raise FileNotFoundError(f"Lexicon file not found: {path}")
+
+        entries = load_lexicon(path)
+
+        spelling_count = 0
+        phoneme_count = 0
+        for word, value in entries.items():
+            # load_lexicon may return either a plain "replacement" string or a
+            # dict carrying a "type"/"replacement". Handle both so phoneme-typed
+            # entries land in phoneme_overrides and stay distinct.
+            if isinstance(value, dict):
+                replacement = value.get("replacement", "")
+                entry_type = value.get("type", "")
+            else:
+                replacement = value
+                entry_type = ""
+
+            if not word or not str(word).strip() or not str(replacement).strip():
+                continue
+
+            if entry_type == "phoneme":
+                self.config.phoneme_overrides[str(word).strip()] = str(replacement).strip()
+                phoneme_count += 1
+            else:
+                self.config.pronunciation_overrides[str(word).strip()] = str(replacement).strip()
+                spelling_count += 1
+
+        self.modified_at = datetime.now().isoformat()
+        logger.info(
+            "Imported lexicon (%d spelling, %d phoneme) from %s",
+            spelling_count, phoneme_count, path,
+        )
 
     # -------------------------------------------------------------------------
     # Chapter Management (FT-CORE-002, FT-CORE-003)
@@ -1078,6 +1606,100 @@ class AudiobookProject:
         self.modified_at = datetime.now().isoformat()
         return first, second
 
+    def rename_chapter(self, index: int, title: str) -> Chapter:
+        """
+        Rename a chapter's display title (F-FEAT-F3, v2.1).
+
+        The chapter title is what surfaces in the M4B chapter list and the
+        per-chapter file names, so a rename invalidates any cached render for
+        that chapter — same invalidation pattern merge_chapters/split_chapter
+        use. Text/utterances are NOT reset on a pure rename: the audio is only
+        stale because its title-derived metadata/filename changed, so we clear
+        audio_path + duration but keep the compiled utterances.
+
+        Args:
+            index: Chapter index to rename (0-based).
+            title: New chapter title. Must be a non-empty string.
+
+        Returns:
+            The renamed Chapter.
+
+        Raises:
+            IndexError: If index is out of range.
+            ValueError: If title is empty or not a string.
+        """
+        if index < 0 or index >= len(self.chapters):
+            raise IndexError(
+                f"Chapter index {index} out of range (0-{len(self.chapters) - 1})"
+            )
+        if not isinstance(title, str) or not title.strip():
+            raise ValueError("Chapter title must be a non-empty string.")
+
+        chapter = self.chapters[index]
+        chapter.title = title.strip()
+        # A title change invalidates the cached audio (chapter metadata + the
+        # per-chapter output filename derive from the title). Mirror the
+        # merge/split invalidation, but keep utterances since the text is
+        # unchanged — only re-rendering metadata is required.
+        chapter.audio_path = None
+        chapter.duration_seconds = 0.0
+
+        self.modified_at = datetime.now().isoformat()
+        return chapter
+
+    def reorder_chapters(self, new_order: list[int]) -> None:
+        """
+        Reorder chapters according to a permutation of their current indices
+        (F-FEAT-F3, v2.1).
+
+        ``new_order`` must be a permutation of ``range(len(chapters))``:
+        ``new_order[k]`` is the *current* index of the chapter that should end
+        up at position ``k``. After reordering, every chapter is re-indexed to
+        its new position, and any chapter that actually moved has its cached
+        audio invalidated (audio_path / duration / utterances cleared), exactly
+        as merge_chapters/split_chapter do for affected chapters. Chapters that
+        keep their position are left untouched.
+
+        Args:
+            new_order: A list that is a permutation of range(len(chapters)).
+
+        Raises:
+            ValueError: If new_order is not a valid permutation (wrong length,
+                duplicates, or out-of-range indices).
+        """
+        n = len(self.chapters)
+        if not isinstance(new_order, (list, tuple)):
+            raise ValueError(
+                f"new_order must be a list of indices, got {type(new_order).__name__}."
+            )
+        if len(new_order) != n:
+            raise ValueError(
+                f"new_order has {len(new_order)} entries but the project has "
+                f"{n} chapter(s); it must be a permutation of 0-{n - 1}."
+            )
+        if sorted(new_order) != list(range(n)):
+            raise ValueError(
+                f"new_order must be a permutation of range({n}) "
+                f"(each index 0-{n - 1} exactly once); got {new_order!r}."
+            )
+
+        # Build the reordered list. new_order[k] is the OLD index landing at k.
+        reordered = [self.chapters[old_idx] for old_idx in new_order]
+        self.chapters = reordered
+
+        # Re-index and invalidate cached audio for chapters that actually
+        # moved (old position != new position). Same invalidation as
+        # merge_chapters/split_chapter for affected chapters.
+        for new_idx, old_idx in enumerate(new_order):
+            ch = self.chapters[new_idx]
+            ch.index = new_idx
+            if old_idx != new_idx:
+                ch.audio_path = None
+                ch.duration_seconds = 0.0
+                ch.utterances = []
+
+        self.modified_at = datetime.now().isoformat()
+
     # -------------------------------------------------------------------------
     # Compilation
     # -------------------------------------------------------------------------
@@ -1213,11 +1835,30 @@ class AudiobookProject:
         if dry_run:
             return dry_run_result
 
+        # FT-CORE-022: Capture a small compile summary the CLI can surface
+        # (speaker resolution stats + emotions inferred + any NLP errors).
+        # Previously the stats returned by resolve()/apply_to_utterances()
+        # were discarded, so the user got no observability into what compile
+        # actually did.
+        self.compile_summary = {
+            "speakers_resolved": 0,
+            "low_confidence": 0,
+            "emotions_inferred": 0,
+            "emotions_near_miss": 0,
+            "nlp_errors": [],
+        }
+
         # Optional NLP speaker resolution (BookNLP)
         if self.config.booknlp_mode != "off":
             from audiobooker.nlp.speaker_resolver import SpeakerResolver
             resolver = SpeakerResolver(mode=self.config.booknlp_mode)
-            resolver.resolve(self.chapters, self.casting)
+            res_stats = resolver.resolve(self.chapters, self.casting)
+            self.compile_summary["speakers_resolved"] = res_stats.speakers_resolved
+            # Borderline fuzzy matches (accepted, but just over the threshold)
+            # are the attributions a human should spot-check. The resolver
+            # records them directly in stats.low_confidence.
+            self.compile_summary["low_confidence"] = len(res_stats.low_confidence)
+            self.compile_summary["nlp_errors"] = list(res_stats.nlp_errors)
 
         # Optional emotion inference
         if self.config.emotion_mode != "off":
@@ -1232,17 +1873,68 @@ class AudiobookProject:
                 merged_hints = dict(getattr(inference_profile, "emotion_hints", {}))
                 merged_hints.update(self.config.user_emotion_rules)
                 inference_profile.emotion_hints = merged_hints
-            inferencer = EmotionInferencer(
+            # CASTING-DEPTH v2.1: thread the emotion preset pack so the
+            # inferencer (casting-owned) can parametrize its threshold + label
+            # set. Call defensively: a concurrently-evolving inferencer with the
+            # older signature (no preset=) still works and keeps "neutral"
+            # behavior unchanged.
+            inferencer_kwargs = dict(
                 mode=self.config.emotion_mode,
                 threshold=self.config.emotion_confidence_threshold,
                 profile=inference_profile,
             )
+            preset = getattr(self.config, "emotion_preset", "neutral")
+            if preset and preset != "neutral":
+                inferencer_kwargs["preset"] = preset
+            try:
+                inferencer = EmotionInferencer(**inferencer_kwargs)
+            except TypeError:
+                inferencer_kwargs.pop("preset", None)
+                inferencer = EmotionInferencer(**inferencer_kwargs)
+            emotions_inferred = 0
+            emotions_near_miss = 0
             for chapter in self.chapters:
-                inferencer.apply_to_utterances(chapter.utterances, chapter.raw_text)
+                emotions_inferred += inferencer.apply_to_utterances(
+                    chapter.utterances, chapter.raw_text
+                )
+                run_stats = getattr(inferencer, "last_run_stats", None)
+                if run_stats is not None:
+                    emotions_near_miss += run_stats.near_miss
+            self.compile_summary["emotions_inferred"] = emotions_inferred
+            self.compile_summary["emotions_near_miss"] = emotions_near_miss
+
+        # CASTING-DEPTH v2.1: apply each character's default_intensity as a
+        # fallback for any of its emotional utterances that still have no
+        # intensity. This NEVER overrides an intensity already set inline (by a
+        # user script tag) or by graded inference — only fills the gap so the
+        # renderer's emphasis-band mapping reflects the character's default.
+        self._apply_default_intensities()
 
         self.progress.status = "idle"
         self.modified_at = datetime.now().isoformat()
         return None
+
+    def _apply_default_intensities(self) -> None:
+        """CASTING-DEPTH v2.1: fill in per-character default_intensity.
+
+        For every compiled utterance that HAS an emotion but NO intensity, and
+        whose speaker has a Character with a default_intensity set, copy that
+        default onto the utterance. An intensity already present (set inline by
+        the user or by graded emotion inference) is never overwritten — this is
+        a pure gap-fill so the renderer's (emotion, intensity) emphasis mapping
+        reflects the character's authored default.
+        """
+        casting = self.casting
+        for chapter in self.chapters:
+            for utt in chapter.utterances:
+                if utt.intensity is not None or not utt.emotion:
+                    continue
+                key = casting.normalize_key(utt.speaker)
+                char = casting.characters.get(key)
+                if char is None:
+                    char = casting.resolve_alias(utt.speaker)
+                if char is not None and char.default_intensity is not None:
+                    utt.intensity = char.default_intensity
 
     def _compile_parallel(
         self,
@@ -1360,6 +2052,9 @@ class AudiobookProject:
         jobs: int = 1,
         force: bool = False,
         output_format: Optional[str] = None,
+        output_profile: Optional[str] = None,
+        bitrate: Optional[str] = None,
+        split: bool = False,
     ) -> Path:
         """
         Render all chapters and assemble final audiobook.
@@ -1375,6 +2070,11 @@ class AudiobookProject:
             jobs: Number of parallel render workers (default 1).
             force: Bypass casting completeness validation.
             output_format: Override output format ('m4b', 'mp3', 'wav').
+            output_profile: Mastering profile ('podcast' | 'acx'). Defaults to
+                the project config's output_profile when None.
+            bitrate: Override encoder bitrate (e.g. "192k"). None uses the
+                profile/assembler default.
+            split: If True, emit per-chapter files instead of one combined file.
 
         Returns:
             Path to output file
@@ -1382,6 +2082,7 @@ class AudiobookProject:
         from audiobooker.renderer.engine import render_project
 
         fmt = output_format or self.config.output_format
+        profile = output_profile or self.config.output_profile
         if output_path is None:
             output_path = Path(f"{_sanitize_filename(self.title)}.{fmt}")
         else:
@@ -1399,9 +2100,10 @@ class AudiobookProject:
         if uncompiled:
             self.compile()
 
-        # Render
-        result_path = render_project(
-            self, output_path, progress_callback,
+        # Render. output_profile/bitrate/split are part of the v2.1 render
+        # contract; call defensively so a concurrently-evolving renderer with
+        # an older signature degrades gracefully instead of hard-crashing.
+        render_kwargs = dict(
             engine=engine,
             assembler=assembler,
             resume=resume,
@@ -1410,7 +2112,24 @@ class AudiobookProject:
             jobs=jobs,
             force=force,
             output_format=output_format,
+            output_profile=profile,
+            bitrate=bitrate,
+            split=split,
         )
+        try:
+            result_path = render_project(
+                self, output_path, progress_callback, **render_kwargs
+            )
+        except TypeError as e:
+            # Older renderer signature lacks the v2.1 kwargs — retry without
+            # them so existing (podcast/128k) behavior still works.
+            if not any(k in str(e) for k in ("output_profile", "bitrate", "split")):
+                raise
+            for k in ("output_profile", "bitrate", "split"):
+                render_kwargs.pop(k, None)
+            result_path = render_project(
+                self, output_path, progress_callback, **render_kwargs
+            )
 
         self.progress.status = "complete"
         self.modified_at = datetime.now().isoformat()
@@ -1545,6 +2264,70 @@ class AudiobookProject:
                 emotion_counts[label] = emotion_counts.get(label, 0) + 1
             result[chapter.index] = emotion_counts
         return result
+
+    def set_mood_span(
+        self,
+        chapter_index: int,
+        start: int,
+        end: int,
+        emotion: str,
+    ) -> str:
+        """CASTING-DEPTH v2.1: mark a character span of a chapter with a mood.
+
+        Wraps ``chapter.raw_text[start:end]`` with the scene tags
+        ``[scene:<emotion>] ... [/scene]`` that casting/dialogue.py parses (like
+        the existing [pause]/[sfx] tags) and applies as an emotion FALLBACK
+        inside the span. Precedence is explicit/inline > scene > chapter mood,
+        so this never overrides a user-set emotion on a line — it only supplies
+        a default for lines that have none. The span is applied at the next
+        compile; this method invalidates the chapter's compiled utterances and
+        cached audio so a re-compile/re-render is required.
+
+        Args:
+            chapter_index: Chapter index (0-based).
+            start: Start character offset into the chapter's raw_text (inclusive).
+            end: End character offset (exclusive). Must be > start.
+            emotion: Mood/emotion label to apply across the span.
+
+        Returns:
+            The text fragment that was wrapped (for confirmation messages).
+
+        Raises:
+            IndexError: If the chapter index is out of range.
+            ValueError: If the offsets are invalid or the emotion is empty.
+        """
+        if not emotion or not emotion.strip():
+            raise ValueError("Mood-span emotion label must not be empty.")
+        if chapter_index < 0 or chapter_index >= len(self.chapters):
+            raise IndexError(
+                f"Chapter index {chapter_index} out of range "
+                f"(0-{len(self.chapters) - 1})"
+            )
+        chapter = self.chapters[chapter_index]
+        text_len = len(chapter.raw_text)
+        if start < 0 or end > text_len or start >= end:
+            raise ValueError(
+                f"Invalid mood span [{start}, {end}) for chapter {chapter_index} "
+                f"(text length {text_len}); need 0 <= start < end <= length."
+            )
+
+        emotion = emotion.strip()
+        fragment = chapter.raw_text[start:end]
+        chapter.raw_text = (
+            chapter.raw_text[:start]
+            + f"[scene:{emotion}]"
+            + fragment
+            + "[/scene]"
+            + chapter.raw_text[end:]
+        )
+
+        # The span only takes effect on (re)compile; invalidate compiled
+        # utterances + cached audio so the next compile/render picks it up.
+        chapter.utterances = []
+        chapter.audio_path = None
+        chapter.duration_seconds = 0.0
+        self.modified_at = datetime.now().isoformat()
+        return fragment
 
     def override_emotion(
         self, chapter_index: int, utterance_index: int, emotion: str

@@ -35,6 +35,19 @@ _ORDINAL_SUFFIXES = {
     8: "eighth", 9: "ninth", 12: "twelfth",
 }
 
+# Irregular ordinals keyed by the trailing cardinal WORD. Used to transform the
+# last word of a compound number (e.g. "one hundred one" -> "one hundred first")
+# where the digit-based _ORDINAL_SUFFIXES lookup doesn't apply.
+_IRREGULAR_ORDINAL_WORDS = {
+    "one": "first",
+    "two": "second",
+    "three": "third",
+    "five": "fifth",
+    "eight": "eighth",
+    "nine": "ninth",
+    "twelve": "twelfth",
+}
+
 
 def _int_to_words(n: int) -> str:
     """Convert a non-negative integer to English words (up to 999,999,999)."""
@@ -90,9 +103,9 @@ def _int_to_ordinal(n: int) -> str:
     # Handle hyphenated (e.g., "twenty-three")
     if "-" in last_word:
         prefix, suffix = last_word.rsplit("-", 1)
-        n_last = n % 10
-        if n_last in _ORDINAL_SUFFIXES:
-            ordinal_suffix = _ORDINAL_SUFFIXES[n_last]
+        # Irregular trailing word (e.g. "-one" -> "-first") takes precedence
+        if suffix in _IRREGULAR_ORDINAL_WORDS:
+            ordinal_suffix = _IRREGULAR_ORDINAL_WORDS[suffix]
         elif suffix.endswith("y"):
             ordinal_suffix = suffix[:-1] + "ieth"
         elif suffix.endswith("e"):
@@ -101,11 +114,14 @@ def _int_to_ordinal(n: int) -> str:
             ordinal_suffix = suffix + "th"
         return words[:words.rfind(last_word)] + f"{prefix}-{ordinal_suffix}"
     else:
-        if last_word.endswith("y"):
+        # Irregular trailing word (e.g. "one hundred one" -> "... first")
+        if last_word in _IRREGULAR_ORDINAL_WORDS:
+            return words[:-len(last_word)] + _IRREGULAR_ORDINAL_WORDS[last_word]
+        elif last_word.endswith("y"):
             return words[:-len(last_word)] + last_word[:-1] + "ieth"
-        elif last_word.endswith("e") and last_word not in ("one", "three", "five", "nine"):
+        elif last_word.endswith("e"):
             return words + "th"
-        elif last_word.endswith("t") and last_word not in ("eight",):
+        elif last_word.endswith("t"):
             return words + "h"
         else:
             return words + "th"
