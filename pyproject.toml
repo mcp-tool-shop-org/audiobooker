@@ -63,7 +63,10 @@ dev = [
     "pytest>=7.0",
     "pytest-asyncio>=0.21",
     "pytest-cov>=4.0",
-    "ruff>=0.3",
+    # PINNED. `ruff>=0.3` made every ruff release a live dependency of CI going
+    # green: 0.16.6 enabled hundreds of rules this repo never opted into and the
+    # lint step went from clean to 369 errors with no commit in between.
+    "ruff==0.16.6",
     "pip-audit>=2.7.0",
 ]
 
@@ -91,6 +94,7 @@ asyncio_mode = "auto"
 testpaths = ["tests"]
 
 [tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]
 ignore = ["E402"]
 
 [tool.pyright]
