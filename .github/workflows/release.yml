@@ -11,6 +11,14 @@ concurrency:
 
 jobs:
   publish:
+    # Only on a real release — workflow_dispatch has no release tag to check
+    # against pyproject.toml, and dispatching this job from an arbitrary ref
+    # must not be able to reach PyPI. Mirrors the guard on publish-npm below.
+    # (The `pypi` environment itself currently has no required reviewers or
+    # branch/tag policy, unlike `github-pages` in docker.yml/pages.yml which
+    # is restricted to the `main` branch. Tightening that is a repo-settings
+    # change outside this file — tracked as a coordinator follow-up.)
+    if: ${{ github.event_name == 'release' }}
     runs-on: ubuntu-latest
     environment:
       name: pypi
@@ -23,6 +31,16 @@ jobs:
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.12'
+
+      - name: Verify tag matches pyproject.toml version
+        run: |
+          PKG_VERSION=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          echo "tag=${TAG_VERSION} pkg=${PKG_VERSION}"
+          if [ "${PKG_VERSION}" != "${TAG_VERSION}" ]; then
+            echo "::error::Tag ${TAG_VERSION} does not match pyproject.toml ${PKG_VERSION}"
+            exit 1
+          fi
 
       - name: Build sdist and wheel
         run: |
@@ -55,13 +73,18 @@ jobs:
           node-version: '22'
           registry-url: 'https://registry.npmjs.org'
 
-      - name: Install npm >=11.5 in a sandbox for OIDC trusted publishing
+      - name: Install pinned npm in a sandbox for OIDC trusted publishing
         run: |
           SANDBOX="$HOME/.npm-cli-sandbox"
           mkdir -p "$SANDBOX"
           pushd "$SANDBOX" >/dev/null
           echo '{"name":"npm-cli-sandbox","version":"0.0.0","private":true}' > package.json
-          npm install --no-save --no-audit --no-fund --silent npm@latest
+          # PINNED. This binary performs the OIDC exchange for `npm publish`
+          # below, so it gets the same exact-version discipline as every
+          # actions/* step in this file — `npm@latest` would let the registry
+          # pick the publish-credential binary at run time. Last verified
+          # 2026-09-14 (registry `latest` dist-tag at time of pin).
+          npm install --no-save --no-audit --no-fund --silent npm@12.0.2
           popd >/dev/null
           echo "$SANDBOX/node_modules/.bin" >> "$GITHUB_PATH"
           "$SANDBOX/node_modules/.bin/npm" --version
