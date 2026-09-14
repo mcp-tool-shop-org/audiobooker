@@ -24,6 +24,9 @@ from audiobooker.casting.dialogue import (
     utterances_to_script,
 )
 from audiobooker.casting.voice_registry import (
+    VoiceBackendError,
+    VoiceBackendIncompatibleError,
+    VoiceBackendUnavailableError,
     VoiceNotFoundError,
     get_available_voices,
     validate_voices,
@@ -56,6 +59,9 @@ __all__ = [
     "VoiceNotFoundError",
     "get_available_voices",
     "validate_voices",
+    "VoiceBackendError",
+    "VoiceBackendIncompatibleError",
+    "VoiceBackendUnavailableError",
     # voice_suggester
     "DefaultVoiceRegistry",
     "SpeakerSuggestions",

@@ -271,13 +271,37 @@ class DefaultVoiceRegistry:
     """Queries real voice-soundboard."""
 
     def list_voices(self) -> list[str]:
+        from audiobooker.casting.voice_registry import (
+            VoiceBackendIncompatibleError,
+            VoiceBackendUnavailableError,
+            get_available_voices,
+        )
+
         try:
-            from audiobooker.casting.voice_registry import get_available_voices
             return sorted(get_available_voices())
-        except ImportError:
+        except VoiceBackendIncompatibleError as exc:
+            # Drift, not absence. The curated table is a frozen snapshot; if we
+            # fall back silently, downstream suggestions recommend voice IDs the
+            # real backend may no longer have. Say so at WARNING, naming the
+            # module that actually failed.
+            logger.warning(
+                "voice-soundboard is installed but module %r could not be "
+                "imported (%s) — falling back to a FROZEN curated list of %d "
+                "voices. Suggestions may name voices the installed backend does "
+                "not have.",
+                exc.module, exc, len(_VOICE_NOTES),
+            )
+            return sorted(_VOICE_NOTES.keys())
+        except VoiceBackendUnavailableError:
             logger.info(
                 "voice-soundboard not available — falling back to curated voice list (%d voices)",
                 len(_VOICE_NOTES),
+            )
+            return sorted(_VOICE_NOTES.keys())
+        except ImportError as exc:  # pragma: no cover - defensive
+            logger.warning(
+                "voice-soundboard could not be queried (%s) — falling back to "
+                "curated voice list (%d voices)", exc, len(_VOICE_NOTES),
             )
             return sorted(_VOICE_NOTES.keys())
 
@@ -714,8 +738,11 @@ def audition_voices(
     # Build already-cast map from casting table
     already_cast: dict[str, str] = {}
     for key, char in casting.characters.items():
-        if char.voice_id:
-            already_cast[key] = char.voice_id
+        # models.Character names the field `voice`, not `voice_id`. Reading
+        # `voice_id` raised AttributeError for every already-cast character —
+        # i.e. the ordinary `audiobooker audition` workflow.
+        if char.voice:
+            already_cast[key] = char.voice
 
     is_narrator = speaker.lower() in ("narrator", "narration")
     result = suggester.suggest_for_speaker(

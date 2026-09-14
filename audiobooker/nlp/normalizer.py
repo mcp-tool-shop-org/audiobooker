@@ -128,12 +128,21 @@ def _int_to_ordinal(n: int) -> str:
 
 
 def _year_to_words(year: int) -> str:
-    """Convert a year (1900-2099) to spoken form."""
+    """
+    Convert a year to spoken form.
+
+    CAST-AMEND-2-008: the paired-halves branch used to start at 1900, but
+    ``_YEAR_RE`` matches from 1800. Anything in 1800-1899 fell through to
+    ``_int_to_words`` and then to the cardinal pass, so "In 1812" narrated as
+    "one thousand eight hundred twelve" instead of "eighteen twelve" — a defect
+    on every 19th-century date, in a tool aimed at classic prose. The
+    paired-halves reading is correct for the whole 1100-1999 range.
+    """
     if 2000 <= year <= 2009:
         return "two thousand" + (" " + _ONES[year - 2000] if year > 2000 else "")
     elif 2010 <= year <= 2099:
         return "twenty " + _int_to_words(year - 2000)
-    elif 1900 <= year <= 1999:
+    elif 1100 <= year <= 1999:
         first = year // 100
         second = year % 100
         first_words = _int_to_words(first)
@@ -143,6 +152,26 @@ def _year_to_words(year: int) -> str:
             return first_words + " " + _int_to_words(second)
     else:
         return _int_to_words(year)
+
+
+def _decade_to_words(year: int) -> str:
+    """
+    Convert a decade to spoken form: 1980 -> 'nineteen eighties'.
+
+    CAST-AMEND-2-008: ``_YEAR_RE`` matched the 1980 in "1980s" and left the
+    orphaned 's' behind, narrating "nineteen eightys".
+    """
+    words = _year_to_words(year)
+    head, _, last = words.rpartition(" ")
+    if not last:
+        head, last = "", words
+    if last.endswith("y"):
+        last = last[:-1] + "ies"
+    elif last.endswith(("s", "x", "z", "ch", "sh")):
+        last = last + "es"
+    else:
+        last = last + "s"
+    return (head + " " + last).strip()
 
 
 # ---------------------------------------------------------------------------
@@ -167,20 +196,34 @@ _CARDINAL_RE = re.compile(
     r"(?<!\d)(\d{1,6})(?!\d|st|nd|rd|th)",
 )
 
+# CAST-AMEND-2-008: decade pattern (1980s, 2010s, '90s is out of scope).
+# Must run BEFORE _YEAR_RE, which would otherwise consume the year and orphan
+# the plural suffix ("nineteen eightys").
+_DECADE_RE = re.compile(
+    r"(?<!\d)(1[1-9]\d0|20\d0)s\b",
+)
+
 
 def normalize_numbers(text: str) -> str:
     """
     Convert numbers to spoken form.
 
     Handles:
-    - Years (1900-2099) -> spoken form (e.g., "nineteen eighty-four")
+    - Decades (1980s) -> spoken form (e.g., "nineteen eighties")
+    - Years (1100-2099) -> spoken form (e.g., "nineteen eighty-four")
     - Ordinals (1st, 2nd, 3rd) -> spoken form (e.g., "first", "second")
     - Cardinals (plain digits) -> spoken form (e.g., "forty-two")
     """
-    # Years first (before cardinal would catch them)
+    # Decades first — _YEAR_RE would consume the year and orphan the 's'.
+    def _replace_decade(m: re.Match) -> str:
+        return _decade_to_words(int(m.group(1)))
+
+    text = _DECADE_RE.sub(_replace_decade, text)
+
+    # Years next (before cardinal would catch them)
     def _replace_year(m: re.Match) -> str:
         year = int(m.group(1))
-        if 1900 <= year <= 2099:
+        if 1800 <= year <= 2099:
             return _year_to_words(year)
         return m.group(0)
 
@@ -211,7 +254,16 @@ def normalize_numbers(text: str) -> str:
 # Abbreviation expansion
 # ---------------------------------------------------------------------------
 
-_ABBREVIATIONS: dict[str, str] = {
+# CAST-AMEND-2-009: split by whether the abbreviation can END a sentence.
+#
+# The old flat map consumed the period in every case, so "He worked at Acme
+# Inc." narrated as "...Acme Incorporated" with no full stop — a prosody defect
+# on every affected sentence, and normalize_text=True is the default. Titles
+# always precede a name and so are never sentence-final; the rest can be, and
+# their period has to be restored when it is the sentence's own.
+
+# Titles — always followed by a name, never sentence-final.
+_TITLE_ABBREVIATIONS: dict[str, str] = {
     r"\bDr\.": "Doctor",
     r"\bMr\.": "Mister",
     r"\bMrs\.": "Missus",
@@ -225,7 +277,15 @@ _ABBREVIATIONS: dict[str, str] = {
     r"\bCol\.": "Colonel",
     r"\bAdm\.": "Admiral",
     r"\bRev\.": "Reverend",
-    r"\bSt\.": "Saint",
+}
+
+# May legitimately end a sentence — the trailing period must survive.
+#
+# 'St.' is deliberately absent. It is ambiguous (Saint vs Street), so "Baker St."
+# narrated as "Baker Saint"; this follows the PARSER-A-006 decision already taken
+# for the parser's expand_common_abbreviations, which stopped expanding it for
+# exactly this reason.
+_TRAILING_ABBREVIATIONS: dict[str, str] = {
     r"\bJr\.": "Junior",
     r"\bSr\.": "Senior",
     r"\bInc\.": "Incorporated",
@@ -241,24 +301,52 @@ _ABBREVIATIONS: dict[str, str] = {
     r"\bPl\.": "Place",
 }
 
-_COMPILED_ABBREVS: Optional[list[tuple[re.Pattern, str]]] = None
+# Kept for backward compatibility with anything importing the old name.
+_ABBREVIATIONS: dict[str, str] = {**_TITLE_ABBREVIATIONS, **_TRAILING_ABBREVIATIONS}
+
+# The abbreviation's period is the SENTENCE's period when what follows is the
+# end of the text, or whitespace then the start of a new sentence.
+_SENTENCE_BOUNDARY_AFTER_RE = re.compile(
+    r'^\s*$|^\s+["“‘«(\[]*[A-ZÀ-ɏ]'
+)
+
+_COMPILED_ABBREVS: Optional[list[tuple[re.Pattern, str, bool]]] = None
 
 
-def _get_compiled_abbrevs() -> list[tuple[re.Pattern, str]]:
-    """Lazily compile abbreviation patterns."""
+def _get_compiled_abbrevs() -> list[tuple[re.Pattern, str, bool]]:
+    """Lazily compile abbreviation patterns as (pattern, replacement, may_end_sentence)."""
     global _COMPILED_ABBREVS
     if _COMPILED_ABBREVS is None:
         _COMPILED_ABBREVS = [
-            (re.compile(pattern), replacement)
-            for pattern, replacement in _ABBREVIATIONS.items()
+            (re.compile(pattern), replacement, False)
+            for pattern, replacement in _TITLE_ABBREVIATIONS.items()
+        ] + [
+            (re.compile(pattern), replacement, True)
+            for pattern, replacement in _TRAILING_ABBREVIATIONS.items()
         ]
     return _COMPILED_ABBREVS
 
 
 def expand_abbreviations(text: str) -> str:
-    """Expand common abbreviations for clearer TTS pronunciation."""
-    for pattern, replacement in _get_compiled_abbrevs():
-        text = pattern.sub(replacement, text)
+    """
+    Expand common abbreviations for clearer TTS pronunciation.
+
+    A sentence-final abbreviation keeps its full stop: "Acme Inc." becomes
+    "Acme Incorporated." and not "Acme Incorporated", which would run two
+    sentences together in the synthesized audio.
+    """
+    for pattern, replacement, may_end_sentence in _get_compiled_abbrevs():
+        if not may_end_sentence:
+            text = pattern.sub(replacement, text)
+            continue
+
+        def _sub(match: re.Match, _r: str = replacement) -> str:
+            tail = match.string[match.end():]
+            if _SENTENCE_BOUNDARY_AFTER_RE.match(tail):
+                return _r + "."
+            return _r
+
+        text = pattern.sub(_sub, text)
     return text
 
 

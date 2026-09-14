@@ -24,6 +24,20 @@ logger = logging.getLogger("audiobooker.nlp.emotion")
 if TYPE_CHECKING:
     from audiobooker.models import Utterance
 
+# CAST-AMEND-2-006: utterance kinds that are not speech. Compared by NAME so
+# this module keeps its lazy relationship with audiobooker.models (imported only
+# under TYPE_CHECKING) instead of growing a runtime import for one enum.
+_NON_SPEECH_TYPE_NAMES = frozenset({"PAUSE", "DIRECTION"})
+
+
+def _is_non_speech(utt: "Utterance") -> bool:
+    """True for PAUSE / DIRECTION utterances (stage machinery, not performance)."""
+    utt_type = getattr(utt, "utterance_type", None)
+    if utt_type is None:
+        return False
+    name = getattr(utt_type, "name", None) or str(utt_type)
+    return name.upper() in _NON_SPEECH_TYPE_NAMES
+
 
 # ---------------------------------------------------------------------------
 # Result
@@ -192,6 +206,24 @@ def _band_intensity(confidence: float) -> float:
     return max(0.0, min(1.0, float(confidence)))
 
 
+def _locate_utterance(chapter_text: str, utt: "Utterance") -> int:
+    """
+    Offset of ``utt.text`` inside ``chapter_text``.
+
+    CAST-AMEND-2-006. ``Utterance.start_pos`` is populated by ``compile_chapter``
+    and is authoritative: it distinguishes the two copies of a repeated line
+    ("No.", "Yes.") that ``str.find`` cannot. It is trusted only when the text
+    really does sit there, so hand-built utterances and post-compile rewrites
+    still fall back to the old first-occurrence search rather than reading a
+    window from the wrong place.
+    """
+    start_pos = getattr(utt, "start_pos", None)
+    if isinstance(start_pos, int) and 0 <= start_pos <= len(chapter_text):
+        if chapter_text.startswith(utt.text, start_pos):
+            return start_pos
+    return chapter_text.find(utt.text)
+
+
 def _set_intensity(utt: "Utterance", value: float) -> None:
     """
     Set ``utt.intensity`` if the model supports the field.
@@ -211,16 +243,25 @@ def _set_intensity(utt: "Utterance", value: float) -> None:
 # ---------------------------------------------------------------------------
 
 def _punctuation_emotion(text: str) -> Optional[EmotionResult]:
-    """Infer emotion from punctuation cues."""
+    """
+    Infer emotion from punctuation cues.
+
+    CAST-AMEND-2-007: the strong cues used to max out at confidence 0.6 while
+    EVERY shipped preset threshold is >= 0.65 (dramatic 0.65, children 0.70,
+    neutral 0.75, subtle 0.85). A documented inference source that no shipped
+    configuration can ever reach is dead code, so the two unambiguous cues are
+    now scored above the lowest shipped threshold. The genuinely weak ellipsis
+    cue is left where it was — it SHOULD stay below every threshold.
+    """
     # Multiple exclamation marks → excited/angry
     if re.search(r"!{2,}", text):
-        return EmotionResult(label="excited", confidence=0.6, source="punctuation")
+        return EmotionResult(label="excited", confidence=0.7, source="punctuation")
 
     # ALL CAPS (at least 4 words)
     words = text.split()
     caps_words = sum(1 for w in words if w.isupper() and len(w) > 1)
     if caps_words >= 4:
-        return EmotionResult(label="angry", confidence=0.6, source="punctuation")
+        return EmotionResult(label="angry", confidence=0.68, source="punctuation")
 
     # Ellipsis → uncertain/sad (low confidence)
     if "..." in text or "\u2026" in text:
@@ -404,13 +445,25 @@ class EmotionInferencer:
             if utt.emotion:
                 continue  # Already has emotion — don't override
 
+            # CAST-AMEND-2-006: stage directions are not speech. A PAUSE's text
+            # is "pause:500ms" and a DIRECTION's is an sfx description; running
+            # emotion inference over them tags machinery, not performance.
+            if _is_non_speech(utt):
+                continue
+
             stats.examined += 1
 
             # Scope context to a narrow window around the utterance
             # to avoid false-positive emotion tagging from distant text.
+            #
+            # CAST-AMEND-2-006: this used chapter_text.find(utt.text) — the
+            # FIRST occurrence — even though Utterance.start_pos is already
+            # populated by compile_chapter. Every repeated short line ("No.",
+            # "Yes.") therefore read its emotion off whatever passage happened
+            # to contain the first copy.
             context = ""
             if chapter_text and utt.text:
-                pos = chapter_text.find(utt.text)
+                pos = _locate_utterance(chapter_text, utt)
                 if pos >= 0:
                     start = max(0, pos - context_window)
                     end = min(len(chapter_text), pos + len(utt.text) + context_window)
