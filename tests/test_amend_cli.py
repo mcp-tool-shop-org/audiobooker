@@ -248,11 +248,12 @@ class TestReviewMalformedLines:
         review = self._review_file(tmp_path)
 
         code = main(["review-import", str(review), "-p", str(proj_path)])
-        out = capsys.readouterr().out
+        captured = capsys.readouterr()
 
         assert code != 0, "a malformed review file must not exit 0"
-        assert "Ready to render" not in out
-        assert self.MALFORMED in out
+        assert "Ready to render" not in captured.out
+        # Residual 4: the malformed-line report goes through _err -> stderr.
+        assert self.MALFORMED in captured.err
 
     def test_emptied_chapter_is_reported(self, tmp_path):
         """A matched chapter whose utterances drop to 0 must be flagged."""
@@ -666,14 +667,22 @@ class TestJsonPayloadNotCorruptedByErrors:
         )
         assert "Error" in captured.err
 
-    def test_plain_status_error_still_on_stdout(self, tmp_path, monkeypatch, capsys):
-        """Without --json the historical stdout behavior is unchanged."""
+    def test_plain_status_error_also_on_stderr(self, tmp_path, monkeypatch, capsys):
+        """Residual 4: stderr routing is unconditional, not gated on --json.
+
+        This test used to assert the opposite ("the historical stdout behavior
+        is unchanged"), which is precisely the behavior wave 2 wanted to flip
+        and could not, because eight assertions in other domains' files read
+        error text off stdout.
+        """
         monkeypatch.chdir(tmp_path)
         missing = tmp_path / "nope.audiobooker"
 
         code = main(["status", "-p", str(missing)])
+        captured = capsys.readouterr()
         assert code == 1
-        assert "Error" in capsys.readouterr().out
+        assert "Error" not in captured.out
+        assert "Error" in captured.err
 
 
 class TestStructuredErrorSurfacing:
@@ -690,8 +699,11 @@ class TestStructuredErrorSurfacing:
             )
         )
         _report_error(err)
-        out = capsys.readouterr().out
+        captured = capsys.readouterr()
+        # Residual 4: _report_error goes through _err, which is stderr-only.
+        assert captured.out == ""
+        err_text = captured.err
 
-        assert "RENDER_BACKEND_UNAVAILABLE" in out
-        assert "retryable" in out.lower()
-        assert "Retry in a moment" in out
+        assert "RENDER_BACKEND_UNAVAILABLE" in err_text
+        assert "retryable" in err_text.lower()
+        assert "Retry in a moment" in err_text

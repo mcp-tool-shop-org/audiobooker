@@ -66,7 +66,7 @@ import time
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from audiobooker.renderer.engine import RenderError
+    from audiobooker.renderer.engine import RenderError, RenderSummary
 from pathlib import Path
 from typing import Optional
 
@@ -101,21 +101,28 @@ def _out(*args, **kwargs) -> None:
 
 
 def _err(*parts, args: "argparse.Namespace | None" = None, **kwargs) -> None:
-    """Print an error or warning line. Never suppressed by --silent.
+    """Print an error or warning line to **stderr**. Never suppressed by --silent.
 
-    CLI-CROSS: when the command is emitting a ``--json`` payload on stdout, the
-    message goes to **stderr** instead, because an "Error: ..." line printed
-    into the payload makes it unparseable — ``audiobooker status --json -p
-    missing.audiobooker > status.json`` wrote the error INTO status.json.
+    Unconditional, on every command and every output mode. stdout is the
+    command's product — a payload, a table, a path — and stderr is where
+    anything that went wrong belongs, so that:
 
-    Routing every error to stderr unconditionally is the correct end state, but
-    eight tests owned by other domains currently assert error text on
-    ``capsys.readouterr().out`` (see this wave's agent report), so the switch is
-    gated on JSON mode here and this helper is the single chokepoint a later
-    wave flips.
+    * ``audiobooker status --json -p missing.audiobooker > status.json`` writes
+      a parseable payload instead of an "Error: ..." line INTO status.json;
+    * ``audiobooker render ... | tee log`` still shows failures on the terminal;
+    * ``--silent`` hides the chatter without ever hiding a problem.
+
+    CLI-CROSS (wave 2) made this JSON-only because eight assertions in other
+    domains' test files read error text off ``capsys.readouterr().out``. Wave-3
+    residual 4 flipped it and amended those assertions, which encoded the old,
+    wrong behavior — ``file=sys.stderr`` appeared nowhere in this module before
+    wave 2, and this helper is the single chokepoint for it.
+
+    Args:
+        args: Accepted (and ignored) so the ~60 existing ``_err(..., args=args)``
+            call sites keep their shape. Routing no longer depends on it.
     """
-    stream = sys.stderr if getattr(args, "json_output", False) else sys.stdout
-    print(*parts, file=stream, **kwargs)
+    print(*parts, file=sys.stderr, **kwargs)
 
 
 def _resolve_engine(args, project=None):
@@ -159,7 +166,7 @@ def _report_error(e: BaseException, args: "argparse.Namespace | None" = None) ->
     Prints "Error: {e}", then the structured ``code``/``retryable`` and
     ``hint`` the exception carries (see audiobooker/errors.py), and the full
     traceback when --debug is set. Errors always print (never suppressed by
-    --silent); they go to stderr in --json mode (see _err).
+    --silent) and always go to stderr (see _err).
 
     CLI-CROSS: ``code`` and ``retryable`` used to be discarded here, so the
     shipcheck-mandated error shape never reached the user — a retryable
@@ -2456,15 +2463,32 @@ def _cmd_render_once(args) -> int:
             project.chapters = full_chapters
             project.save()
 
-            _out(f"\nAudiobook created: {path}")
+            # A render that dropped chapters (--allow-partial) still returns a
+            # path and still writes a file; announcing "Audiobook created" for
+            # it told the user a 29-of-30-chapter book was finished.
+            partial = _render_incompleteness(path)
+            if partial is not None:
+                _err(f"\nAudiobook assembled INCOMPLETE: {path}", args=args)
+                _err(_partial_render_message(partial), args=args)
+                _err(f"Hint: {_PARTIAL_RENDER_HINT}", args=args)
+            else:
+                _out(f"\nAudiobook created: {path}")
             _out(f"Duration: {project.total_duration_seconds / 60:.1f} minutes")
 
             # FT-RENDER-020: Desktop notification on success
             if notify:
                 _send_notification(
                     title="Audiobooker",
-                    message=f"Render complete: {project.title}",
+                    message=(
+                        f"Render PARTIAL: {project.title}"
+                        if partial is not None
+                        else f"Render complete: {project.title}"
+                    ),
                 )
+
+            if partial is not None:
+                # Exit-code taxonomy: 3 = partial (documented in README).
+                return 3
 
         return 0
 
@@ -2486,6 +2510,60 @@ def _cmd_render_once(args) -> int:
                 message=f"Render error: {e}",
             )
         return 2
+
+
+def _render_incompleteness(path) -> Optional["RenderSummary"]:
+    """Return the RenderSummary when a render did NOT produce a whole book.
+
+    ``render_project`` returns a Path that also carries ``render_summary``
+    (see ``renderer.engine.RenderedOutputPath``). A render under
+    ``--allow-partial`` that dropped chapters still returns a path and still
+    writes a real file, so the summary is the ONLY thing that distinguishes it
+    from a finished book — and discarding it is how a 29-of-30-chapter
+    audiobook got reported to the user as complete.
+
+    Returns None when the render is complete, when the caller was handed a
+    plain Path (an injected/mocked renderer), or when the summary cannot be
+    interpreted — i.e. "not provably incomplete" never blocks a report.
+    """
+    summary = getattr(path, "render_summary", None)
+    if summary is None:
+        return None
+    try:
+        if summary.is_complete:
+            return None
+    except Exception:  # pragma: no cover - never fail a report over metadata
+        return None
+    return summary
+
+
+def _partial_render_message(summary) -> str:
+    """One user-facing line naming exactly what is missing from the output."""
+    missing = list(getattr(summary, "missing_chapters", None) or [])
+    failed = int(getattr(summary, "failed", 0) or 0)
+    total = int(getattr(summary, "total", 0) or 0)
+
+    parts = []
+    if missing:
+        indices = ", ".join(str(i) for i in missing)
+        parts.append(f"{len(missing)} chapter(s) dropped (indices: {indices})")
+    if failed:
+        parts.append(f"{failed} chapter(s) failed to render")
+    detail = "; ".join(parts) or "some chapters are missing from the output"
+
+    if total:
+        included = max(total - len(missing), 0)
+        return (
+            f"PARTIAL render — {detail}. "
+            f"The file contains {included} of {total} chapters."
+        )
+    return f"PARTIAL render — {detail}."
+
+
+_PARTIAL_RENDER_HINT = (
+    "Re-run `audiobooker render` to retry only the missing chapters "
+    "(completed chapters are cached), or `--no-resume` to start clean."
+)
 
 
 def _print_render_failure(e: "RenderError") -> None:
@@ -4545,7 +4623,16 @@ def _process_book(
                 render_kwargs.pop(k, None)
             path = render_project(project, final_output, **render_kwargs)
 
-        book_result["status"] = "success"
+        # The render either produced the whole book or it did not. Recording
+        # "success" unconditionally here is what let an incomplete render
+        # (chapters dropped under allow_partial) reach the batch summary,
+        # the --json payload and the exit code as a finished book.
+        partial = _render_incompleteness(path)
+        if partial is not None:
+            book_result["status"] = "partial"
+            book_result["error"] = _partial_render_message(partial)[:200]
+        else:
+            book_result["status"] = "success"
         book_result["output"] = str(path)
         book_result["duration_s"] = _time.time() - book_start
 
@@ -4792,6 +4879,11 @@ def cmd_batch(args) -> int:
         status = book_result["status"]
         if status == "success":
             _out(f"  OK: {book_result['output']} ({book_result['duration_s']:.1f}s)")
+        elif status == "partial":
+            _out(
+                f"  PARTIAL: {book_result['output']} "
+                f"({book_result['duration_s']:.1f}s) — {book_result['error']}"
+            )
         elif status == "failed":
             _out(f"  FAILED: {book_result['error']}")
         elif status == "skipped":
@@ -4803,6 +4895,9 @@ def cmd_batch(args) -> int:
     # Summary
     total_elapsed = _time.time() - batch_start
     success = sum(1 for r in results if r["status"] == "success")
+    # A book whose render dropped chapters is NOT a success — it gets its own
+    # bucket so the count, the payload and the exit code all tell the truth.
+    partial = sum(1 for r in results if r["status"] == "partial")
     failed = sum(1 for r in results if r["status"] in ("failed", "error"))
     skipped = sum(1 for r in results if r["status"] == "skipped")
 
@@ -4812,6 +4907,7 @@ def cmd_batch(args) -> int:
         print(json_mod.dumps(
             {
                 "succeeded": success,
+                "partial": partial,
                 "failed": failed,
                 "skipped": skipped,
                 "total_elapsed_s": round(total_elapsed, 2),
@@ -4820,9 +4916,9 @@ def cmd_batch(args) -> int:
             indent=2,
             ensure_ascii=False,
         ))
-        if failed == 0:
+        if failed == 0 and partial == 0:
             return 0
-        return 3 if success > 0 else 1
+        return 3 if (success or partial) else 1
 
     def _fmt_duration(s: float) -> str:
         if s >= 3600:
@@ -4832,7 +4928,10 @@ def cmd_batch(args) -> int:
         return f"{s:.1f}s"
 
     _out(f"\n{'='*72}")
-    _out(f"  BATCH SUMMARY — {success} succeeded, {failed} failed, {skipped} skipped")
+    _out(
+        f"  BATCH SUMMARY — {success} succeeded, {partial} partial, "
+        f"{failed} failed, {skipped} skipped"
+    )
     _out(f"  Total elapsed: {_fmt_duration(total_elapsed)}")
     _out(f"{'='*72}")
     _out(f"  {'#':<4} {'Status':<10} {'Duration':<10} {'Title':<28} {'Output'}")
@@ -4841,13 +4940,16 @@ def cmd_batch(args) -> int:
         status = r["status"].upper()
         dur = _fmt_duration(r["duration_s"])
         name = r["name"][:27]
-        out = r["output"] if r["status"] == "success" else r.get("error", "")[:40]
+        if r["status"] in ("success", "partial"):
+            out = r["output"]
+        else:
+            out = r.get("error", "")[:40]
         _out(f"  {idx:<4} {status:<10} {dur:<10} {name:<28} {out}")
     _out(f"{'='*72}")
 
-    if failed == 0:
+    if failed == 0 and partial == 0:
         return 0
-    elif success > 0:
+    elif success > 0 or partial > 0:
         return 3  # partial success
     else:
         return 1
@@ -4927,6 +5029,14 @@ def _make_summary(book_result: dict) -> int:
         _out(f"  Source: {book_result['file']}")
         _out(f"  Elapsed: {book_result['duration_s']:.1f}s")
         return 0
+    if status == "partial":
+        # The file exists but is short some chapters — say so, and exit 3
+        # (the documented partial code) rather than claiming success.
+        _err(f"\nAudiobook assembled INCOMPLETE: {book_result['output']}")
+        _err(f"  {book_result['error']}")
+        _err(f"  Source: {book_result['file']}")
+        _err(f"Hint: {_PARTIAL_RENDER_HINT}")
+        return 3
     if status == "skipped":
         print(f"Skipped: {book_result['error']}")
         return 1
@@ -5092,9 +5202,12 @@ def cmd_sample(args) -> int:
         output = getattr(args, "output", None)
 
         if from_chapter < 0 or from_chapter >= len(project.chapters):
-            print(
+            # Residual 4: an error line printed with a bare print() bypasses
+            # the _err chokepoint and lands in a piped stdout.
+            _err(
                 f"Error: Chapter {from_chapter} not found "
-                f"(project has {len(project.chapters)} chapters)"
+                f"(project has {len(project.chapters)} chapters)",
+                args=args,
             )
             return 1
 

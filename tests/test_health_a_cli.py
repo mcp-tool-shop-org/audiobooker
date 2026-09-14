@@ -191,9 +191,10 @@ class TestLoadSubcommand:
     def test_load_missing_file_reports_error(self, tmp_path, capsys):
         code = main(["load", str(tmp_path / "nope.audiobooker")])
         assert code == 1
-        out = capsys.readouterr().out
-        assert "Unknown command" not in out
-        assert "Error" in out
+        captured = capsys.readouterr()
+        assert "Unknown command" not in (captured.out + captured.err)
+        # Residual 4: errors go to stderr on every path.
+        assert "Error" in captured.err
 
 
 # ---------------------------------------------------------------------------
