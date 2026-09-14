@@ -462,6 +462,13 @@ def detect_dialogue(
 # body), which severs the link.
 _ATTRIB_GAP_RE = re.compile(r'^[\s,;:.!?—–…·\-]*$')
 
+# Characters a profile may list in `dialogue_quotes` that must NOT be treated
+# as delimiters when measuring the gap between a quote and its attribution.
+# Both are raya-convention markers, and both appear in _ATTRIB_GAP_RE above as
+# attributive separators — a character cannot be a delimiter and a separator
+# at once. Kept next to that regex so the two stay in view of each other.
+_NON_DELIMITING_QUOTES = frozenset({"\n", "—", "–"})
+
 # A sentence boundary inside the gap means the tag was already closed off: it is
 # the PREVIOUS quote's trailing tag, not this quote's leading tag. Such a tag may
 # still carry over (same speaker continuing in the same paragraph) but loses to
@@ -476,11 +483,32 @@ def _attribution_quote_chars(profile: LanguageProfile) -> str:
     Single quotes are deliberately EXCLUDED: ' and ’ double as apostrophes,
     so counting them would treat "Alice's" as an intervening quote. The newline
     used as a pseudo close-quote by the raya convention is excluded too.
+
+    F-9f2e0c74-A: the raya OPENER is excluded for the same reason the newline
+    closer already was, and leaving it in broke Spanish and Portuguese
+    attribution outright. ``es`` declares ``("—", "\\n")``, so ``—`` was
+    harvested here as a quote character, and ``_gap_is_attributive(...,
+    allow_quotes=False)`` then rejected any candidate whose gap contained the
+    attributive raya of ``—dijo María``. Meanwhile ``_ATTRIB_GAP_RE`` (above)
+    explicitly whitelists ``—`` and ``–`` AS attributive separators — the two
+    mechanisms contradicted each other, and this one won.
+
+    The failure was silent and it shifted the whole chapter: attribution
+    returned None, turn-tracking filled the hole with the PREVIOUS speaker, so
+    every line landed one voice out of step and only the FIRST was ``unknown``.
+    On a real chapter the unattributed rate therefore tends to zero as the
+    chapter grows — the quality signal improves while every voice is wrong,
+    the same compounding this module was fixed for in wave 4.
+
+    Only ``es`` and ``pt`` declared the pair and only they were broken; ``fr``
+    and ``it`` never declare it and reach the raya path through
+    ``_RAYA_LANGUAGES`` instead. So declaring the pair — the change that makes
+    raya dialogue DETECTABLE — was what broke attribution for that language.
     """
     chars: set[str] = set()
     for pair in tuple(profile.dialogue_quotes) + tuple(profile.smart_quotes):
         for quote in pair:
-            if quote and quote != "\n":
+            if quote and quote not in _NON_DELIMITING_QUOTES:
                 chars.add(quote)
     return "".join(sorted(chars))
 
