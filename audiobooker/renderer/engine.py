@@ -297,6 +297,89 @@ def should_use_ssml(engine: TTSEngine) -> bool:
     except (AttributeError, TypeError):
         return False
 
+
+def _assembler_accepted_kwargs(assembler: Callable) -> Optional[set[str]]:
+    """The keyword names ``assembler`` declares, or None if unknowable.
+
+    RH-B-001: the render path used to discover unsupported assembler kwargs by
+    calling and catching TypeError, then stripping kwargs from the END of a
+    fixed list until the call type-checked. ``normalize`` was appended last,
+    so it was always the first thing dropped — silently, for every format but
+    m4b. Binding by signature makes "this assembler cannot do that" a fact the
+    caller can act on BEFORE the call.
+
+    Returns None when the signature cannot be read (a C callable) or when the
+    assembler declares ``**kwargs`` (it accepts anything by construction).
+    """
+    import inspect
+
+    try:
+        params = inspect.signature(assembler).parameters
+    except (TypeError, ValueError):
+        return None
+    if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()):
+        return None
+    return {
+        name for name, p in params.items()
+        if p.kind in (
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            inspect.Parameter.KEYWORD_ONLY,
+        )
+    }
+
+
+def engine_is_thread_safe(engine: TTSEngine) -> bool:
+    """Whether ``engine.synthesize()`` may be called from several threads.
+
+    RH-B-003: ``--jobs N`` drove ``synthesize()`` on ONE shared engine
+    instance from N pool workers, and neither ``protocols.TTSEngine`` nor the
+    ``capabilities()`` key set said whether that was allowed. Almost every
+    real TTS backend is stateful (a loaded torch/ONNX model, a session
+    object, one HTTP connection, a global voice register), so a third-party
+    engine registered through the ``audiobooker.tts_engines`` entry point was
+    entered concurrently by construction. The failure is not a clean
+    exception — it is interleaved or cross-voiced audio in some chapters,
+    which passes the size and duration checks and is only found on
+    listen-back, hours later.
+
+    Opt-in only: an engine must return ``{"thread_safe": True}`` from
+    ``capabilities()``. Anything else — the key absent, a non-True value, no
+    ``capabilities()`` method at all, or a method that raises — is treated as
+    NOT thread-safe.
+    """
+    try:
+        caps = engine.capabilities()
+    except Exception:  # pragma: no cover - a broken engine is not thread-safe
+        return False
+    if not isinstance(caps, dict):
+        return False
+    return caps.get("thread_safe", False) is True
+
+
+class _SerializedEngine:
+    """Wraps a TTSEngine so only one thread is inside ``synthesize()``.
+
+    RH-B-003. Everything other than ``synthesize`` is delegated untouched, so
+    ``capabilities()``/``list_voices()`` still work. The wrapper is applied
+    ONLY inside the render loop and never to the object used to compute the
+    render-params hash — ``hash_utils._resolve_engine_name`` keys an injected
+    engine by its class identity, so wrapping before hashing would invalidate
+    every cached chapter the moment a user passed ``--jobs 2``.
+    """
+
+    __slots__ = ("_engine", "_lock")
+
+    def __init__(self, engine: TTSEngine) -> None:
+        self._engine = engine
+        self._lock = threading.Lock()
+
+    def synthesize(self, *args, **kwargs):
+        with self._lock:
+            return self._engine.synthesize(*args, **kwargs)
+
+    def __getattr__(self, name: str):
+        return getattr(self._engine, name)
+
 # Structured logger for render operations
 logger = logging.getLogger("audiobooker.renderer")
 
@@ -1088,10 +1171,63 @@ class RenderSummary:
     # FT-ACX-001: master_check() report for an 'acx' render (None otherwise).
     acx_check: Optional[dict] = None
 
+    # RH-B-002: assembly-level degradation. AssemblyResult already carried
+    # these, and grep confirmed NO caller read any of them: when the
+    # chapter-marker mux failed, assemble_m4b copied the chapterless AAC to
+    # the .m4b and the renderer logged a WARNING — then handed back a summary
+    # that looked exactly like a finished book. An audiobook with no chapter
+    # navigation is retail-blocking for the format, and un-applied loudness
+    # mastering disqualifies an ACX submission, so both now travel with the
+    # summary (which reaches the CLI via RenderedOutputPath.render_summary).
+    #
+    # Defaults describe a NON-degraded render so a summary built by hand (or
+    # by an older caller) never reads as broken.
+    chapters_embedded: bool = True
+    chapter_error: str = ""
+    mastering_applied: bool = True
+    mastering_error: str = ""
+
     @property
     def is_complete(self) -> bool:
-        """True when every chapter made it into the assembled output."""
+        """True when every chapter made it into the assembled output.
+
+        Deliberately still about CHAPTER COMPLETENESS only. The CLI's
+        partial-render message is written in terms of dropped/failed chapter
+        indices, so folding assembly degradation in here would print "some
+        chapters are missing from the output" for a book that has every
+        chapter but no chapter markers. Use ``is_retail_ready`` for the
+        "can I sell this file" question.
+        """
         return not self.failed and not self.missing_chapters
+
+    @property
+    def is_retail_ready(self) -> bool:
+        """True when the output is complete AND undegraded.
+
+        False when any chapter is missing, when chapter navigation could not
+        be embedded, or when requested loudness mastering did not actually
+        reach the shipped audio.
+        """
+        return (
+            self.is_complete
+            and self.chapters_embedded
+            and self.mastering_applied
+        )
+
+    @property
+    def degradations(self) -> list[str]:
+        """Human-readable list of everything degraded about this render."""
+        notes: list[str] = []
+        if self.missing_chapters:
+            human = ", ".join(str(i + 1) for i in self.missing_chapters)
+            notes.append(f"{len(self.missing_chapters)} chapter(s) missing ({human})")
+        if not self.chapters_embedded:
+            detail = f": {self.chapter_error}" if self.chapter_error else ""
+            notes.append(f"chapter navigation was NOT embedded{detail}")
+        if not self.mastering_applied:
+            detail = f": {self.mastering_error}" if self.mastering_error else ""
+            notes.append(f"loudness mastering was NOT applied{detail}")
+        return notes
 
 
 class RenderedOutputPath(type(Path())):  # type: ignore[misc]
@@ -1320,6 +1456,30 @@ def _render_project_impl(
         project.config, engine=engine, output_profile=output_profile
     )
 
+    # RH-B-003: --jobs N used to call synthesize() on ONE shared engine
+    # instance from N pool workers with no thread-safety contract anywhere.
+    # Serialize synthesize() unless the engine explicitly advertises
+    # thread_safe=True. Done AFTER the params hash above on purpose: the hash
+    # keys an injected engine by class identity, so wrapping first would
+    # invalidate the whole chapter cache for any --jobs render.
+    #
+    # When `engine is None` each render_chapter() call builds its own default
+    # engine, so there is nothing shared to protect.
+    render_engine = engine
+    if jobs > 1 and engine is not None and not engine_is_thread_safe(engine):
+        logger.warning(
+            f"RENDER_ENGINE_NOT_THREAD_SAFE: --jobs {jobs} was requested but "
+            f"{type(engine).__name__} does not advertise "
+            f"capabilities()['thread_safe'] == True. Calls to synthesize() "
+            f"will be serialized behind a lock — chapter rendering will run "
+            f"at single-thread speed. A stateful engine entered concurrently "
+            f"produces interleaved or cross-voiced audio that passes every "
+            f"size and duration check, so this is not a risk worth taking "
+            f"silently. Engines that are genuinely safe should return "
+            f"{{'thread_safe': True}} from capabilities()."
+        )
+        render_engine = _SerializedEngine(engine)
+
     # FT-CAST-026: the emphasis preset the chapters actually render with. This
     # was declared on ProjectConfig and accepted by render_chapter but threaded
     # by no caller, so every non-neutral preset was dead code.
@@ -1416,7 +1576,7 @@ def _render_project_impl(
             try:
                 render_chapter(
                     chapter, project.casting, tmp_path,
-                    engine=engine, emotion_preset=emotion_preset,
+                    engine=render_engine, emotion_preset=emotion_preset,
                 )
 
                 try:
@@ -1575,7 +1735,7 @@ def _render_project_impl(
 
         # FT-RENDER-006 / FT-RENDER-M-*: Pass the rich assembler kwargs when the
         # assembler accepts them. Injected test assemblers only take the base
-        # five positional kwargs, so optional kwargs are stripped on TypeError.
+        # five positional kwargs.
         base_kwargs = dict(
             chapter_files=ok_paths,
             output_path=output_path,
@@ -1583,39 +1743,78 @@ def _render_project_impl(
             author=project.author,
             chapter_pause_ms=project.config.chapter_pause_ms,
         )
-        # Optional kwargs, attempted in addition to base_kwargs. Order matters:
-        # they're stripped one group at a time on TypeError, most-specific last.
-        optional_kwargs = dict(
-            metadata=getattr(project, "metadata", None),
-            loudnorm_profile=output_profile,
-        )
+
+        # RH-B-001: bind optional kwargs by INSPECTING the signature, not by
+        # calling and catching TypeError.
+        #
+        # The old loop built the optional kwargs in a fixed order, appended
+        # `normalize` LAST, and on TypeError popped from the END until the
+        # call type-checked. So `normalize` was always the first casualty —
+        # and an assembler missing any one earlier kwarg lost every later one
+        # too. `assemble_m4b` is the only assembler that used to accept
+        # `normalize`, which meant `--normalize --format mp3|opus|flac` and
+        # `--normalize --split` produced completely un-normalized audio with
+        # no log line at any level. `--acx` forces normalization on, so an
+        # "ACX retail master" in those formats shipped with none — and since
+        # the kwarg never reached the assembler, AssemblyResult.
+        # mastering_applied kept its True default and the
+        # ACX_MASTER_NOT_APPLIED path could not fire.
+        #
+        # Signature binding makes an unsupported capability VISIBLE instead of
+        # silently dropping it (see the normalize gap handling below).
+        accepted = _assembler_accepted_kwargs(assembler)
+
+        def _accepts(name: str) -> bool:
+            # None => signature unreadable (e.g. a C callable); assume the
+            # historical superset and let the call itself decide.
+            return accepted is None or name in accepted
+
+        optional_kwargs: dict = {}
+        if _accepts("metadata"):
+            optional_kwargs["metadata"] = getattr(project, "metadata", None)
+        if _accepts("loudnorm_profile"):
+            optional_kwargs["loudnorm_profile"] = output_profile
         # Bitrate kwarg name differs across assemblers: assemble_m4b takes
         # aac_bitrate, the others take bitrate. Pick whichever the assembler
-        # actually accepts so the bitrate is never silently dropped. When the
-        # assembler only declares **kwargs (no named bitrate param), default to
-        # the generic 'bitrate' name.
-        try:
-            import inspect
-            _params = inspect.signature(assembler).parameters
-            _names = set(_params)
-            _has_var_kw = any(
-                p.kind is inspect.Parameter.VAR_KEYWORD for p in _params.values()
-            )
-            if "aac_bitrate" in _names:
-                optional_kwargs["aac_bitrate"] = effective_bitrate
-            elif "bitrate" in _names or _has_var_kw:
-                optional_kwargs["bitrate"] = effective_bitrate
-        except (TypeError, ValueError):
+        # actually accepts so the bitrate is never silently dropped.
+        if accepted is not None and "aac_bitrate" in accepted:
+            optional_kwargs["aac_bitrate"] = effective_bitrate
+        elif _accepts("bitrate"):
             optional_kwargs["bitrate"] = effective_bitrate
-        if cover_art:
+        if cover_art and _accepts("cover_art"):
             optional_kwargs["cover_art"] = cover_art
-        if effective_normalize:
+
+        # The one capability we refuse to drop quietly. `accepted is None`
+        # means the assembler declares **kwargs, so the signature cannot
+        # prove support — the residual TypeError loop below re-opens this
+        # flag if the kwarg is rejected at call time.
+        normalize_supported = _accepts("normalize")
+        if effective_normalize and normalize_supported:
             optional_kwargs["normalize"] = effective_normalize
 
         def _call_assembler():
-            """Call the assembler, degrading optional kwargs on TypeError."""
+            """Call the assembler with the kwargs its signature declares.
+
+            F-e29a147c: the drop-and-retry loop below runs ONLY when the
+            signature could not be read -- `accepted is None`, meaning a C
+            callable or a `**kwargs` wrapper whose real shape is hidden. When
+            the signature IS readable, every kwarg in `attempt` is one the
+            assembler declares, so a binding TypeError is impossible by
+            construction and any TypeError came from the assembler's own BODY.
+
+            Retrying there is how this shipped a book with no metadata: an
+            unrelated internal `TypeError` was read as "kwarg unsupported",
+            four kwargs were stripped one at a time, and the render returned
+            SUCCESS -- while logging a reason the signature disproves ("the
+            m4b assembler does not accept 'normalize'" about an assembler
+            that declares it). A wrong cause is worse than no cause; it sends
+            the next reader to audit a signature that was never the problem.
+            """
+            nonlocal normalize_supported
             attempt = dict(base_kwargs, **optional_kwargs)
-            # Drop optional kwargs from the end until the call type-checks.
+            if accepted is not None:
+                # Signature-checked. Let a real error be a real error.
+                return assembler(**attempt)
             droppable = list(optional_kwargs.keys())
             while True:
                 try:
@@ -1624,6 +1823,14 @@ def _render_project_impl(
                     if not droppable:
                         raise
                     drop = droppable.pop()
+                    if drop in attempt:
+                        logger.warning(
+                            f"RENDER_ASSEMBLER_KWARG_DROPPED: {drop!r} was "
+                            f"rejected by the {fmt} assembler and has been "
+                            f"dropped."
+                        )
+                        if drop == "normalize":
+                            normalize_supported = False
                     attempt.pop(drop, None)
 
         try:
@@ -1651,6 +1858,39 @@ def _render_project_impl(
         project.output_path = assembly.output_path
         summary.output_path = assembly.output_path
 
+        # RH-B-002: carry the assembler's degradation flags onto the summary.
+        # These existed on AssemblyResult and reached no caller.
+        summary.chapters_embedded = bool(
+            getattr(assembly, "chapters_embedded", True)
+        )
+        summary.chapter_error = str(getattr(assembly, "chapter_error", "") or "")
+        summary.mastering_applied = bool(
+            getattr(assembly, "mastering_applied", True)
+        )
+        summary.mastering_error = str(getattr(assembly, "mastering_error", "") or "")
+
+        # RH-B-001: the assembler could not honour a requested normalization.
+        # Never let that read as a success — the AssemblyResult default would
+        # otherwise say mastering_applied=True for audio nothing normalized.
+        if effective_normalize and not normalize_supported:
+            summary.mastering_applied = False
+            summary.mastering_error = (
+                f"the {fmt} assembler "
+                f"({getattr(assembler, '__name__', type(assembler).__name__)}) "
+                f"does not accept 'normalize'"
+            )
+            logger.error(
+                f"RENDER_MASTERING_UNSUPPORTED: loudness normalization was "
+                f"requested (profile={output_profile}) but the selected {fmt} "
+                f"assembler cannot apply it — {summary.mastering_error}. The "
+                f"output is NOT loudness-normalized"
+                + (
+                    " and cannot meet the ACX retail spec."
+                    if output_profile == "acx"
+                    else "."
+                )
+            )
+
         total_duration = sum(dur for _, _, dur in ok_paths)
 
         # FT-RENDER-016: Post-render validation via ffprobe.
@@ -1669,16 +1909,30 @@ def _render_project_impl(
         # asserting it: master_check() existed but was wired only to the
         # standalone CLI command, so nothing on the render path ever measured
         # the file it had just produced.
-        if output_profile == "acx" and assembler in _builtin_assemblers:
-            _verify_acx_master(assembly, summary)
+        if output_profile == "acx":
+            _verify_acx_master(assembly, summary, measure=assembler in _builtin_assemblers)
 
-        if not assembly.chapters_embedded:
+        if not summary.chapters_embedded:
             logger.warning(
                 f"RENDER_COMPLETE_NO_CHAPTERS: output={assembly.output_path} "
-                f"duration={total_duration:.1f}s reason={assembly.chapter_error!r}"
+                f"duration={total_duration:.1f}s reason={summary.chapter_error!r}"
             )
         else:
             logger.info(f"RENDER_COMPLETE: output={assembly.output_path} duration={total_duration:.1f}s")
+
+        # RH-B-002: a stderr WARNING scrolls away, and no caller read the
+        # AssemblyResult flags. Push one non-fatal line per degradation
+        # through the renderer's own progress channel so a terminal-only
+        # session still sees that the book shipped degraded.
+        if progress_callback:
+            for note in summary.degradations:
+                if note.startswith("chapter navigation") or note.startswith(
+                    "loudness mastering"
+                ):
+                    progress_callback(
+                        len(project.chapters), len(project.chapters),
+                        f"WARNING: {note} — the output is not retail-ready.",
+                    )
 
         # Save failure report if any chapters failed
         if failure_report.failed_chapters:
@@ -2085,32 +2339,62 @@ def _resolve_project_dir(project: "AudiobookProject") -> Path:
     return Path.cwd()
 
 
-def _verify_acx_master(assembly, summary: "RenderSummary") -> None:
+def _verify_acx_master(assembly, summary: "RenderSummary", *, measure: bool = True) -> None:
     """Measure a finished 'acx' render against the ACX retail limits.
 
     Warns loudly rather than raising: the chapters are rendered and the file
     exists, so destroying a multi-hour render over a measurement is worse than
     telling the user exactly what to fix. The verdict is recorded on the
     summary so a caller can refuse to report the render as retail-ready.
+
+    Args:
+        assembly: The AssemblyResult just returned by the assembler.
+        summary: The RenderSummary to record the verdict on.
+        measure: Whether to actually run ``master_check`` on the output. False
+            for an injected/custom assembler, whose output we do not own — the
+            "was mastering even applied" verdict below is still recorded.
     """
     from audiobooker.renderer.output import master_check
 
     output = Path(getattr(assembly, "output_path", "") or "")
+
+    # RH-B-001: this check MUST come before the is_file() guard. For mp3 and
+    # --split the output is a DIRECTORY, so the guard returned first and the
+    # "we shipped an ACX master with no loudness normalization" verdict was
+    # unreachable for exactly the formats that could not normalize at all.
+    mastering_applied = getattr(assembly, "mastering_applied", True)
+    if not summary.mastering_applied:
+        # The renderer already knows more than the assembler did (e.g. the
+        # kwarg never reached it) — that verdict wins.
+        mastering_applied = False
+    if not mastering_applied:
+        reason = (
+            summary.mastering_error
+            or getattr(assembly, "mastering_error", "")
+            or "reason unknown"
+        )
+        summary.acx_check = {"passes": False, "failures": [reason]}
+        summary.mastering_applied = False
+        summary.mastering_error = reason
+        logger.error(
+            "ACX_MASTER_NOT_APPLIED: the ACX render shipped WITHOUT loudness "
+            f"normalization — {reason}. It will not pass ACX review."
+        )
+        return
+
+    if not measure:
+        logger.info(
+            "ACX_MASTER_CHECK: skipped — a custom assembler produced this "
+            "output; mastering was reported as applied."
+        )
+        return
+
     if not output.is_file():
         # --split emits a directory of per-chapter files; there is no single
         # master to measure.
         logger.info(
             "ACX_MASTER_CHECK: skipped — output is not a single audio file "
             f"({output})"
-        )
-        return
-
-    if not getattr(assembly, "mastering_applied", True):
-        reason = getattr(assembly, "mastering_error", "") or "reason unknown"
-        summary.acx_check = {"passes": False, "failures": [reason]}
-        logger.error(
-            "ACX_MASTER_NOT_APPLIED: the ACX render shipped WITHOUT loudness "
-            f"normalization — {reason}. It will not pass ACX review."
         )
         return
 
@@ -2200,12 +2484,33 @@ def dry_run_render(
     project: "AudiobookProject",
     resume: bool = True,
     from_chapter: Optional[int] = None,
+    *,
+    engine: Optional[TTSEngine] = None,
+    output_profile: str = "podcast",
 ) -> None:
     """
     FT-RENDER-004: Preview what would be rendered without actually rendering.
 
     Walks the cache-check loop and prints a summary table showing
     which chapters would be rendered vs cached, with estimates.
+
+    Args:
+        project: The project to preview.
+        resume: Whether to consult the cache manifest (mirrors --resume).
+        from_chapter: Start index (0-based); earlier chapters are "skipped".
+        engine: The TTSEngine the real render would use. Part of the
+            render-params cache key.
+        output_profile: The mastering profile the real render would use
+            ('podcast' or 'acx'). Also part of the cache key. Defaults to
+            'podcast' to match ``_render_project_impl``'s own default.
+
+    RH-B-004: this used to call ``render_params_hash(project.config)`` with
+    NEITHER of those — a wave-2 change added them to the real render and did
+    not update this sibling call site. The two functions therefore computed
+    different keys for the same render, so ``render --acx --dry-run``
+    reported every chapter already cached and the real ``--acx`` render then
+    re-rendered the entire book. Any argument added to the real render's hash
+    call MUST be added here in the same commit.
     """
     from audiobooker.renderer.cache_manifest import (
         load_manifest, get_cache_root, get_manifest_path,
@@ -2219,7 +2524,10 @@ def dry_run_render(
     manifest_path = get_manifest_path(cache_root)
 
     current_casting_hash = casting_hash(project.casting)
-    current_params_hash = render_params_hash(project.config)
+    # RH-B-004: same arguments as the real render, or the preview lies.
+    current_params_hash = render_params_hash(
+        project.config, engine=engine, output_profile=output_profile
+    )
 
     manifest = load_manifest(manifest_path) if resume else None
 

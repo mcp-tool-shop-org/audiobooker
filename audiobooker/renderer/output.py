@@ -366,23 +366,22 @@ def _sanitize_metadata_value(value: str) -> str:
 # FT-RENDER-M-001: Full metadata tagging
 # ---------------------------------------------------------------------------
 
-def _measure_loudnorm(
-    concat_list_path: Path,
+def _measure_loudnorm_input(
+    input_args: list[str],
     loudnorm_filter: str,
     *,
     runner: "FFmpegRunner",
 ) -> Optional[dict]:
-    """First half of the standard two-pass loudnorm flow.
+    """First half of the standard two-pass loudnorm flow, over any input.
 
-    Runs the filter in analysis mode over the concatenated chapters and returns
-    its JSON report, or None when it cannot be measured (the caller then falls
-    back to single-pass dynamic normalization).
+    ``input_args`` is the ffmpeg input spec (e.g. ``["-i", "chapter.wav"]`` or
+    ``["-f", "concat", "-safe", "0", "-i", "list.txt"]``). Returns the JSON
+    report, or None when it cannot be measured (the caller then falls back to
+    single-pass dynamic normalization).
     """
     probe = runner.run([
         "ffmpeg", "-hide_banner", "-y",
-        "-f", "concat",
-        "-safe", "0",
-        "-i", str(concat_list_path),
+        *input_args,
         "-af", f"{loudnorm_filter}:print_format=json",
         "-f", "null", "-",
     ])
@@ -393,6 +392,70 @@ def _measure_loudnorm(
         )
         return None
     return _parse_loudnorm_json(probe.stderr or "")
+
+
+def _measure_loudnorm(
+    concat_list_path: Path,
+    loudnorm_filter: str,
+    *,
+    runner: "FFmpegRunner",
+) -> Optional[dict]:
+    """Two-pass loudnorm measurement over a concat list (see above)."""
+    return _measure_loudnorm_input(
+        ["-f", "concat", "-safe", "0", "-i", str(concat_list_path)],
+        loudnorm_filter,
+        runner=runner,
+    )
+
+
+def _plan_loudnorm_args(
+    input_args: list[str],
+    profile: dict[str, str],
+    profile_name: str,
+    *,
+    runner: "FFmpegRunner",
+) -> list[str]:
+    """Build the ``-af`` args for a two-pass loudnorm over ``input_args``.
+
+    RH-B-001: this used to exist only inside ``assemble_m4b``. ``normalize``
+    was therefore honoured for exactly one output format, and every other
+    assembler shipped un-normalized audio — including ``--acx`` "retail
+    masters" in mp3 / opus / flac / --split, which force normalization on.
+    Factored out so every assembler runs the same mastering path.
+    """
+    base = profile["loudnorm"]
+    measured = _measure_loudnorm_input(input_args, base, runner=runner)
+    measured_filter = _loudnorm_second_pass_filter(base, measured) if measured else None
+    if measured_filter:
+        logger.info(
+            f"ASSEMBLY_NORMALIZE: two-pass loudnorm "
+            f"(profile={profile_name}, measured I={measured.get('input_i')})"
+        )
+        return ["-af", measured_filter]
+    logger.info(
+        f"ASSEMBLY_NORMALIZE: measurement pass produced no usable report; "
+        f"falling back to single-pass dynamic loudnorm "
+        f"(profile={profile_name}, {base})"
+    )
+    return ["-af", base]
+
+
+def _log_mastering_failure(profile_name: str, message: str) -> None:
+    """Report a loudnorm pass that failed — ERROR for acx, WARNING otherwise.
+
+    An 'acx' render is a retail master: shipping it un-normalized is a defect,
+    not a nicety, so it is never reported below ERROR.
+    """
+    log = logger.error if profile_name == "acx" else logger.warning
+    log(
+        f"ASSEMBLY_NORMALIZE_FAIL: {message} — continuing WITHOUT "
+        f"normalization; the output will NOT be loudness-normalized"
+        + (
+            " and cannot meet the ACX retail spec."
+            if profile_name == "acx"
+            else "."
+        )
+    )
 
 
 def _loudnorm_second_pass_filter(
@@ -837,6 +900,7 @@ def assemble_mp3(
     runner: Optional["FFmpegRunner"] = None,
     bitrate: str = "128k",
     metadata: Optional["BookMetadata"] = None,
+    normalize: bool = False,
     loudnorm_profile: str = "podcast",
     cover_art: Optional[str] = None,
 ) -> AssemblyResult:
@@ -858,6 +922,8 @@ def assemble_mp3(
         runner: Optional FFmpegRunner.
         bitrate: MP3 encoding bitrate (default: "128k").
         metadata: Optional BookMetadata for full tagging (FT-RENDER-M-001).
+        normalize: If True, run loudness mastering on every chapter
+            (RH-B-001).
         loudnorm_profile: Mastering profile ('podcast' or 'acx').
         cover_art: Optional cover image path (embedded into each MP3).
 
@@ -865,10 +931,12 @@ def assemble_mp3(
         AssemblyResult pointing to the output directory.
     """
     output_dir = output_path.parent / output_path.stem
+    report: dict = {}
     mp3_paths = assemble_mp3_chapters(
         chapter_files, output_dir, title=title, author=author, runner=runner,
-        bitrate=bitrate, metadata=metadata, loudnorm_profile=loudnorm_profile,
-        cover_art=cover_art,
+        bitrate=bitrate, metadata=metadata, normalize=normalize,
+        loudnorm_profile=loudnorm_profile, cover_art=cover_art,
+        mastering_report=report,
     )
     # Create a manifest file listing all MP3s
     manifest = output_dir / "_playlist.m3u"
@@ -879,6 +947,8 @@ def assemble_mp3(
     return AssemblyResult(
         output_path=output_dir,
         chapters_embedded=True,  # each chapter is its own file
+        mastering_applied=bool(report.get("mastering_applied", True)),
+        mastering_error=str(report.get("mastering_error", "")),
     )
 
 
@@ -891,8 +961,10 @@ def assemble_mp3_chapters(
     runner: Optional["FFmpegRunner"] = None,
     bitrate: str = "128k",
     metadata: Optional["BookMetadata"] = None,
+    normalize: bool = False,
     loudnorm_profile: str = "podcast",
     cover_art: Optional[str] = None,
+    mastering_report: Optional[dict] = None,
 ) -> list[Path]:
     """
     Convert chapter audio files to MP3s (one per chapter).
@@ -905,9 +977,16 @@ def assemble_mp3_chapters(
         bitrate: MP3 encoding bitrate (default: "128k").
         metadata: Optional BookMetadata for full tagging (FT-RENDER-M-001):
             genre / date / album_artist / series tags applied to every chapter.
+        normalize: If True, run two-pass loudnorm mastering per chapter with
+            ``loudnorm_profile`` (RH-B-001 — this used to be m4b-only, so
+            ``--normalize --format mp3`` produced un-normalized audio).
         loudnorm_profile: Mastering profile ('podcast' = -16 LUFS / 24kHz,
             'acx' = -20 LUFS / TP -3 / 44.1kHz). Drives the sample rate.
         cover_art: Optional cover image path (embedded into each MP3).
+        mastering_report: Optional dict this function populates with
+            ``{"mastering_applied": bool, "mastering_error": str}`` so the
+            caller (which only gets a list of paths back) can still tell
+            whether the loudness pass actually ran.
 
     Returns:
         List of MP3 file paths
@@ -936,6 +1015,8 @@ def assemble_mp3_chapters(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     mp3_paths = []
+    mastering_applied = True
+    mastering_error = ""
 
     for i, (audio_path, chapter_title, _) in enumerate(chapter_files):
         # Sanitize + bound the filename (unbounded EPUB TOC titles blew the
@@ -945,40 +1026,67 @@ def assemble_mp3_chapters(
         safe_chapter_title = _sanitize_metadata_value(chapter_title)
         safe_album = _sanitize_metadata_value(title)
 
-        cmd = [
-            "ffmpeg", "-y",
-            "-i", str(audio_path),
-        ]
-        if cover_ok:
-            cmd.extend(["-i", str(cover_art)])
-        cmd.extend([
-            "-c:a", "libmp3lame",
-            "-b:a", bitrate,
-            "-ar", sample_rate,
-            "-metadata", f"title={safe_chapter_title}",
-            "-metadata", f"album={safe_album}",
-            "-metadata", f"track={i+1}",
-        ])
-        if author:
-            safe_author = _sanitize_metadata_value(author)
-            cmd.extend(["-metadata", f"artist={safe_author}"])
-        cmd.extend(extra_metadata)
-        if cover_ok:
-            # Map both streams, mark the image as the attached cover.
-            cmd.extend([
-                "-map", "0:a",
-                "-map", "1:v",
-                "-c:v", "copy",
-                "-disposition:v", "attached_pic",
-            ])
-        cmd.append(str(mp3_path))
+        # RH-B-001: mastering runs per chapter, from the lossless WAV, in the
+        # same pass that encodes — never as a second lossy generation.
+        loudnorm_args: list[str] = []
+        if normalize:
+            loudnorm_args = _plan_loudnorm_args(
+                ["-i", str(audio_path)], profile, loudnorm_profile, runner=runner,
+            )
 
-        result = runner.run(cmd)
+        def _encode(extra_filter_args: list[str]):
+            cmd = [
+                "ffmpeg", "-y",
+                "-i", str(audio_path),
+            ]
+            if cover_ok:
+                cmd.extend(["-i", str(cover_art)])
+            cmd.extend([
+                *extra_filter_args,
+                "-c:a", "libmp3lame",
+                "-b:a", bitrate,
+                "-ar", sample_rate,
+                "-metadata", f"title={safe_chapter_title}",
+                "-metadata", f"album={safe_album}",
+                "-metadata", f"track={i+1}",
+            ])
+            if author:
+                safe_author = _sanitize_metadata_value(author)
+                cmd.extend(["-metadata", f"artist={safe_author}"])
+            cmd.extend(extra_metadata)
+            if cover_ok:
+                # Map both streams, mark the image as the attached cover.
+                cmd.extend([
+                    "-map", "0:a",
+                    "-map", "1:v",
+                    "-c:v", "copy",
+                    "-disposition:v", "attached_pic",
+                ])
+            cmd.append(str(mp3_path))
+            return runner.run(cmd)
+
+        result = _encode(loudnorm_args)
+
+        if result.returncode != 0 and loudnorm_args:
+            # Mastering is what broke the pass. Keep the book, but RECORD that
+            # the shipped audio is not normalized.
+            mastering_applied = False
+            mastering_error = (
+                f"loudnorm pass failed on chapter {i + 1} "
+                f"(rc={result.returncode}, profile={loudnorm_profile}): "
+                f"{(result.stderr or '')[:300]}"
+            )
+            _log_mastering_failure(loudnorm_profile, mastering_error)
+            result = _encode([])
 
         if result.returncode != 0:
             raise RuntimeError(f"FFmpeg MP3 conversion failed: {result.stderr}")
 
         mp3_paths.append(mp3_path)
+
+    if mastering_report is not None:
+        mastering_report["mastering_applied"] = mastering_applied
+        mastering_report["mastering_error"] = mastering_error
 
     return mp3_paths
 
@@ -1000,13 +1108,18 @@ def _concat_to_single(
     author: str,
     cover_art: Optional[str] = None,
     embed_cover: bool = False,
+    normalize: bool = False,
+    loudnorm_profile_dict: Optional[dict[str, str]] = None,
+    loudnorm_profile_name: str = "podcast",
 ) -> AssemblyResult:
     """
     Shared concat → single-file encode helper for opus/flac.
 
-    Builds the silence-padded concat list, encodes with ``codec_args``,
-    then muxes chapter markers + tags. Returns an AssemblyResult; on a
-    chapter-mux failure, falls back to the codec-only file (no chapters).
+    Builds the silence-padded concat list, optionally masters it with a
+    two-pass loudnorm (RH-B-001 — ``normalize`` used to be honoured only by
+    ``assemble_m4b``), encodes with ``codec_args``, then muxes chapter
+    markers + tags. Returns an AssemblyResult; on a chapter-mux failure,
+    falls back to the codec-only file (no chapters).
     """
     import time as _time
 
@@ -1047,18 +1160,43 @@ def _concat_to_single(
         metadata_path = temp_dir / "metadata.txt"
         metadata_path.write_text("\n".join(metadata_lines), encoding="utf-8")
 
+        # RH-B-001: master in THIS pass, from the lossless chapter WAVs.
+        mastering_applied = True
+        mastering_error = ""
+        loudnorm_args: list[str] = []
+        if normalize and loudnorm_profile_dict is not None:
+            loudnorm_args = _plan_loudnorm_args(
+                ["-f", "concat", "-safe", "0", "-i", str(concat_list_path)],
+                loudnorm_profile_dict,
+                loudnorm_profile_name,
+                runner=runner,
+            )
+
         # Encode the concatenated audio to the target codec.
         encoded_path = temp_dir / f"encoded{output_path.suffix}"
-        encode_cmd = [
-            "ffmpeg", "-y",
-            "-f", "concat",
-            "-safe", "0",
-            "-i", str(concat_list_path),
-            *codec_args,
-            "-ar", sample_rate,
-            str(encoded_path),
-        ]
-        result = runner.run(encode_cmd)
+
+        def _encode(extra_filter_args: list[str]):
+            return runner.run([
+                "ffmpeg", "-y",
+                "-f", "concat",
+                "-safe", "0",
+                "-i", str(concat_list_path),
+                *extra_filter_args,
+                *codec_args,
+                "-ar", sample_rate,
+                str(encoded_path),
+            ])
+
+        result = _encode(loudnorm_args)
+        if result.returncode != 0 and loudnorm_args:
+            mastering_applied = False
+            mastering_error = (
+                f"loudnorm pass failed (rc={result.returncode}, "
+                f"profile={loudnorm_profile_name}): {(result.stderr or '')[:300]}"
+            )
+            _log_mastering_failure(loudnorm_profile_name, mastering_error)
+            loudnorm_args = []
+            result = _encode([])
         if result.returncode != 0:
             raise RuntimeError(
                 f"FFmpeg {output_path.suffix} encode failed: {result.stderr}"
@@ -1110,10 +1248,17 @@ def _concat_to_single(
                 output_path=output_path,
                 chapters_embedded=False,
                 chapter_error=stderr_tail,
+                mastering_applied=mastering_applied,
+                mastering_error=mastering_error,
             )
 
         logger.info(f"ASSEMBLY_TOTAL ({output_path.suffix}): completed in {elapsed:.1f}s")
-        return AssemblyResult(output_path=output_path, chapters_embedded=True)
+        return AssemblyResult(
+            output_path=output_path,
+            chapters_embedded=True,
+            mastering_applied=mastering_applied,
+            mastering_error=mastering_error,
+        )
 
 
 def assemble_opus(
@@ -1126,6 +1271,7 @@ def assemble_opus(
     runner: Optional["FFmpegRunner"] = None,
     bitrate: str = "48k",
     metadata: Optional["BookMetadata"] = None,
+    normalize: bool = False,
     loudnorm_profile: str = "podcast",
     cover_art: Optional[str] = None,
 ) -> AssemblyResult:
@@ -1147,8 +1293,10 @@ def assemble_opus(
         runner: Optional FFmpegRunner.
         bitrate: Opus bitrate (default "48k", tuned for speech).
         metadata: Optional BookMetadata for full tagging.
+        normalize: If True, run two-pass loudnorm mastering with
+            ``loudnorm_profile`` (RH-B-001).
         loudnorm_profile: Mastering profile ('podcast' or 'acx') — drives
-            the output sample rate.
+            the output sample rate and the loudness target.
 
     Returns:
         AssemblyResult.
@@ -1175,6 +1323,9 @@ def assemble_opus(
         author=author,
         cover_art=cover_art,
         embed_cover=False,  # Opus cover art is unreliable across players
+        normalize=normalize,
+        loudnorm_profile_dict=profile,
+        loudnorm_profile_name=loudnorm_profile,
     )
 
 
@@ -1187,6 +1338,7 @@ def assemble_flac(
     *,
     runner: Optional["FFmpegRunner"] = None,
     metadata: Optional["BookMetadata"] = None,
+    normalize: bool = False,
     loudnorm_profile: str = "podcast",
     cover_art: Optional[str] = None,
     # bitrate is accepted for assembler-selection symmetry but ignored —
@@ -1208,8 +1360,10 @@ def assemble_flac(
         chapter_pause_ms: Pause between chapters.
         runner: Optional FFmpegRunner.
         metadata: Optional BookMetadata for full tagging.
+        normalize: If True, run two-pass loudnorm mastering with
+            ``loudnorm_profile`` (RH-B-001).
         loudnorm_profile: Mastering profile ('podcast' or 'acx') — drives
-            the output sample rate.
+            the output sample rate and the loudness target.
         cover_art: Optional cover image path (embedded as attached picture).
 
     Returns:
@@ -1237,6 +1391,9 @@ def assemble_flac(
         author=author,
         cover_art=cover_art,
         embed_cover=True,
+        normalize=normalize,
+        loudnorm_profile_dict=profile,
+        loudnorm_profile_name=loudnorm_profile,
     )
 
 
@@ -1255,6 +1412,7 @@ def assemble_m4a_split(
     aac_bitrate: str = "128k",
     bitrate: Optional[str] = None,
     metadata: Optional["BookMetadata"] = None,
+    normalize: bool = False,
     loudnorm_profile: str = "podcast",
     cover_art: Optional[str] = None,
 ) -> AssemblyResult:
@@ -1276,6 +1434,9 @@ def assemble_m4a_split(
         aac_bitrate: AAC bitrate (default "128k"). ``bitrate`` is accepted as
             an alias so the assembler-selection code can pass it uniformly.
         metadata: Optional BookMetadata for full tagging.
+        normalize: If True, run two-pass loudnorm mastering on every chapter
+            (RH-B-001 — ``--normalize --split`` used to produce completely
+            un-normalized audio with no log line at any level).
         loudnorm_profile: Mastering profile ('podcast' or 'acx').
         cover_art: Optional cover image (embedded into each .m4a).
 
@@ -1304,35 +1465,58 @@ def assemble_m4a_split(
 
     safe_album = _sanitize_metadata_value(title)
     m4a_paths: list[Path] = []
+    mastering_applied = True
+    mastering_error = ""
 
     for i, (audio_path, chapter_title, _) in enumerate(chapter_files):
         m4a_path = output_dir / f"{_safe_chapter_filename(chapter_title, i)}.m4a"
         safe_chapter_title = _sanitize_metadata_value(chapter_title)
 
-        cmd = ["ffmpeg", "-y", "-i", str(audio_path)]
-        if cover_ok:
-            cmd.extend(["-i", str(cover_art)])
-        cmd.extend([
-            "-c:a", "aac",
-            "-b:a", effective_bitrate,
-            "-ar", sample_rate,
-            "-metadata", f"title={safe_chapter_title}",
-            "-metadata", f"album={safe_album}",
-            "-metadata", f"track={i+1}",
-        ])
-        if author:
-            cmd.extend(["-metadata", f"artist={_sanitize_metadata_value(author)}"])
-        cmd.extend(extra_metadata)
-        if cover_ok:
-            cmd.extend([
-                "-map", "0:a",
-                "-map", "1:v",
-                "-c:v", "copy",
-                "-disposition:v", "attached_pic",
-            ])
-        cmd.append(str(m4a_path))
+        # RH-B-001: --split used to drop `normalize` entirely, so an ACX
+        # "retail master" split into per-chapter .m4a files shipped with no
+        # loudness normalization at all.
+        loudnorm_args: list[str] = []
+        if normalize:
+            loudnorm_args = _plan_loudnorm_args(
+                ["-i", str(audio_path)], profile, loudnorm_profile, runner=runner,
+            )
 
-        result = runner.run(cmd)
+        def _encode(extra_filter_args: list[str]):
+            cmd = ["ffmpeg", "-y", "-i", str(audio_path)]
+            if cover_ok:
+                cmd.extend(["-i", str(cover_art)])
+            cmd.extend([
+                *extra_filter_args,
+                "-c:a", "aac",
+                "-b:a", effective_bitrate,
+                "-ar", sample_rate,
+                "-metadata", f"title={safe_chapter_title}",
+                "-metadata", f"album={safe_album}",
+                "-metadata", f"track={i+1}",
+            ])
+            if author:
+                cmd.extend(["-metadata", f"artist={_sanitize_metadata_value(author)}"])
+            cmd.extend(extra_metadata)
+            if cover_ok:
+                cmd.extend([
+                    "-map", "0:a",
+                    "-map", "1:v",
+                    "-c:v", "copy",
+                    "-disposition:v", "attached_pic",
+                ])
+            cmd.append(str(m4a_path))
+            return runner.run(cmd)
+
+        result = _encode(loudnorm_args)
+        if result.returncode != 0 and loudnorm_args:
+            mastering_applied = False
+            mastering_error = (
+                f"loudnorm pass failed on chapter {i + 1} "
+                f"(rc={result.returncode}, profile={loudnorm_profile}): "
+                f"{(result.stderr or '')[:300]}"
+            )
+            _log_mastering_failure(loudnorm_profile, mastering_error)
+            result = _encode([])
         if result.returncode != 0:
             raise RuntimeError(f"FFmpeg AAC chapter encode failed: {result.stderr}")
         m4a_paths.append(m4a_path)
@@ -1344,7 +1528,12 @@ def assemble_m4a_split(
         encoding="utf-8",
     )
 
-    return AssemblyResult(output_path=output_dir, chapters_embedded=True)
+    return AssemblyResult(
+        output_path=output_dir,
+        chapters_embedded=True,
+        mastering_applied=mastering_applied,
+        mastering_error=mastering_error,
+    )
 
 
 # ---------------------------------------------------------------------------
