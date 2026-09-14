@@ -1108,12 +1108,13 @@ def _concat_to_single(
     author: str,
     cover_art: Optional[str] = None,
     embed_cover: bool = False,
+    embed_chapters: bool = True,
     normalize: bool = False,
     loudnorm_profile_dict: Optional[dict[str, str]] = None,
     loudnorm_profile_name: str = "podcast",
 ) -> AssemblyResult:
     """
-    Shared concat → single-file encode helper for opus/flac.
+    Shared concat → single-file encode helper for opus/flac/wav.
 
     Builds the silence-padded concat list, optionally masters it with a
     two-pass loudnorm (RH-B-001 — ``normalize`` used to be honoured only by
@@ -1200,6 +1201,27 @@ def _concat_to_single(
         if result.returncode != 0:
             raise RuntimeError(
                 f"FFmpeg {output_path.suffix} encode failed: {result.stderr}"
+            )
+
+        # A container that cannot carry chapters must not be asked to.
+        # WAV has no chapter atom, so the mux below would shell out to ffmpeg
+        # and fail on EVERY render, then fall back to this same file while
+        # logging a warning and an ffmpeg stderr dump. Reporting
+        # chapters_embedded=False with no chapter_error says the true thing:
+        # nothing went wrong, the format simply has nowhere to put them.
+        if not embed_chapters:
+            shutil.copy(encoded_path, output_path)
+            elapsed = _time.time() - start
+            logger.info(
+                f"ASSEMBLY_TOTAL ({output_path.suffix}): completed in "
+                f"{elapsed:.1f}s (no chapter markers - the format has no "
+                f"chapter atom)"
+            )
+            return AssemblyResult(
+                output_path=output_path,
+                chapters_embedded=False,
+                mastering_applied=mastering_applied,
+                mastering_error=mastering_error,
             )
 
         # Mux chapter markers + tags (copy the already-encoded stream).
@@ -1391,6 +1413,85 @@ def assemble_flac(
         author=author,
         cover_art=cover_art,
         embed_cover=True,
+        normalize=normalize,
+        loudnorm_profile_dict=profile,
+        loudnorm_profile_name=loudnorm_profile,
+    )
+
+
+def assemble_wav(
+    chapter_files: list[tuple[Path, str, float]],
+    output_path: Path,
+    title: str = "Audiobook",
+    author: str = "",
+    chapter_pause_ms: int = 2000,
+    *,
+    runner: Optional["FFmpegRunner"] = None,
+    metadata: Optional["BookMetadata"] = None,
+    normalize: bool = False,
+    loudnorm_profile: str = "podcast",
+    cover_art: Optional[str] = None,
+    # Accepted for assembler-selection symmetry and ignored: PCM is
+    # uncompressed and has no target bitrate.
+    bitrate: Optional[str] = None,
+) -> AssemblyResult:
+    """
+    F-7a3c91e2: assemble chapters into one uncompressed WAV.
+
+    ``--format wav`` has been offered by every CLI allowlist since the first
+    release and had no assembler. The dispatch's ``else`` branch sent it to
+    ``assemble_m4b``, so it wrote AAC-in-MP4 bytes to a path ending ``.wav``
+    -- a file most players reject and every DAW misreads.
+
+    WAV carries no chapter markers and no cover art; both are skipped rather
+    than attempted, and the AssemblyResult says so honestly instead of
+    reporting a failure. Use m4b if you want chapters.
+
+    Args:
+        chapter_files: List of (audio_path, chapter_title, duration_seconds)
+        output_path: Output .wav path.
+        title: Book title (kept for signature symmetry; WAV has no tag atom).
+        author: Book author (likewise).
+        chapter_pause_ms: Pause between chapters.
+        runner: Optional FFmpegRunner.
+        metadata: Optional BookMetadata (unused -- WAV carries no tags).
+        normalize: If True, run two-pass loudnorm mastering (RH-B-001).
+        loudnorm_profile: Mastering profile ('podcast' or 'acx').
+        cover_art: Ignored -- WAV cannot embed an attached picture.
+
+    Returns:
+        AssemblyResult with ``chapters_embedded=False`` and no chapter_error.
+    """
+    if not check_ffmpeg():
+        raise RuntimeError(
+            "FFmpeg is required for WAV assembly (the chapter files are "
+            "concatenated and re-encoded to PCM). "
+            "Install from: https://ffmpeg.org/download.html"
+        )
+    if runner is None:
+        from audiobooker.renderer.ffmpeg_runner import RealFFmpegRunner
+        runner = RealFFmpegRunner()
+
+    if cover_art:
+        logger.info(
+            "Cover art is not embedded in WAV output - the format has no "
+            "attached-picture stream. Use --format m4b or flac for cover art."
+        )
+
+    profile = _resolve_loudnorm_profile(loudnorm_profile)
+    output_path = Path(output_path)
+
+    return _concat_to_single(
+        chapter_files, output_path, chapter_pause_ms,
+        codec_args=["-c:a", "pcm_s16le"],
+        runner=runner,
+        sample_rate=profile["sample_rate"],
+        metadata=metadata,
+        title=title,
+        author=author,
+        cover_art=None,
+        embed_cover=False,
+        embed_chapters=False,
         normalize=normalize,
         loudnorm_profile_dict=profile,
         loudnorm_profile_name=loudnorm_profile,

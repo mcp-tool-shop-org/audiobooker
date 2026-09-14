@@ -18,6 +18,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Optional
 
+from audiobooker import formats as audio_formats
 from audiobooker.errors import ConfigValidationError
 
 logger = logging.getLogger("audiobooker.models")
@@ -952,7 +953,11 @@ class ProjectConfig:
     #   today. Opt in to sub-cache individual utterance WAVs (renderer-owned).
     utterance_cache: bool = False
 
-    _VALID_OUTPUT_FORMATS = ("m4b", "mp3", "wav", "ogg", "flac")
+    # F-7a3c91e2: derived from audiobooker.formats, the one table. This
+    # list used to omit "opus" and "m4a" while the engine implemented both,
+    # so a config naming the format by the name the README advertises was
+    # rejected by the validator before the renderer ever saw it.
+    _VALID_OUTPUT_FORMATS = tuple(sorted(audio_formats.ALL_FORMAT_NAMES))
     _VALID_BOOKNLP_MODES = ("on", "off", "auto")
     _VALID_EMOTION_MODES = ("off", "rule", "auto")
     _VALID_FOOTNOTE_BEHAVIORS = ("inline", "end", "skip")
