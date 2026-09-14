@@ -86,6 +86,15 @@ PORTUGUESE = LanguageProfile(
     # particles like da/de/do/dos used in surnames.
     valid_name_pattern=r"^(?:(?:Senhor|Senhora|Senhorita|Doutor|Doutora|Dom|Dona|Padre|Capitão|Conde|Condessa|da|de|do|dos|das)\s+)?[A-Za-zÀ-ɏ][A-Za-zÀ-ɏ'\-\s\.]{0,48}[A-Za-zÀ-ɏ]$",
 
+    # Attribution fragments: the Unicode range this profile's own
+    # valid_name_pattern already declares, so "disse Conceição" attributes.
+    name_fragment=r"[A-ZÀ-ɏ][a-zÀ-ɏ]+",
+    name_titles=(
+        "Senhor", "Senhora", "Senhorita", "Doutor", "Doutora",
+        "Dom", "Dona", "Padre", "Capitão", "Conde", "Condessa",
+    ),
+    definite_article="",
+
     # Gender cue words (Portuguese)
     female_cue_words=frozenset({
         "ela", "sua", "dela", "mulher", "menina", "garota", "mãe",

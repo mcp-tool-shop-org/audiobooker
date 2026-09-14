@@ -10,9 +10,12 @@ from __future__ import annotations
 import csv
 import html
 import json
+import logging
 import re
 from pathlib import Path
 from typing import Callable, Optional
+
+logger = logging.getLogger("audiobooker.parser")
 
 # Type alias for a cleaner function
 TextCleaner = Callable[[str], str]
@@ -176,11 +179,33 @@ def strip_markdown_inline(text: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Control-character / parser-sentinel backstop (PARSER-AMEND-1)
+# ---------------------------------------------------------------------------
+
+# The EPUB extractor delimits footnote spans with \x02FOOTNOTE_START\x02 /
+# \x02FOOTNOTE_END\x02. Those are internal; if any route ever leaves one in the
+# text, it must not reach the TTS engine as a literal spoken token. This cleaner
+# is part of the DEFAULT pipeline so the default path is safe by construction.
+_PARSER_SENTINEL_RE = re.compile(r"\x02?FOOTNOTE_(?:START|END)\x02?")
+
+# C0 controls other than \n and \t — never narratable.
+_CONTROL_CHAR_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+
+
+def strip_control_characters(text: str) -> str:
+    """Remove parser sentinels and non-narratable control characters."""
+    cleaned = _PARSER_SENTINEL_RE.sub("", text)
+    cleaned = _CONTROL_CHAR_RE.sub("", cleaned)
+    return cleaned
+
+
+# ---------------------------------------------------------------------------
 # Pipeline
 # ---------------------------------------------------------------------------
 
 # Default cleaner sequence
 DEFAULT_CLEANERS: list[TextCleaner] = [
+    strip_control_characters,
     decode_html_entities,
     strip_page_numbers,
     expand_common_abbreviations,
@@ -215,11 +240,60 @@ def clean_text(text: str, cleaners: list[TextCleaner] | None = None) -> str:
     return text
 
 
+# Scripts written without word delimiters (scriptio continua). A \b assertion
+# is meaningless inside them: every neighbouring character is also a word
+# character, so \b東京\b can never match inside ordinary Japanese or Chinese
+# prose (PARSER-AMEND-10).
+_NO_WORD_BREAK_RE = re.compile(
+    "["
+    "⺀-〿"    # CJK radicals, punctuation
+    "぀-ヿ"    # hiragana, katakana
+    "㐀-䶿"    # CJK ext A
+    "一-鿿"    # CJK unified ideographs
+    "豈-﫿"    # CJK compatibility ideographs
+    "･-ﾟ"    # halfwidth katakana
+    "가-힯"    # Hangul syllables
+    "฀-๿"    # Thai
+    "]"
+)
+
+
+def _override_pattern(word: str) -> str:
+    """Build the match pattern for one override key (PARSER-AMEND-10).
+
+    ``\\b`` is applied only at an edge where it can actually assert something:
+    the edge character must be a word character AND belong to a script that
+    delimits words with whitespace. CJK/kana/Hangul/Thai keys get a plain
+    substring match instead, which is the only form that can ever fire.
+    """
+    def _needs_boundary(ch: str) -> bool:
+        if not ch:
+            return False
+        if not (ch.isalnum() or ch == "_"):
+            return False
+        return _NO_WORD_BREAK_RE.match(ch) is None
+
+    lead = r"\b" if _needs_boundary(word[:1]) else ""
+    trail = r"\b" if _needs_boundary(word[-1:]) else ""
+    return lead + re.escape(word) + trail
+
+
 def apply_pronunciation_overrides(text: str, overrides: dict[str, str]) -> str:
     """
     Substitute pronunciation overrides in text (FT-CORE-011).
 
-    Performs whole-word, case-insensitive replacement.
+    Performs whole-word, case-insensitive replacement for space-delimited
+    scripts, and plain substring replacement for scripts that have no word
+    delimiters (CJK, kana, Hangul, Thai) — a ``\\b`` there can never match
+    (PARSER-AMEND-10).
+
+    The replacement is substituted LITERALLY: it is passed to ``re.sub`` as a
+    callable, not as a template, so a phoneme string containing a backslash
+    escape (``\\p``, ``\\1``, ``\\g<0>``) is spoken as written instead of
+    raising ``re.PatternError`` part-way through a render.
+
+    An override that matches nothing anywhere in the text is logged at WARNING,
+    so a lexicon entry that silently never fires is visible.
 
     Args:
         text: Text to process.
@@ -231,9 +305,25 @@ def apply_pronunciation_overrides(text: str, overrides: dict[str, str]) -> str:
     if not overrides:
         return text
     for word, replacement in overrides.items():
-        # Whole-word match, case-insensitive
-        pattern = re.compile(r"\b" + re.escape(word) + r"\b", re.IGNORECASE)
-        text = pattern.sub(replacement, text)
+        if not word:
+            continue
+        try:
+            pattern = re.compile(_override_pattern(word), re.IGNORECASE)
+        except re.error as e:
+            logger.warning(
+                "Pronunciation override %r could not be compiled (%s) — skipped.",
+                word, e,
+            )
+            continue
+        # Literal replacement: a callable's return value is used verbatim, so
+        # backslashes in a phoneme string are never treated as a template.
+        text, count = pattern.subn(lambda _m, _r=replacement: _r, text)
+        if count == 0:
+            logger.warning(
+                "Pronunciation override %r never matched — check spelling, "
+                "casing, or whether the term appears in this text at all.",
+                word,
+            )
     return text
 
 
