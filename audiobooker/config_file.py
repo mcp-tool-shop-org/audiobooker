@@ -33,9 +33,33 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
+
+from audiobooker.errors import ConfigValidationError
 
 logger = logging.getLogger("audiobooker.config_file")
+
+
+class ConfigFileError(ConfigValidationError):
+    """A config-file-sourced value failed type/range validation at load time.
+
+    F-CORE-2 (wave 2 amend): before this fix, ``load_config``/``_map_table``
+    passed every recognized key straight through with no type or range
+    check, so a typo like ``workers = "four"`` in a TOML file would sail
+    through as a string and only blow up later -- as a bare ``TypeError``
+    deep inside ``project._compile_parallel`` (``min(config.compile_workers,
+    3)``), with no message connecting the crash back to the config file or
+    the key that caused it. Some bad values (e.g. an out-of-range
+    ``emotion_confidence_threshold``) didn't raise at all -- they just made
+    every confidence comparison fail silently forever.
+
+    This class is raised here, at load time, naming both the offending key
+    and the file/table it came from, before the value ever reaches
+    ``ProjectConfig(**mapped)``. It is a thin ``ConfigValidationError``
+    subclass (see ``audiobooker.errors``) so it is still catchable as
+    ``ConfigValidationError``, ``AudiobookerError``, or plain ``ValueError``.
+    """
+
 
 # ---------------------------------------------------------------------------
 # TOML loader (stdlib tomllib on 3.11+, tomli fallback on 3.10)
@@ -122,6 +146,73 @@ _PASSTHROUGH_FIELDS: frozenset[str] = frozenset(
         "phoneme_overrides",
     }
 )
+
+
+# ---------------------------------------------------------------------------
+# F-CORE-2 (wave 2 amend): load-time type/range validation for the numeric
+# passthrough fields. ProjectConfig.__post_init__ validates the same
+# constraints (defense in depth for every OTHER construction path -- direct
+# Python construction, CLI flags, etc.), but by the time a bad value reaches
+# ProjectConfig(**mapped) in the CLI, the config file/table that produced it
+# is out of scope. Validating here, at the TOML boundary, lets the error name
+# the file. Deliberately NOT re-validating the enum-like fields
+# (output_format, booknlp_mode, ...) here -- those are already fully covered
+# by ProjectConfig's own __post_init__ and duplicating that list of valid
+# values in two places is a maintenance hazard with little added value.
+# ---------------------------------------------------------------------------
+
+
+def _is_intlike(value: Any) -> bool:
+    """True for a real int, excluding bool (bool is an int subclass)."""
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _is_numberlike(value: Any) -> bool:
+    """True for a real int/float, excluding bool."""
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _require_positive_int(field: str, value: Any, key: str, origin: str) -> None:
+    if not _is_intlike(value) or value <= 0:
+        raise ConfigFileError(
+            f"Invalid value for {key!r} in {origin}: {field} must be a "
+            f"positive integer, got {value!r}.",
+            hint=f"Set {key!r} to a whole number greater than 0 in {origin}.",
+        )
+
+
+def _require_non_negative_int(field: str, value: Any, key: str, origin: str) -> None:
+    if not _is_intlike(value) or value < 0:
+        raise ConfigFileError(
+            f"Invalid value for {key!r} in {origin}: {field} must be a "
+            f"non-negative integer, got {value!r}.",
+            hint=f"Set {key!r} to 0 or a positive whole number in {origin}.",
+        )
+
+
+def _require_unit_interval(field: str, value: Any, key: str, origin: str) -> None:
+    if not _is_numberlike(value) or not (0.0 <= value <= 1.0):
+        raise ConfigFileError(
+            f"Invalid value for {key!r} in {origin}: {field} must be a "
+            f"number between 0.0 and 1.0, got {value!r}.",
+            hint=f"Set {key!r} to a value between 0.0 and 1.0 in {origin}.",
+        )
+
+
+# field name -> validator(field, value, key, origin). Keyed by the CANONICAL
+# ProjectConfig field name (post-alias-resolution), so both a friendly alias
+# (e.g. "workers") and the canonical key (e.g. "compile_workers") are checked
+# the same way.
+_NUMERIC_VALIDATORS: dict[str, Callable[[str, Any, str, str], None]] = {
+    "sample_rate": _require_positive_int,
+    "compile_workers": _require_positive_int,
+    "estimated_wpm": _require_positive_int,
+    "chapter_pause_ms": _require_non_negative_int,
+    "narrator_pause_ms": _require_non_negative_int,
+    "dialogue_pause_ms": _require_non_negative_int,
+    "min_chapter_words": _require_non_negative_int,
+    "emotion_confidence_threshold": _require_unit_interval,
+}
 
 # Non-config keys recognized as structured sections (returned as-is, not
 # mapped onto ProjectConfig). The CLI reads these to seed BookMetadata or to
@@ -266,9 +357,14 @@ def _map_table(raw: dict[str, Any], origin: str) -> dict[str, Any]:
     * Canonical ProjectConfig fields pass through unchanged.
     * Known sections (book, casting, lexicon) pass through under their own key.
     * Unknown keys are dropped with a warning.
+    * F-CORE-2 (wave 2 amend): numeric fields are type/range-checked here
+      (see ``_NUMERIC_VALIDATORS``) and raise ``ConfigFileError`` naming both
+      the key and ``origin`` on a bad value, instead of letting it reach
+      ``ProjectConfig(**mapped)`` unchecked.
 
     ``origin`` is a short label (e.g. "user config", ".audiobookerrc") used
-    only in the unknown-key warning so the user can locate the typo.
+    in the unknown-key warning AND in the ``ConfigFileError`` message so the
+    user can locate the typo/bad value.
     """
     mapped: dict[str, Any] = {}
     for key, value in raw.items():
@@ -281,6 +377,9 @@ def _map_table(raw: dict[str, Any], origin: str) -> dict[str, Any]:
         field = _ALIAS_TO_FIELD.get(key, key)
 
         if field in _PASSTHROUGH_FIELDS:
+            validator = _NUMERIC_VALIDATORS.get(field)
+            if validator is not None:
+                validator(field, value, key, origin)
             mapped[field] = value
         else:
             logger.warning(
@@ -359,4 +458,5 @@ __all__ = [
     "load_config",
     "find_config_files",
     "have_toml_support",
+    "ConfigFileError",
 ]

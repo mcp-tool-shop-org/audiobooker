@@ -40,6 +40,8 @@ from audiobooker.models import (
     Character,
     CastingTable,
     ProjectConfig,
+    UNSET,
+    _validated_path,
 )
 
 
@@ -165,6 +167,31 @@ class AudiobookProject:
         if self._output_dir is None and self.source_path:
             self._output_dir = Path(self.source_path).parent / f"{Path(self.source_path).stem}_audio"
         # Keep casting table fallback in sync with project config
+        self._sync_fallback_voice()
+
+    def _sync_fallback_voice(self) -> None:
+        """F-CORE-4 (wave 2 amend): keep casting.fallback_voice_id in sync
+        with config.fallback_voice_id.
+
+        config is the single source of truth; CastingTable keeps its own
+        copy of the same value only because CastingTable is also usable
+        standalone (no owning ProjectConfig) in tests and casting-only
+        workflows, so the field can't simply be removed from it.
+
+        Before this fix, the two copies were synced by ONE line that ran
+        only inside __post_init__ (i.e. only at construction with default
+        values). load() replaces both self.casting and self.config wholesale
+        from the saved JSON AFTER __post_init__ already ran, without
+        re-running the sync -- so a project saved after
+        `config.fallback_voice_id = "bm_george"` reloads with
+        casting.fallback_voice_id still at its old value ("af_heart"):
+        _validate_voices() checks "bm_george" (from config) while
+        CastingTable.get_voice() actually resolves uncast speakers through
+        "af_heart" (from casting) -- validation passes for a voice render
+        never uses. Calling this explicitly from load() (after both blocks
+        are parsed) and from save() (before serializing) closes both the
+        read side and the write side of that gap.
+        """
         self.casting.fallback_voice_id = self.config.fallback_voice_id
 
     # -------------------------------------------------------------------------
@@ -250,12 +277,21 @@ class AudiobookProject:
         # in the parser module; call defensively so an older parser signature
         # (no use_toc / no profile) still works and preserves spine-splitting.
         try:
+            # Relay (wave 2, parser-lang domain): parse_epub now also accepts
+            # footnote_behavior= (validated inline/end/skip, default
+            # "inline"). Without threading it through, ProjectConfig's own
+            # validated/CLI-mapped/documented footnote_behavior field could
+            # never actually reach the parser. Only added to this first,
+            # most-featureful call -- same convention already used for
+            # use_toc above -- since the existing TypeError fallback chain
+            # keeps an older parser signature working.
             metadata, chapters = parse_epub(
                 path,
                 min_chapter_words=config.min_chapter_words,
                 keep_titled_short_chapters=config.keep_titled_short_chapters,
                 profile=profile,
                 use_toc=config.use_toc,
+                footnote_behavior=config.footnote_behavior,
             )
         except TypeError:
             try:
@@ -366,11 +402,18 @@ class AudiobookProject:
         # profile= and force_text=; fall back if an older parser lacks them.
         profile = get_profile(config.language_code)
         try:
+            # Relay (wave 2, parser-lang domain): parse_pdf now also accepts
+            # keep_titled_short_chapters= (default False = unchanged
+            # historical behavior). ProjectConfig has this field (shared with
+            # from_epub), so it's threaded through the same way. Only added
+            # to this first, most-featureful call; the existing TypeError
+            # fallback chain below keeps an older parser signature working.
             metadata, chapters = parse_pdf(
                 path,
                 min_chapter_words=config.min_chapter_words,
                 profile=profile,
                 force_text=force_text,
+                keep_titled_short_chapters=config.keep_titled_short_chapters,
             )
         except TypeError:
             try:
@@ -763,28 +806,14 @@ class AudiobookProject:
         if schema_version < SCHEMA_VERSION:
             data = cls._migrate(data, from_version=schema_version)
 
-        def _validated_path(raw: str | None) -> Path | None:
-            """Validate a deserialized path is safe to use.
-
-            Trust boundary: source files (EPUBs, TXTs) can live anywhere
-            on the filesystem because the user chooses them. We do NOT
-            confine to the project directory. We only reject two classes
-            of malicious input:
-            - '..' traversal components (directory escape)
-            - Null bytes (\\x00) which can confuse C-level filesystem calls
-            """
-            if raw is None:
-                return None
-            if "\x00" in raw:
-                raise ValueError(
-                    f"Path {raw!r} contains null bytes"
-                )
-            # Reject paths with explicit traversal components
-            if ".." in Path(raw).parts:
-                raise ValueError(
-                    f"Path {raw!r} contains '..' traversal components"
-                )
-            return Path(raw)
+        # F-CORE-6 (wave 2 amend): _validated_path used to be defined as a
+        # closure right here, which meant Chapter.from_dict's audio_path and
+        # BookMetadata.from_dict's cover_art_path (both also deserialized
+        # from this same untrusted project file, a few lines below) had no
+        # way to reach it and skipped the '..'/null-byte check applied to
+        # source_path/output_path. Moved to audiobooker.models (imported at
+        # the top of this file) so Chapter/BookMetadata's own from_dict can
+        # use the identical check. Behavior here is unchanged.
 
         project = cls(
             title=data.get("title", "Untitled"),
@@ -808,6 +837,12 @@ class AudiobookProject:
         # Load config
         if "config" in data:
             project.config = ProjectConfig.from_dict(data["config"])
+
+        # F-CORE-4 (wave 2 amend): re-sync casting.fallback_voice_id to the
+        # just-loaded config now that both blocks have been parsed -- see
+        # _sync_fallback_voice's docstring for why the __post_init__-time
+        # sync alone isn't enough once casting/config are replaced here.
+        project._sync_fallback_voice()
 
         # Load metadata
         if "metadata" in data:
@@ -846,6 +881,12 @@ class AudiobookProject:
         path = Path(path)
         self.project_path = path
         self.modified_at = datetime.now().isoformat()
+
+        # F-CORE-4 (wave 2 amend): re-sync before serializing so a project
+        # that had config.fallback_voice_id mutated directly (no save/load
+        # round trip yet) is still written out consistent, not just
+        # corrected on the NEXT load().
+        self._sync_fallback_voice()
 
         data = {
             "schema_version": SCHEMA_VERSION,
@@ -889,22 +930,37 @@ class AudiobookProject:
         self,
         name: str,
         voice: str,
-        emotion: Optional[str] = None,
-        description: Optional[str] = None,
-        speed: float = 1.0,
+        emotion: Optional[str] = UNSET,
+        description: Optional[str] = UNSET,
+        speed: float = UNSET,
     ) -> Character:
         """
         Assign a voice to a character.
 
+        F-CORE-3 (wave 2 amend): defaults changed from None/None/1.0 to the
+        shared UNSET sentinel (audiobooker.models.UNSET) so that a re-cast
+        through THIS project-level method also preserves prior tuning,
+        matching CastingTable.cast() (see that method's docstring for the
+        full rationale). Before this change, AudiobookProject.cast() always
+        forwarded concrete None/None/1.0 values, which meant
+        CastingTable.cast()'s own UNSET-based fix could never actually
+        trigger via the project API -- every project.cast() call looked to
+        CastingTable like the caller explicitly passed emotion=None,
+        description=None, speed=1.0, wiping tuning on every re-cast anyway.
+
         Args:
             name: Character name (e.g., "narrator", "Alice")
             voice: Voice ID (e.g., "af_bella", "bm_george")
-            emotion: Default emotion
-            description: Notes about the character
-            speed: Speech speed multiplier (0.5-2.0, default 1.0)
+            emotion: Default emotion. Omit to leave an existing character's
+                emotion unchanged; pass None explicitly to clear it.
+            description: Notes about the character. Same omit/None-clears
+                distinction as emotion.
+            speed: Speech speed multiplier (0.5-2.0). Omit to leave an
+                existing character's speed unchanged; a brand-new character
+                still defaults to 1.0.
 
         Returns:
-            The created Character
+            The created/updated Character
         """
         return self.casting.cast(name, voice, emotion, description, speed=speed)
 
@@ -1162,29 +1218,55 @@ class AudiobookProject:
 
         This is the canonical list-of-dicts shape reused by export_casting (JSON
         + CSV branches) and by casting.presets.save_preset (CASTING-DEPTH v2.1).
+
+        F-CORE-1 (wave 2 amend): pitch_shift and emphasis are now always
+        included (matching Character.to_dict()'s own convention for those
+        two fields -- they always have a concrete, meaningful default of
+        0.0/1.0, so there's no "unset" state to omit); default_intensity is
+        included only when set, again matching Character.to_dict() exactly,
+        so a legacy export with no tuning round-trips byte-for-byte. Before
+        this fix, this list dropped all three fields, so a Character with
+        pitch_shift=-0.2, emphasis=1.6, default_intensity=0.65 exported to
+        JSON came back as 0.0/1.0/None with no error -- and since
+        casting.presets.save_preset is fed straight from this same list
+        (see cli.py), saved cast presets lost the exact same fields.
         """
         cast_list = []
         for char in self.casting.characters.values():
-            cast_list.append({
+            entry = {
                 "name": char.name,
                 "voice": char.voice,
                 "emotion": char.emotion,
                 "speed": char.speed,
+                "pitch_shift": char.pitch_shift,
+                "emphasis": char.emphasis,
                 "aliases": char.aliases,
                 "description": char.description,
-            })
+            }
+            if char.default_intensity is not None:
+                entry["default_intensity"] = char.default_intensity
+            cast_list.append(entry)
         return cast_list
 
     def export_casting(self, path: Path, fmt: Optional[str] = None) -> None:
         """
         Export current casting table to a JSON or CSV file.
 
-        JSON format: array of objects with keys
-        name, voice, emotion, speed, aliases, description.
+        JSON format: array of objects with keys name, voice, emotion, speed,
+        pitch_shift, emphasis, aliases, description, and default_intensity
+        (omitted when unset). (F-CORE-1, wave 2 amend: pitch_shift and
+        emphasis added -- previously silently dropped on export.)
 
         CSV format (CASTING-DEPTH v2.1): columns
         name, voice, gender, line_count, emotion, speed, emphasis,
-        aliases (';'-joined), description.
+        aliases (';'-joined), description. NOTE: pitch_shift and
+        default_intensity are NOT representable in this CSV shape -- adding
+        columns would change the header row asserted verbatim by
+        tests/test_feat_f4_cli.py::test_export_csv_columns_and_aliases,
+        which is outside this domain's owned files this wave. A
+        JSON export/import is the only round-trip-complete format for a
+        fully-tuned Character until that CSV schema is deliberately
+        versioned; see this wave's skipped[] entry.
 
         Args:
             path: Output file path.
@@ -1298,6 +1380,14 @@ class AudiobookProject:
                 voice=entry["voice"],
                 emotion=entry.get("emotion"),
                 speed=entry.get("speed", 1.0),
+                # F-CORE-1 (wave 2 amend): previously missing entirely, so
+                # pitch_shift/emphasis silently fell back to Character's
+                # defaults (0.0/1.0) and default_intensity to None on every
+                # JSON import, even when the source file had real values
+                # (see _casting_as_list, which now writes them).
+                pitch_shift=entry.get("pitch_shift", 0.0),
+                emphasis=entry.get("emphasis", 1.0),
+                default_intensity=entry.get("default_intensity"),
                 aliases=entry.get("aliases", []),
                 description=entry.get("description"),
             )

@@ -24,6 +24,7 @@ from audiobooker.models import (
     ProjectConfig,
 )
 from audiobooker.project import AudiobookProject
+from audiobooker.errors import AudiobookerError, ConfigValidationError, ErrorDetail
 
 __all__ = [
     "AudiobookProject",
@@ -33,4 +34,7 @@ __all__ = [
     "Character",
     "CastingTable",
     "ProjectConfig",
+    "AudiobookerError",
+    "ConfigValidationError",
+    "ErrorDetail",
 ]
