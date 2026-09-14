@@ -32,6 +32,63 @@ logger = logging.getLogger("audiobooker.casting.dialogue")
 # Quote-pattern compilation (from profile)
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# CAST-AMEND-2-005: line-initial dash dialogue (the Spanish "raya")
+# ---------------------------------------------------------------------------
+
+# Markers that can OPEN a line of speech. pt.py already models this as the quote
+# pair ("—", "\n"); es.py documents the convention in a comment while
+# shipping no marker for it.
+_DEFAULT_RAYA_MARKERS = ("—", "―", "–")
+
+# Languages whose prose conventionally opens direct speech with a line-initial
+# dash. English is deliberately absent: an em-dash at the start of an English
+# line is an interruption or an aside, not a speech marker.
+_RAYA_LANGUAGES = frozenset({"es", "fr", "it", "pt", "ro", "ru", "pl", "uk", "ca", "gl"})
+
+
+def _dash_dialogue_markers(profile: LanguageProfile) -> tuple[str, ...]:
+    """
+    Markers that open a line of direct speech in this language.
+
+    Profile-driven, in priority order:
+
+    1. an explicit ``dash_dialogue_markers`` field, when the profile grows one;
+    2. any ``dialogue_quotes`` pair whose CLOSE is a newline — that pair shape is
+       already how pt.py declares "this language opens speech with a dash";
+    3. the default raya markers, for languages known to use the convention.
+    """
+    explicit = getattr(profile, "dash_dialogue_markers", None)
+    if explicit:
+        return tuple(explicit)
+
+    from_pairs = tuple(
+        open_q for open_q, close_q in profile.dialogue_quotes
+        if close_q == "\n" and open_q
+    )
+    if from_pairs:
+        return from_pairs
+
+    if profile.code in _RAYA_LANGUAGES:
+        return _DEFAULT_RAYA_MARKERS
+
+    return ()
+
+
+def _paired_quotes(
+    pairs: tuple[tuple[str, str], ...],
+) -> list[tuple[str, str]]:
+    """
+    Drop pairs whose close is a newline.
+
+    Those are raya declarations, not real quote pairs: matching them as pairs
+    requires a TRAILING newline, so the last line of a paragraph is never
+    detected, and the "dialogue" swallows the attribution clause. The dedicated
+    raya pass handles them properly.
+    """
+    return [(o, c) for o, c in pairs if c != "\n"]
+
+
 def _build_quote_patterns(
     profile: LanguageProfile,
     include_single_quotes: bool = False,
@@ -46,7 +103,7 @@ def _build_quote_patterns(
 
     # Double quotes — use negated character class for standard ASCII quotes
     # to avoid slow backtracking on unmatched quotes with DOTALL .+?
-    for open_q, close_q in profile.dialogue_quotes:
+    for open_q, close_q in _paired_quotes(profile.dialogue_quotes):
         inner = f'[^{re.escape(close_q)}]+'
         pat = re.compile(
             rf'{re.escape(open_q)}({inner}){re.escape(close_q)}',
@@ -276,9 +333,9 @@ def detect_dialogue(
     # An open quote without a matching close on the same line suggests
     # dialogue that continues to the next paragraph. We detect unmatched
     # open-quotes and try to find the matching close-quote later in the text.
-    all_quote_pairs = list(profile.dialogue_quotes) + list(profile.smart_quotes)
+    all_quote_pairs = _paired_quotes(profile.dialogue_quotes) + _paired_quotes(profile.smart_quotes)
     if include_single_quotes:
-        all_quote_pairs += list(profile.single_quotes)
+        all_quote_pairs += _paired_quotes(profile.single_quotes)
 
     for open_q, close_q in all_quote_pairs:
         # Find open quotes that are NOT already covered by matched pairs
@@ -322,6 +379,54 @@ def detect_dialogue(
                     start, end,
                 )
 
+    # CAST-AMEND-2-005: line-initial dash (raya) dialogue.
+    # Detection above is driven purely by open/close quote PAIRS, and the
+    # FT-CAST-009 em-dash support only matches a dash INSIDE an already-quoted
+    # span — never a dash that OPENS a line of speech. So a raya-punctuated
+    # source produced a single narration segment and no utterances at all.
+    markers = _dash_dialogue_markers(profile)
+    if markers:
+        marker_alt = "|".join(re.escape(m) for m in markers)
+        line_open_re = re.compile(rf'(?m)^[ \t]*(?:{marker_alt})[ \t]*')
+        inner_marker_re = re.compile(rf'(?:{marker_alt})')
+        said_patterns = profile.build_said_patterns()
+
+        for m in line_open_re.finditer(text):
+            span_start = m.start()
+            body_start = m.end()
+            line_end = text.find("\n", body_start)
+            if line_end == -1:
+                line_end = len(text)
+            if body_start >= line_end:
+                continue
+            if any(span_start < e and line_end > s for s, e, _, _ in quote_positions):
+                continue
+
+            body = text[body_start:line_end]
+
+            # The speech ends at a second marker when the line uses the full
+            # convention (—speech —tag), otherwise at a trailing
+            # attribution clause ("...? preguntó Ana."), otherwise at EOL.
+            cut = len(body)
+            inner = inner_marker_re.search(body)
+            if inner:
+                cut = inner.start()
+            else:
+                for pattern in said_patterns:
+                    tag = pattern.search(body)
+                    if tag and 0 < tag.start() < cut:
+                        cut = tag.start()
+
+            content = body[:cut].strip()
+            if not content:
+                continue
+            dialogue_end = body_start + len(body[:cut].rstrip())
+            quote_positions.append((span_start, dialogue_end, content, True))
+            logger.debug(
+                "CAST-AMEND-2-005: raya dialogue detected at %d-%d (%s)",
+                span_start, dialogue_end, profile.code,
+            )
+
     # Sort by position
     quote_positions.sort(key=lambda x: x[0])
 
@@ -351,6 +456,114 @@ def detect_dialogue(
 # Speaker attribution
 # ---------------------------------------------------------------------------
 
+# CAST-AMEND-2-001: text that may legitimately sit between an attribution tag
+# and the quote it tags — whitespace and punctuation only. Anything with LETTERS
+# in it is intervening prose (an action beat, another sentence, another quote's
+# body), which severs the link.
+_ATTRIB_GAP_RE = re.compile(r'^[\s,;:.!?—–…·\-]*$')
+
+# A sentence boundary inside the gap means the tag was already closed off: it is
+# the PREVIOUS quote's trailing tag, not this quote's leading tag. Such a tag may
+# still carry over (same speaker continuing in the same paragraph) but loses to
+# any tag that is directly attached to this quote.
+_SENTENCE_END_RE = re.compile(r'[.!?…]')
+
+
+def _attribution_quote_chars(profile: LanguageProfile) -> str:
+    """
+    Quote characters that delimit dialogue in this language.
+
+    Single quotes are deliberately EXCLUDED: ' and ’ double as apostrophes,
+    so counting them would treat "Alice's" as an intervening quote. The newline
+    used as a pseudo close-quote by the raya convention is excluded too.
+    """
+    chars: set[str] = set()
+    for pair in tuple(profile.dialogue_quotes) + tuple(profile.smart_quotes):
+        for quote in pair:
+            if quote and quote != "\n":
+                chars.add(quote)
+    return "".join(sorted(chars))
+
+
+def _gap_is_attributive(gap: str, quote_chars: str, *, allow_quotes: bool) -> bool:
+    """
+    True when ``gap`` (the text between a candidate tag and the quote) is thin
+    enough that the tag can be attributing THIS quote.
+
+    ``allow_quotes`` is True for the before-window because callers may pass
+    either the full quoted span or just the quoted CONTENT, so the opening quote
+    character itself can legitimately appear in the gap. It is False for the
+    after-window, where a quote character means a different quote has started
+    and owns everything past it.
+    """
+    if quote_chars:
+        if allow_quotes:
+            gap = "".join(ch for ch in gap if ch not in quote_chars)
+        elif any(ch in quote_chars for ch in gap):
+            return False
+    return bool(_ATTRIB_GAP_RE.match(gap))
+
+
+def _collect_candidates(
+    window: str,
+    pattern: re.Pattern,
+    pattern_rank: int,
+    quote_chars: str,
+    *,
+    before: bool,
+) -> list[tuple[int, int, int, int, str, str]]:
+    """
+    Gather attribution candidates from ONE window, scored by DISTANCE to the
+    quote boundary rather than by position in a concatenated string.
+
+    Nearest first: rightmost match in the before-window, leftmost in the after-
+    window. The gap test is monotone — a further match's gap is a superset of a
+    nearer one's — so the scan stops at the first match whose gap fails.
+
+    Returns tuples of (carry_over, distance, side_rank, pattern_rank, name, tag).
+    """
+    matches = list(pattern.finditer(window))
+    if before:
+        matches.reverse()
+
+    out: list[tuple[int, int, int, int, str, str]] = []
+    for match in matches:
+        if before:
+            gap = window[match.end():]
+            distance = len(window) - match.end()
+        else:
+            gap = window[:match.start()]
+            distance = match.start()
+
+        if not _gap_is_attributive(gap, quote_chars, allow_quotes=before):
+            break
+
+        # Tier 0 — directly attached to this quote.
+        # Tier 1 — carry-over: the previous quote's trailing tag, same speaker
+        #          continuing in the same sentence run.
+        # Tier 2 — the tag is on a DIFFERENT LINE. Single-newline-separated
+        #          dialogue puts the next speaker's tag one character past this
+        #          quote, which would otherwise beat this quote's own tag on raw
+        #          distance. A line break is a penalty, not a hard block, so
+        #          hard-wrapped prose still attributes.
+        if "\n" in gap or "\r" in gap:
+            tier = 2
+        elif before and _SENTENCE_END_RE.search(gap):
+            tier = 1
+        else:
+            tier = 0
+
+        out.append((
+            tier,
+            distance,
+            1 if before else 0,
+            pattern_rank,
+            match.group(1),
+            match.group(0),
+        ))
+    return out
+
+
 def extract_speaker_from_context(
     text: str,
     dialogue_start: int,
@@ -363,7 +576,37 @@ def extract_speaker_from_context(
     """
     Try to extract speaker name from surrounding context.
 
-    Looks for "said X" patterns before/after the dialogue.
+    Looks for "said X" patterns before/after the dialogue and keeps the one
+    NEAREST the quote.
+
+    CAST-AMEND-2-001 (the wave-2 fix). This used to build
+    ``context = window_before + ' ' + window_after`` and take
+    ``pattern.search(context)`` — the LEFTMOST match in the concatenation — so an
+    attribution belonging to a PREVIOUS quote beat the one that actually tagged
+    this quote, and proximity was never considered. The emotion-verb search had
+    the identical flaw, which let one quote's "whispered" colour another's.
+
+    The blast radius was far wider than one paragraph: ``compile_chapter``
+    splits paragraphs on BLANK lines only, so any source whose dialogue is
+    separated by single newlines — plain .txt, PDF-extracted text, many EPUBs —
+    is ONE paragraph, and the first speaker took every quote in the chapter. It
+    failed silently in every direction: attribution "succeeded", so turn-tracking
+    never fired and nothing was unknown, so the >50%-unknown warning never fired.
+
+    The rules now are:
+
+    1. ``window_before`` and ``window_after`` are searched SEPARATELY, so no
+       pattern can match across the join.
+    2. Nearest wins: rightmost match in the before-window, leftmost in the after.
+    3. A match is disqualified when prose intervenes between it and the quote —
+       an action beat ("Bob shook his head.") severs the link — or, in the
+       after-window, when another quote character intervenes.
+    4. A before-window tag separated from the quote by a sentence boundary is a
+       CARRY-OVER (the previous quote's trailing tag, same speaker continuing).
+       It is still accepted, but loses to any directly-attached tag.
+    5. At equal distance the after-window tag wins.
+    6. The emotion hint is read from the WINNING tag's own text, never from the
+       whole context.
 
     Args:
         text: Full text
@@ -383,7 +626,6 @@ def extract_speaker_from_context(
     window_before = text[max(0, dialogue_start - context_window):dialogue_start]
     window_after = text[dialogue_end:min(len(text), dialogue_end + context_window)]
 
-    context = window_before + " " + window_after
     logger.debug(
         "Speaker context window (%d chars): before=%r after=%r",
         context_window, window_before[:60], window_after[:60],
@@ -391,25 +633,46 @@ def extract_speaker_from_context(
 
     said_patterns = profile.build_said_patterns()
     emotion_pattern = profile.build_emotion_verb_pattern()
+    quote_chars = _attribution_quote_chars(profile)
 
-    for pattern in said_patterns:
-        match = pattern.search(context)
-        if match:
-            speaker = match.group(1).title()
-            logger.debug("Said-pattern matched speaker=%r via %s", speaker, pattern.pattern)
+    candidates: list[tuple[int, int, int, int, str, str]] = []
+    for pattern_rank, pattern in enumerate(said_patterns):
+        candidates.extend(
+            _collect_candidates(
+                window_after, pattern, pattern_rank, quote_chars, before=False,
+            )
+        )
+        candidates.extend(
+            _collect_candidates(
+                window_before, pattern, pattern_rank, quote_chars, before=True,
+            )
+        )
 
-            # Validate speaker name if casting table provided
-            if casting is not None and not is_valid_speaker_name(speaker, casting, profile=profile):
-                logger.debug("Speaker %r rejected by validation, trying next pattern", speaker)
-                continue  # Try next pattern
+    # Attached tags before carry-overs before cross-line tags; then nearest;
+    # then after-window before before-window at equal distance; then the
+    # profile's own pattern order.
+    candidates.sort(key=lambda c: (c[0], c[1], c[2], c[3]))
 
-            # Try to get emotion from verb
-            emotion = None
-            if emotion_pattern:
-                verb_match = emotion_pattern.search(context)
-                if verb_match:
-                    emotion = profile.emotion_hints.get(verb_match.group(1).lower())
-            return speaker, emotion
+    for tier, distance, side, _rank, raw_name, tag_text in candidates:
+        speaker = raw_name.title()
+        logger.debug(
+            "Attribution candidate speaker=%r distance=%d side=%s tier=%d",
+            speaker, distance, "after" if side == 0 else "before", tier,
+        )
+
+        # Validate speaker name if casting table provided
+        if casting is not None and not is_valid_speaker_name(speaker, casting, profile=profile):
+            logger.debug("Speaker %r rejected by validation, trying next candidate", speaker)
+            continue
+
+        # Emotion comes from the WINNING tag only — a verb in some other tag
+        # belongs to some other quote.
+        emotion = None
+        if emotion_pattern:
+            verb_match = emotion_pattern.search(tag_text)
+            if verb_match:
+                emotion = profile.emotion_hints.get(verb_match.group(1).lower())
+        return speaker, emotion
 
     logger.debug("No speaker attribution found in context window")
     return None, None
@@ -420,6 +683,10 @@ def extract_speaker_from_context(
 # ---------------------------------------------------------------------------
 
 _SCENE_BREAK_RE = re.compile(r'^\s*(?:\*\s*\*\s*\*|\-\s*\-\s*\-|~\s*~\s*~|###)\s*$')
+
+# CAST-AMEND-2-005: a line that OPENS with a dash is the raya convention. Used
+# only for the zero-dialogue diagnostic, so it is language-agnostic on purpose.
+_LINE_INITIAL_DASH_RE = re.compile(r'(?m)^[ \t]*[–—―]')
 
 # FT-CAST-009: Em-dash interrupted dialogue pattern
 # Matches dialogue ending with em-dash before closing quote: "I was—"
@@ -769,6 +1036,23 @@ def compile_chapter(
         "Compiled chapter %d: %d utterances (%d dialogue, %d narration), %d unknown speakers",
         chapter.index, len(utterances), dialogue_count, narration_count, unknown_count,
     )
+
+    # CAST-AMEND-2-005: warn when a chapter yields NO dialogue at all while the
+    # text is full of dialogue-ish markers. The raya bug was silent precisely
+    # because nothing checked this: a whole Spanish chapter compiled to pure
+    # narration and no counter noticed.
+    if len(utterances) > 0 and dialogue_count == 0:
+        marker_chars = set(_attribution_quote_chars(profile))
+        has_quote_marker = any(ch in raw_text for ch in marker_chars)
+        has_line_initial_dash = bool(_LINE_INITIAL_DASH_RE.search(raw_text))
+        if has_quote_marker or has_line_initial_dash:
+            logger.warning(
+                "Chapter %d: no dialogue detected in %d utterances, but the text "
+                "contains dialogue markers (quotes=%s, line-initial dash=%s). "
+                "The language profile may not match the source's punctuation — "
+                "check --lang.",
+                chapter.index, len(utterances), has_quote_marker, has_line_initial_dash,
+            )
 
     # Warn when majority of utterances fall to 'unknown' (F-CAST-B-018)
     if len(utterances) > 0 and unknown_count > len(utterances) * 0.5:

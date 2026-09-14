@@ -73,12 +73,41 @@ class NLPBackend(Protocol):
 # BookNLP adapter
 # ---------------------------------------------------------------------------
 
+_BOOKNLP_PACKAGE = "booknlp"
+
+
 def _check_booknlp_available() -> bool:
-    """Check if BookNLP is importable."""
+    """
+    Check if BookNLP is importable.
+
+    The exception is no longer discarded. ``ModuleNotFoundError`` subclasses
+    ``ImportError``, so a BROKEN install — booknlp present but one of ITS
+    dependencies missing — used to be reported identically to an absent one,
+    and the user was told to ``pip install booknlp``, a package they already
+    had. Genuine absence stays quiet (it is an optional dependency); drift is
+    surfaced at WARNING naming the module that actually failed.
+    """
     try:
         import booknlp  # noqa: F401
         return True
-    except ImportError:
+    except ModuleNotFoundError as exc:
+        missing = getattr(exc, "name", None) or ""
+        if not missing or missing == _BOOKNLP_PACKAGE:
+            logger.debug("BookNLP is not installed — speaker attribution falls back")
+            return False
+        logger.warning(
+            "BookNLP is INSTALLED but not importable: no module named %r (%s). "
+            "This is a broken or incompatible install, not an absent one — "
+            "'pip install booknlp' will not fix it; install the missing "
+            "dependency or check the booknlp version.",
+            missing, exc,
+        )
+        return False
+    except ImportError as exc:
+        logger.warning(
+            "BookNLP is INSTALLED but failed to import (%s). This is a broken "
+            "or incompatible install, not an absent one.", exc,
+        )
         return False
 
 
