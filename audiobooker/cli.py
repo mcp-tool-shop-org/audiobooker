@@ -640,6 +640,18 @@ def create_parser() -> argparse.ArgumentParser:
 
     cache_clean_parser = cache_sub.add_parser("clean", help="Delete all cached audio")
     cache_clean_parser.add_argument("-p", "--project", help="Project file")
+    # CLIUX-H-010: an unconfirmed rmtree of every rendered chapter.
+    cache_clean_parser.add_argument(
+        "-y", "--yes",
+        action="store_true",
+        help="Confirm the deletion (required when stdin is not a terminal)",
+    )
+    cache_clean_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        dest="dry_run",
+        help="Report what would be deleted and delete nothing",
+    )
 
     cache_clean_failed_parser = cache_sub.add_parser(
         "clean-failed", help="Delete failed cache entries and reset them"
@@ -705,6 +717,18 @@ def create_parser() -> argparse.ArgumentParser:
         "--dry-run",
         action="store_true",
         help="Show what would be processed without rendering",
+    )
+    # CLIUX-C-001: `batch *.epub` replaced the project file beside every
+    # single source in the directory.
+    batch_parser.add_argument(
+        "--overwrite-project",
+        action="store_true",
+        dest="overwrite_project",
+        help=(
+            "Replace existing .audiobooker projects (default: refuse per "
+            "book). Each replacement is staged and only takes effect once "
+            "that book's render succeeds."
+        ),
     )
     batch_parser.add_argument(
         "--json", dest="json_output", action="store_true",
@@ -1186,6 +1210,28 @@ def create_parser() -> argparse.ArgumentParser:
         dest="force_text",
         help="Force text extraction for scanned/image-only PDFs",
     )
+    # CLIUX-C-001: `make` silently replaced an existing project file — and
+    # because save is step 4 and render is step 5, a run that then failed at
+    # ffmpeg left no audiobook AND no project.
+    make_parser.add_argument(
+        "--overwrite-project",
+        action="store_true",
+        dest="overwrite_project",
+        help=(
+            "Replace an existing .audiobooker project (default: refuse). The "
+            "replacement is staged and only takes effect once the render "
+            "succeeds."
+        ),
+    )
+    make_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        dest="dry_run",
+        help=(
+            "Show the resolved project path, whether it already exists, the "
+            "cast that would be applied and the output path — then stop"
+        ),
+    )
     # FT-CLI-008: watch mode also available on make.
     make_parser.add_argument(
         "--watch",
@@ -1316,20 +1362,55 @@ def find_project_file(specified: Optional[str] = None) -> Path:
             raise FileNotFoundError(f"Project file not found: {path}")
         return path
 
-    # Look for .audiobooker files in current directory
-    project_files = list(Path(".").glob("*.audiobooker"))
+    # Look for .audiobooker files in current directory.
+    #
+    # CLIUX-H-002: filter to regular FILES. The renderer's cache root is a
+    # DIRECTORY named `.audiobooker` written beside the project, and
+    # Path.glob() matches dotted names, so the very first render broke
+    # auto-detection PERMANENTLY: every later `-p`-less command raised
+    # "Multiple project files found" and listed the cache directory as one of
+    # the candidates. Reproducible in this repo's own root.
+    project_files = sorted(p for p in Path(".").glob("*.audiobooker") if p.is_file())
     if len(project_files) == 1:
         return project_files[0]
     elif len(project_files) > 1:
         raise ValueError(
             "Multiple project files found. Specify one with -p:\n"
-            + "\n".join(f"  {p}" for p in project_files)
+            + "\n".join(f"  {_project_choice_line(p)}" for p in project_files)
         )
     else:
         raise FileNotFoundError(
             "No project file found in current directory. "
             "Create one with: audiobooker new <source_file>"
         )
+
+
+def _project_choice_line(path: Path) -> str:
+    """Describe one candidate project file for the "which one?" error.
+
+    CLIUX-H-002: two bare filenames are not enough to pick from — the user has
+    to open both to find out which book is which. Title and mtime make `-p` an
+    informed choice. Deliberately best-effort: a project that will not parse
+    still has to be listed.
+    """
+    parts = [str(path)]
+    try:
+        import json as _json
+
+        data = _json.loads(path.read_text(encoding="utf-8"))
+        title = data.get("title")
+        if title:
+            parts.append(f'"{title}"')
+    except Exception:
+        parts.append("(unreadable)")
+    try:
+        from datetime import datetime as _dt
+
+        when = _dt.fromtimestamp(path.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
+        parts.append(f"modified {when}")
+    except OSError:
+        pass
+    return "  -  ".join(parts)
 
 
 # ---------------------------------------------------------------------------
@@ -1591,6 +1672,60 @@ def _warn_unknown_voice(voice: str, args) -> None:
     )
 
 
+def _warn_unknown_character(project, character: str, args) -> None:
+    """CLIUX-H-005: warn when the cast target appears nowhere in the book.
+
+    `cast` validated the VOICE id (CLI-7) but never the CHARACTER, so
+    ``cast Alicia af_bella`` in a project whose speakers are Alice and Bob
+    printed "Cast Alicia as af_bella", exited 0, and left BOTH real speakers
+    uncast — ``info`` went on reporting two uncast speakers while the user
+    believed they had just cast one of them. The mistake surfaced hours later
+    when ``render`` refused, naming a speaker they had been told twice they
+    had already cast.
+
+    Same shape as ``_warn_unknown_voice``: non-fatal (an alias or a speaker
+    that only appears after a re-compile is legitimate), close matches when we
+    have them, and ``--force`` skips it. Skipped entirely when the project is
+    not compiled — there are no detected speakers to check against yet, and
+    casting ahead of a compile is a normal workflow.
+    """
+    if not character or getattr(args, "force", False):
+        return
+
+    try:
+        detected = project.get_detected_speakers()
+    except Exception:  # pragma: no cover - defensive; casting must not fail here
+        return
+    if not detected:
+        return
+
+    casting = getattr(project, "casting", None)
+    normalize = getattr(casting, "normalize_key", None) or (lambda n: n.casefold().strip())
+
+    known = {normalize(s) for s in detected}
+    # A character already in the casting table is always a legitimate re-cast
+    # target, even if the current compile no longer produces that speaker.
+    known |= set(getattr(casting, "characters", {}) or {})
+    if normalize(character) in known:
+        return
+
+    import difflib
+
+    suggestions = difflib.get_close_matches(character, sorted(detected), n=3)
+    _err(
+        f"WARNING: unknown character {character!r} — no speaker by that name "
+        "appears in this book.",
+        args=args,
+    )
+    if suggestions:
+        _err(f"  Did you mean: {', '.join(suggestions)}?", args=args)
+    _err(
+        "  Run 'audiobooker speakers' to list the detected speakers, or pass "
+        "--force to cast a name the compile has not produced yet.",
+        args=args,
+    )
+
+
 def cmd_cast(args) -> int:
     """Assign voice to character."""
     from audiobooker import AudiobookProject
@@ -1616,6 +1751,10 @@ def cmd_cast(args) -> int:
         # render. Look it up now. Warn rather than hard-fail: a pluggable
         # engine may legitimately expose ids outside the built-in catalog.
         _warn_unknown_voice(args.voice, args)
+
+        # CLIUX-H-005: the other half of the same mistake — a typo'd CHARACTER
+        # was accepted silently and left the real speaker uncast.
+        _warn_unknown_character(project, args.character, args)
 
         project.cast(
             name=args.character,
@@ -2108,22 +2247,58 @@ _SINGLE_CHAPTER_NO_OP = (
 )
 
 
+def _format_bytes(total: int) -> str:
+    """Human-readable byte size, matching `cache info`'s two-tier format."""
+    if total >= 1024 * 1024:
+        return f"{total / (1024 * 1024):.1f} MB"
+    return f"{total / 1024:.1f} KB"
+
+
+def _cache_stats(cache_root: Path) -> tuple[int, int, int]:
+    """(cached chapters, files, total bytes) for a render cache directory.
+
+    CLIUX-H-003 / CLIUX-H-010: both `render --clean-cache` and `cache clean`
+    used to delete hours of synthesized audio and report only a path. The
+    numbers were never hard to get — `cache info` already computed them — so
+    this is the one place that does, and every deletion path quotes it.
+    """
+    from audiobooker.renderer.cache_manifest import get_chapters_dir
+
+    file_count = 0
+    total_size = 0
+    for entry in cache_root.rglob("*"):
+        if entry.is_file():
+            file_count += 1
+            try:
+                total_size += entry.stat().st_size
+            except OSError:  # pragma: no cover - racing deletion
+                pass
+
+    chapters_dir = get_chapters_dir(cache_root)
+    chapter_count = (
+        len([p for p in chapters_dir.glob("*.wav") if p.is_file()])
+        if chapters_dir.is_dir()
+        else 0
+    )
+    return chapter_count, file_count, total_size
+
+
 def _single_chapter_output(args) -> str:
     """Resolve the output path for `render -c N` (one place, both sub-paths)."""
     return args.output or f"chapter_{args.chapter:03d}.wav"
 
 
-def _validate_single_chapter_render(args, project, tts_engine) -> Optional[int]:
-    """Guard the `render -c N` path. Returns an exit code, or None to proceed.
+def _check_single_chapter_flags(args, project) -> Optional[int]:
+    """Bounds + flag-compatibility guard for `render -c N`.
 
-    CLI-3: --dry-run is handled HERE, above the single-chapter/full-book split,
-    because the old check sat inside the full-book `else:` branch — so
-    `render -c N --dry-run` performed a real synthesis, burning a paid/GPU TTS
-    backend and overwriting chapter_NNN.wav while claiming to be a preview.
+    Split out of ``_validate_single_chapter_render`` for CLIUX-H-003: the
+    validation has to run BEFORE the --clean-cache rmtree, while the --dry-run
+    report has to run AFTER it (so the dry run can say what the deletion would
+    cost). One function could not sit on both sides of the same statement.
 
-    CLI-5: also bounds-checks the index (a negative index used to render the
-    last chapter into "chapter_-01.wav") and rejects the advertised flags this
-    path cannot honor rather than silently dropping them.
+    CLI-5: bounds-checks the index (a negative index used to render the last
+    chapter into "chapter_-01.wav") and rejects the advertised flags this path
+    cannot honor rather than silently dropping them.
     """
     chapter_index = args.chapter
 
@@ -2166,8 +2341,17 @@ def _validate_single_chapter_render(args, project, tts_engine) -> Optional[int]:
                 args=args,
             )
 
-    if not getattr(args, "dry_run", False):
-        return None
+    return None
+
+
+def _dry_run_single_chapter(args, project) -> int:
+    """CLI-3: describe exactly what `render -c N` WOULD do, synthesize nothing.
+
+    The old check sat inside the full-book `else:` branch, so `render -c N
+    --dry-run` performed a real synthesis — burning a paid/GPU TTS backend and
+    overwriting chapter_NNN.wav while claiming to be a preview.
+    """
+    chapter_index = args.chapter
 
     # --dry-run: describe exactly what WOULD happen, synthesize nothing.
     chapter = project.chapters[chapter_index]
@@ -2190,6 +2374,73 @@ def _validate_single_chapter_render(args, project, tts_engine) -> Optional[int]:
     _out(f"  Engine:     {engine_name}")
     _out("\nRe-run without --dry-run to render this chapter.")
     return 0
+
+
+def _validate_single_chapter_render(args, project, tts_engine) -> Optional[int]:
+    """Guard the `render -c N` path. Returns an exit code, or None to proceed.
+
+    Kept as the combined entry point (flags then dry-run) for callers that do
+    not need the two halves separated. ``_cmd_render_once`` calls the halves
+    directly so `--clean-cache` can sit between them (CLIUX-H-003).
+    """
+    rc = _check_single_chapter_flags(args, project)
+    if rc is not None:
+        return rc
+    if not getattr(args, "dry_run", False):
+        return None
+    return _dry_run_single_chapter(args, project)
+
+
+def _handle_clean_cache(args, project_path: Path) -> Optional[int]:
+    """`render --clean-cache`: report under --dry-run, delete otherwise.
+
+    CLIUX-H-003: this used to be the FIRST thing `render` did — above the
+    cover check, above the bounds check, above the incompatible-flag
+    rejection, and above BOTH --dry-run short-circuits. So
+    ``--clean-cache --dry-run`` destroyed the cache and then reported that
+    nothing had happened; so did a bad ``-c`` index and a mistyped
+    ``--cover``. It now runs only after every guard has passed, and under
+    --dry-run it only ever reports.
+
+    Returns an exit code to stop the run, or None to continue.
+    """
+    if not getattr(args, "clean_cache", False):
+        return None
+
+    from audiobooker.renderer.cache_manifest import get_cache_root
+    import shutil
+
+    cache_dir = get_cache_root(project_path.parent)
+    if not cache_dir.exists():
+        _out("No cache to clean.")
+        return None
+
+    chapters, files, size = _cache_stats(cache_dir)
+
+    if getattr(args, "dry_run", False):
+        _out(
+            f"DRY RUN — would delete {chapters} cached chapter(s) "
+            f"({files} file(s), {_format_bytes(size)}) from {cache_dir}"
+        )
+        return None
+
+    # F-RENDER-B-020: Check for lockfile before rmtree
+    lock_path = cache_dir / ".render.lock"
+    if lock_path.exists():
+        print(
+            f"WARNING: Cache appears to be in use (lockfile exists: {lock_path}).\n"
+            f"Another render may be running. If you are sure no render is active,\n"
+            f"delete the lockfile manually and retry:\n"
+            f"  del \"{lock_path}\""
+        )
+        return 1
+
+    shutil.rmtree(cache_dir)
+    _out(
+        f"Cache cleared: {cache_dir} — deleted {chapters} cached chapter(s) "
+        f"({files} file(s), {_format_bytes(size)})"
+    )
+    return None
 
 
 def _cmd_render_once(args) -> int:
@@ -2219,27 +2470,10 @@ def _cmd_render_once(args) -> int:
         if series_override:
             project.metadata.series = series_override
 
-        # Handle --clean-cache before rendering
-        if getattr(args, "clean_cache", False):
-            from audiobooker.renderer.cache_manifest import get_cache_root
-            import shutil
-
-            cache_dir = get_cache_root(project_path.parent)
-            if cache_dir.exists():
-                # F-RENDER-B-020: Check for lockfile before rmtree
-                lock_path = cache_dir / ".render.lock"
-                if lock_path.exists():
-                    print(
-                        f"WARNING: Cache appears to be in use (lockfile exists: {lock_path}).\n"
-                        f"Another render may be running. If you are sure no render is active,\n"
-                        f"delete the lockfile manually and retry:\n"
-                        f"  del \"{lock_path}\""
-                    )
-                    return 1
-                shutil.rmtree(cache_dir)
-                _out(f"Cache cleared: {cache_dir}")
-            else:
-                _out("No cache to clean.")
+        # CLIUX-H-003: --clean-cache is NOT handled here any more. It is an
+        # irreversible rmtree of hours of synthesized audio, and running it
+        # first meant every validation below it — and both --dry-run paths —
+        # happened after the destruction. See _handle_clean_cache below.
 
         # FT-RENDER-011: Auto-apply voice suggestions if --cast-suggest
         if getattr(args, "cast_suggest", False):
@@ -2268,10 +2502,23 @@ def _cmd_render_once(args) -> int:
         # `if args.chapter is not None:`, so `render -c N` ran straight past the
         # dry-run guard and every option below into a REAL synthesis. Validate
         # and short-circuit the single-chapter path BEFORE the split.
+        #
+        # CLIUX-H-003: the FLAG half runs here (before --clean-cache), the
+        # DRY-RUN half below it (after), so a dry run can report the deletion
+        # it is not going to perform.
         if args.chapter is not None:
-            rc = _validate_single_chapter_render(args, project, tts_engine)
+            rc = _check_single_chapter_flags(args, project)
             if rc is not None:
                 return rc
+
+        # CLIUX-H-003: every guard above has passed — only now is it safe to
+        # destroy the cache. Under --dry-run this only reports.
+        rc = _handle_clean_cache(args, project_path)
+        if rc is not None:
+            return rc
+
+        if args.chapter is not None and getattr(args, "dry_run", False):
+            return _dry_run_single_chapter(args, project)
 
         # FT-RENDER-017: Chapter selection filtering.
         # CLI-A-001: --chapters/--exclude-chapters is a TRANSIENT render filter.
@@ -3274,7 +3521,13 @@ def cmd_review_import(args) -> int:
 
         _out(f"Importing review file: {review_path}")
 
-        stats = project.import_reviewed(review_path)
+        # CLIUX-H-007: we render our own per-line report below, so silence the
+        # module logger's duplicate of every malformed line (it stays at DEBUG
+        # for --debug).
+        from audiobooker import review as review_mod
+
+        with review_mod.caller_reports_malformed():
+            stats = project.import_reviewed(review_path)
 
         # CLI-2: an @-leading line that is not a valid speaker tag used to be
         # absorbed as BODY TEXT — the finished audiobook then narrated the
@@ -3288,14 +3541,16 @@ def cmd_review_import(args) -> int:
                 "valid speaker tags. Nothing was imported.",
                 args=args,
             )
+            # CLIUX-H-007: one hint per line, chosen from the line's actual
+            # shape. The old blanket hint ("if the line is body text, escape it
+            # with a leading backslash") was wrong for the dominant cause — a
+            # second emotion group — and following it made the renderer SPEAK
+            # the tag aloud.
             for entry in malformed:
                 _err(f"  line {entry['line']}: {entry['text']}", args=args)
-            _err(
-                "Hint: a speaker tag is '@Name' or '@Name (emotion)'. If the "
-                "line is body text, escape it with a leading backslash: "
-                "\\@Name.",
-                args=args,
-            )
+                hint = entry.get("hint")
+                if hint:
+                    _err(f"    Hint: {hint}", args=args)
             return 1
 
         project.save()
@@ -3338,6 +3593,41 @@ def cmd_review_import(args) -> int:
             _err(
                 "Hint: re-export with 'audiobooker review-export' and re-apply "
                 "your edits if this was not intentional.",
+                args=args,
+            )
+
+        # CLIUX-H-006: the review file's own instruction ("Delete entire
+        # speaker blocks to remove them") changes the block count, and import
+        # can then only re-derive every utterance type in that chapter from a
+        # starts-with-a-quote heuristic. PAUSE and DIRECTION become NARRATION
+        # and the renderer reads "[PAUSE]" / "[SFX ...]" aloud as prose. That
+        # used to happen with chapters_skipped=0 and exit 0.
+        retyped = stats.get("retyped_chapters") or []
+        if retyped:
+            _err(
+                f"\nWARNING: {len(retyped)} chapter(s) changed block count, so "
+                "EVERY utterance type in them was re-derived from a text "
+                "heuristic:",
+                args=args,
+            )
+            for item in retyped:
+                lost = item.get("lost_types") or []
+                detail = (
+                    f"{item['types_lost']} marker type(s) lost "
+                    f"({', '.join(lost)})"
+                    if lost
+                    else "no marker types were present"
+                )
+                _err(
+                    f"  - {item['title']}: {item['blocks_before']} block(s) -> "
+                    f"{item['blocks_after']}; {detail}",
+                    args=args,
+                )
+            _err(
+                "Hint: PAUSE / DIRECTION / FOOTNOTE markers are now plain "
+                "narration and the renderer will read their marker text aloud. "
+                "Re-export and edit in place (rather than deleting blocks) to "
+                "keep them.",
                 args=args,
             )
 
@@ -4131,6 +4421,46 @@ def cmd_cache(args) -> int:
             if not cache_root.exists():
                 _out("No cache to clean.")
                 return 0
+
+            # CLIUX-H-010: this rmtree is hours of synthesized audio — on a
+            # paid or GPU backend, real money and real wall-clock. It ran with
+            # no prompt, no --yes, no --dry-run, and reported neither the
+            # chapter count nor the size, though `cache info` computes both
+            # ten lines above. Say what is at stake, then ask.
+            chapters, files, size = _cache_stats(cache_root)
+            at_stake = (
+                f"{chapters} cached chapter(s), {files} file(s), "
+                f"{_format_bytes(size)}"
+            )
+
+            if getattr(args, "dry_run", False):
+                _out(f"DRY RUN — would delete {at_stake} from {cache_root}")
+                _out("Re-run with --yes to delete them.")
+                return 0
+
+            if not getattr(args, "yes", False):
+                _out(f"About to delete {at_stake} from {cache_root}")
+                _out(
+                    "  Every chapter would have to be synthesized again. To drop "
+                    "only the broken entries instead, use: audiobooker cache "
+                    "clean-failed"
+                )
+                if not sys.stdin.isatty():
+                    _err(
+                        "Error: refusing to delete the cache without "
+                        "confirmation. Pass --yes to confirm in a "
+                        "non-interactive shell.",
+                        args=args,
+                    )
+                    return 1
+                try:
+                    answer = input("Delete the cache? [y/N] ").strip().lower()
+                except EOFError:
+                    answer = ""
+                if answer not in ("y", "yes"):
+                    _out("Aborted — nothing was deleted.")
+                    return 1
+
             # Safety check for lockfile
             lock_path = cache_root / ".render.lock"
             if lock_path.exists():
@@ -4140,7 +4470,7 @@ def cmd_cache(args) -> int:
                 )
                 return 1
             shutil.rmtree(cache_root)
-            _out(f"Cache deleted: {cache_root}")
+            _out(f"Cache deleted: {cache_root} — removed {at_stake}")
             return 0
 
         elif cache_command == "clean-failed":
@@ -4258,6 +4588,13 @@ def cmd_diagnose(args: argparse.Namespace) -> int:
 
     checks: list[dict[str, str | None]] = []
     all_ok = True
+    # CLIUX-H-004: a component the machine CANNOT RENDER without. The voice
+    # engine and ffmpeg were both recorded as `status: "info"` and never
+    # touched `all_ok`, so a fresh box with neither printed two INFO lines and
+    # then "All checks passed." with exit 0 — a green light for a machine that
+    # cannot produce a single second of audio. Readiness is now its own
+    # verdict, and it gates the exit code.
+    missing_required: list[str] = []
 
     # Python version
     py_ver = (
@@ -4274,6 +4611,7 @@ def cmd_diagnose(args: argparse.Namespace) -> int:
     )
     if not py_ok:
         all_ok = False
+        missing_required.append("Python 3.10+")
 
     # Core dependency: ebooklib
     try:
@@ -4297,6 +4635,7 @@ def cmd_diagnose(args: argparse.Namespace) -> int:
             }
         )
         all_ok = False
+        missing_required.append("ebooklib")
 
     # Optional: pymupdf (PDF sources)
     try:
@@ -4359,6 +4698,7 @@ def cmd_diagnose(args: argparse.Namespace) -> int:
                 "hint": None,
             }
         )
+        voice_engine_ok = True
     except ImportError:
         checks.append(
             {
@@ -4368,6 +4708,11 @@ def cmd_diagnose(args: argparse.Namespace) -> int:
                 "hint": VOICE_SOUNDBOARD_INSTALL_HINT,
             }
         )
+        # CLIUX-H-004: "info" is the right severity for the CHECK (a pluggable
+        # engine may supply the voices instead), but there is nothing to
+        # synthesize with until something does, so it still gates readiness.
+        voice_engine_ok = False
+        missing_required.append("voice engine (voice-soundboard)")
     except Exception as e:
         checks.append(
             {
@@ -4379,6 +4724,8 @@ def cmd_diagnose(args: argparse.Namespace) -> int:
             }
         )
         all_ok = False
+        voice_engine_ok = False
+        missing_required.append("voice engine (voice-soundboard)")
 
     # ffmpeg
     ffmpeg_path = shutil.which("ffmpeg")
@@ -4386,15 +4733,20 @@ def cmd_diagnose(args: argparse.Namespace) -> int:
         checks.append(
             {"check": "ffmpeg", "status": "ok", "value": ffmpeg_path, "hint": None}
         )
+        ffmpeg_ok = True
     else:
         checks.append(
             {
                 "check": "ffmpeg",
                 "status": "info",
                 "value": "not found",
-                "hint": "Install ffmpeg for M4B assembly",
+                "hint": "REQUIRED: every book format is assembled with ffmpeg "
+                        "(m4b is the default, and even a multi-chapter WAV is "
+                        "concatenated by it). https://ffmpeg.org/download.html",
             }
         )
+        ffmpeg_ok = False
+        missing_required.append("ffmpeg")
 
     # ffprobe (used for duration/metadata probing during assembly)
     ffprobe_path = shutil.which("ffprobe")
@@ -4422,8 +4774,28 @@ def cmd_diagnose(args: argparse.Namespace) -> int:
         }
     )
 
+    # CLIUX-H-004: which output formats this machine can actually produce.
+    # Nothing is synthesizable without a voice engine, and every book format —
+    # m4b, mp3 and even a multi-chapter WAV — is assembled by ffmpeg
+    # (concatenate_audio_files raises without it), so the set is all-or-nothing.
+    if voice_engine_ok and ffmpeg_ok:
+        reachable_formats = ["m4b", "mp3", "wav"]
+    else:
+        reachable_formats = []
+
+    ready = not missing_required
+
     if getattr(args, "json_output", False):
-        print(json_mod.dumps({"ok": all_ok, "checks": checks}, indent=2))
+        print(json_mod.dumps(
+            {
+                "ok": all_ok,
+                "ready": ready,
+                "missing_required": missing_required,
+                "reachable_formats": reachable_formats,
+                "checks": checks,
+            },
+            indent=2,
+        ))
     else:
         print(f"audiobooker v{__version__} — environment diagnostics\n")
         for c in checks:
@@ -4436,12 +4808,92 @@ def cmd_diagnose(args: argparse.Namespace) -> int:
             if c["hint"]:
                 print(f"         Hint: {c['hint']}")
         print()
-        if all_ok:
-            print("All checks passed.")
+        if ready:
+            print("Ready to render.")
+            print(f"  Output formats available: {', '.join(reachable_formats)}")
         else:
+            print(
+                f"NOT ready to render — {len(missing_required)} required "
+                f"component(s) missing: {', '.join(missing_required)}"
+            )
+            if reachable_formats:
+                print(
+                    f"  Output formats available: {', '.join(reachable_formats)}"
+                )
+            elif voice_engine_ok:
+                print(
+                    "  Output formats available: none — 'render -c N' can still "
+                    "write a single-chapter WAV, but no book can be assembled."
+                )
+            else:
+                print(
+                    "  Output formats available: none — no audio can be "
+                    "synthesized at all."
+                )
+            print("  See the hints above for each missing component.")
+        if not all_ok:
             print("Some checks failed. See hints above.")
 
-    return 0 if all_ok else 1
+    return 0 if (all_ok and ready) else 1
+
+
+def _resolve_project_path(source: Path) -> Path:
+    """Where `make`/`batch` will write the project file for ``source``.
+
+    A directory source has no file suffix to swap, so the project file goes
+    beside the folder.
+    """
+    if source.is_dir():
+        return source.parent / f"{source.name}.audiobooker"
+    return source.with_suffix(".audiobooker")
+
+
+def _project_at_risk(path: Path) -> str:
+    """Describe the hand work an overwrite of ``path`` would destroy.
+
+    CLIUX-C-001: "this file exists" is not a warning a user can act on. The
+    casting table and the pronunciation lexicon are the two things nobody
+    wants to redo, and both are one JSON read away.
+    """
+    try:
+        import json as _json
+
+        data = _json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return "an existing project file (unreadable — inspect it before overwriting)"
+
+    config = data.get("config") or {}
+    characters = (data.get("casting") or {}).get("characters") or {}
+    lexicon = config.get("pronunciation_overrides") or {}
+    phonemes = config.get("phoneme_overrides") or {}
+    title = data.get("title") or "(untitled)"
+    return (
+        f'"{title}" — {len(characters)} cast voice(s), '
+        f"{len(lexicon) + len(phonemes)} pronunciation override(s), "
+        f"{len(data.get('chapters') or [])} chapter(s)"
+    )
+
+
+def _refuse_project_overwrite(project_path: Path, command_label: str) -> None:
+    """Print the refusal for CLIUX-C-001 — with both real paths forward."""
+    _err(f"  Refusing to overwrite an existing project: {project_path}")
+    _err(f"    At risk: {_project_at_risk(project_path)}")
+    _err(
+        f"    `{command_label}` re-parses and auto-casts the book from scratch, "
+        "replacing every one of those."
+    )
+    _err(f"    To re-render what you already have: audiobooker render -p {project_path}")
+    _err("    To discard it and start over:        add --overwrite-project")
+
+
+def _discard_staged_project(staged_path: "Path | None") -> None:
+    """Remove a staged project file left behind by a failed render."""
+    if staged_path is None:
+        return
+    try:
+        staged_path.unlink(missing_ok=True)
+    except OSError:  # pragma: no cover - best effort cleanup
+        pass
 
 
 def _process_book(
@@ -4457,6 +4909,9 @@ def _process_book(
     engine=None,
     chapter_delimiter: Optional[str] = None,
     force_text: bool = False,
+    overwrite_project: bool = False,
+    dry_run: bool = False,
+    label: str = "make",
 ) -> dict:
     """Create + compile + auto-cast + render a single source file.
 
@@ -4487,11 +4942,20 @@ def _process_book(
             `make --force-text` is the documented remedy for scanned PDFs; it
             was likewise parsed and never passed to from_pdf, so the user
             burned a whole render to discover the book was empty.
+        overwrite_project: CLIUX-C-001 — permit replacing an existing
+            ``.audiobooker`` file. Even then the replacement is STAGED and
+            only moved into place once the render returns.
+        dry_run: CLIUX-C-001 — resolve everything (project path, cast,
+            output) and report it without writing or rendering anything.
+        label: the command name to quote back in the refusal message.
 
     Returns:
         A result dict: {file, name, status, output, error, duration_s}.
-        Never raises — render/parse errors are captured into the dict.
+        ``status`` is one of success / partial / failed / error / skipped /
+        refused / dry_run. Never raises — render/parse errors are captured
+        into the dict.
     """
+    import os as _os
     import time as _time
     from audiobooker import AudiobookProject
     from audiobooker.project import _sanitize_filename
@@ -4509,6 +4973,25 @@ def _process_book(
         "error": "",
         "duration_s": 0.0,
     }
+
+    # CLIUX-C-001: resolve the destination BEFORE parsing, so a refusal costs
+    # nothing. `make`/`batch` computed this at step 4 and called
+    # project.save() on it with no existence check at all, so a project with
+    # hand-cast voices, a pronunciation lexicon and edited chapter titles was
+    # replaced by a fresh auto-cast parse — and `batch *.epub` did it to every
+    # project in the directory.
+    project_path = _resolve_project_path(source)
+    staged_path: Optional[Path] = None
+
+    if project_path.exists() and not overwrite_project and not dry_run:
+        _refuse_project_overwrite(project_path, label)
+        book_result["status"] = "refused"
+        book_result["error"] = (
+            f"project already exists: {project_path} (re-render it with "
+            "`audiobooker render -p`, or pass --overwrite-project)"
+        )
+        book_result["duration_s"] = _time.time() - book_start
+        return book_result
 
     try:
         # Step 1: Create project. FT-CLI-002: seed config from the on-disk
@@ -4581,22 +5064,61 @@ def _process_book(
             except Exception as cast_err:
                 _out(f"  Warning: Auto-cast failed ({cast_err}), using fallback voices")
 
-        # Step 4: Save project. A directory source has no file suffix to swap,
-        # so place the project file alongside the folder.
-        if source.is_dir():
-            project_path = source.parent / f"{source.name}.audiobooker"
-        else:
-            project_path = source.with_suffix(".audiobooker")
-        project.save(project_path)
-
-        # Step 5: Render. CLI-6: `fmt` is None when the user did not type
-        # --format, so the config-file value (already merged into
-        # project.config.output_format) wins over the built-in default.
+        # CLI-6: `fmt` is None when the user did not type --format, so the
+        # config-file value (already merged into project.config.output_format)
+        # wins over the built-in default. Resolved before the save so
+        # --dry-run can report the real output path.
         out_fmt = overrides.get("format") or fmt or project.config.output_format
         if output_path is not None:
             final_output = Path(output_path)
         else:
             final_output = source.parent / f"{_sanitize_filename(project.title)}.{out_fmt}"
+
+        # CLIUX-C-001: --dry-run reports the whole resolved plan and stops
+        # before the first write. `batch`, `compile` and `render` all had one;
+        # `make` — the command that silently destroyed projects — did not.
+        if dry_run:
+            _out(f"DRY RUN — nothing written, nothing rendered ({label}).")
+            _out(f"  Source:       {source}")
+            _out(f"  Project file: {project_path}")
+            if project_path.exists():
+                _out(f"                EXISTS — {_project_at_risk(project_path)}")
+                _out(
+                    "                It would be REPLACED (only with "
+                    "--overwrite-project)."
+                )
+            else:
+                _out("                does not exist yet — would be created")
+            _out(f"  Output:       {final_output}")
+            _out(f"  Format:       {out_fmt}")
+            mapping = project.casting.get_voice_mapping()
+            if mapping:
+                _out(f"  Cast that would be applied ({len(mapping)}):")
+                for speaker, voice in sorted(mapping.items()):
+                    _out(f"    {speaker}: {voice}")
+            else:
+                _out("  Cast that would be applied: (none detected)")
+            book_result["status"] = "dry_run"
+            book_result["output"] = str(final_output)
+            book_result["duration_s"] = _time.time() - book_start
+            return book_result
+
+        # Step 4: Save project.
+        #
+        # CLIUX-C-001: the ORDERING is the finding. Save was step 4 and render
+        # step 5, so a run that replaced a hand-tuned project and then died at
+        # ffmpeg left the user with no audiobook AND no project. A replacement
+        # is therefore written BESIDE the original and only moved into place
+        # once render_project has returned. If nothing is there to lose, write
+        # straight to the destination.
+        if project_path.exists():
+            staged_path = project_path.with_name(project_path.name + ".new")
+            _discard_staged_project(staged_path)
+            project.save(staged_path)
+        else:
+            project.save(project_path)
+
+        # Step 5: Render.
 
         # FT-RENDER-M-002: pass cover art + metadata through. render_project
         # auto-defaults cover_art from project.metadata.cover_art_path when None.
@@ -4628,6 +5150,14 @@ def _process_book(
                 render_kwargs.pop(k, None)
             path = render_project(project, final_output, **render_kwargs)
 
+        # CLIUX-C-001: the render returned, so the replacement has earned its
+        # place. os.replace is atomic, so there is no window in which neither
+        # project exists.
+        if staged_path is not None:
+            _os.replace(str(staged_path), str(project_path))
+            project.project_path = project_path
+            staged_path = None
+
         # The render either produced the whole book or it did not. Recording
         # "success" unconditionally here is what let an incomplete render
         # (chapters dropped under allow_partial) reach the batch summary,
@@ -4642,11 +5172,16 @@ def _process_book(
         book_result["duration_s"] = _time.time() - book_start
 
     except RenderError as e:
+        # CLIUX-C-001: the render failed, so the staged replacement never
+        # earned its place — drop it and leave the user's project exactly as
+        # they left it.
+        _discard_staged_project(staged_path)
         book_result["status"] = "failed"
         book_result["error"] = str(e)[:200]
         book_result["duration_s"] = _time.time() - book_start
 
     except Exception as e:
+        _discard_staged_project(staged_path)
         book_result["status"] = "error"
         book_result["error"] = str(e)[:200]
         book_result["duration_s"] = _time.time() - book_start
@@ -4837,6 +5372,15 @@ def cmd_batch(args) -> int:
         for i, (source, ov) in enumerate(book_specs, 1):
             label = ov.get("title") or source.name
             _out(f"  [{i}/{len(book_specs)}] {label} ({source})")
+            # CLIUX-C-001: name the project file each book would write and
+            # whether something is already there — the dry run existed but
+            # never mentioned the file `batch` was about to overwrite.
+            target = _resolve_project_path(source)
+            if target.exists():
+                _out(f"        project: {target} — EXISTS, would be REFUSED")
+                _out(f"                 {_project_at_risk(target)}")
+            else:
+                _out(f"        project: {target} (new)")
         _out(f"\nFormat: {fmt or 'from config (default m4b)'}")
         _out(f"Language: {lang}")
         _out(f"Workers: {jobs}")
@@ -4880,6 +5424,10 @@ def cmd_batch(args) -> int:
             lang=lang,
             overrides=overrides,
             engine=batch_engine,
+            # CLIUX-C-001: `batch *.epub` overwrote EVERY project in the
+            # directory. Refuse by default here too.
+            overwrite_project=bool(getattr(args, "overwrite_project", False)),
+            label="batch",
         )
         status = book_result["status"]
         if status == "success":
@@ -4891,6 +5439,9 @@ def cmd_batch(args) -> int:
             )
         elif status == "failed":
             _out(f"  FAILED: {book_result['error']}")
+        elif status == "refused":
+            # The refusal detail was already printed by _process_book.
+            _out("  REFUSED: existing project left untouched")
         elif status == "skipped":
             _out(f"  Skipped: {book_result['error']}")
         else:
@@ -4903,7 +5454,10 @@ def cmd_batch(args) -> int:
     # A book whose render dropped chapters is NOT a success — it gets its own
     # bucket so the count, the payload and the exit code all tell the truth.
     partial = sum(1 for r in results if r["status"] == "partial")
-    failed = sum(1 for r in results if r["status"] in ("failed", "error"))
+    # CLIUX-C-001: a refusal produced NO audiobook, so it can never leave the
+    # exit code at 0 — but it is not a crash either, so it gets its own count.
+    refused = sum(1 for r in results if r["status"] == "refused")
+    failed = sum(1 for r in results if r["status"] in ("failed", "error")) + refused
     skipped = sum(1 for r in results if r["status"] == "skipped")
 
     # --json: emit the results array (machine-readable) instead of the table.
@@ -4914,6 +5468,7 @@ def cmd_batch(args) -> int:
                 "succeeded": success,
                 "partial": partial,
                 "failed": failed,
+                "refused": refused,
                 "skipped": skipped,
                 "total_elapsed_s": round(total_elapsed, 2),
                 "results": results,
@@ -4935,7 +5490,7 @@ def cmd_batch(args) -> int:
     _out(f"\n{'='*72}")
     _out(
         f"  BATCH SUMMARY — {success} succeeded, {partial} partial, "
-        f"{failed} failed, {skipped} skipped"
+        f"{failed} failed ({refused} refused), {skipped} skipped"
     )
     _out(f"  Total elapsed: {_fmt_duration(total_elapsed)}")
     _out(f"{'='*72}")
@@ -5002,6 +5557,10 @@ def _run_make_once(args) -> dict:
         # CLI-4: both were advertised in `make --help` and silently dropped.
         chapter_delimiter=getattr(args, "chapter_delimiter", None),
         force_text=bool(getattr(args, "force_text", False)),
+        # CLIUX-C-001: refuse by default, stage the replacement when allowed.
+        overwrite_project=bool(getattr(args, "overwrite_project", False)),
+        dry_run=bool(getattr(args, "dry_run", False)),
+        label="make",
     )
 
 
@@ -5029,6 +5588,13 @@ def cmd_make(args) -> int:
 def _make_summary(book_result: dict) -> int:
     """Print a single-book make result and return the process exit code."""
     status = book_result["status"]
+    if status == "dry_run":
+        # CLIUX-C-001: _process_book already printed the whole plan.
+        return 0
+    if status == "refused":
+        # CLIUX-C-001: _process_book already printed the refusal and both
+        # paths forward; do not paper over it with "Make failed:".
+        return 1
     if status == "success":
         _out(f"\nAudiobook created: {book_result['output']}")
         _out(f"  Source: {book_result['file']}")
@@ -5321,6 +5887,40 @@ def cmd_export_chapters(args) -> int:
             for ch in project.chapters
             if not ch.skip
         ]
+
+        # CLIUX-H-009: nothing checked that anything had been RENDERED. An
+        # unrendered chapter has duration_seconds == 0, so every marker
+        # collapsed onto the inter-chapter pause: a compiled-but-unrendered
+        # project produced a CUE sheet with track 2 at 00:02:00 and exit 0.
+        # Refuse the same way cmd_podcast already does, and name the gaps when
+        # only some chapters are missing.
+        unrendered = [title for title, duration in chapters_data if not (duration or 0) > 0]
+        if chapters_data and len(unrendered) == len(chapters_data):
+            _err(
+                "Error: no chapter has rendered audio — every duration is 0, so "
+                "every marker would land on the same timestamp.",
+                args=args,
+            )
+            _err(
+                "Hint: render the book first (audiobooker render), then export "
+                "the markers.",
+                args=args,
+            )
+            return 1
+        if unrendered:
+            _err(
+                f"\nWARNING: {len(unrendered)} chapter(s) have no rendered audio; "
+                "their markers will have zero length and every marker after them "
+                "will be early:",
+                args=args,
+            )
+            for title in unrendered:
+                _err(f"  - {title}", args=args)
+            _err(
+                "Hint: render the whole book (audiobooker render) before "
+                "exporting markers for distribution.",
+                args=args,
+            )
 
         contents = export_chapter_metadata(
             chapters_data, fmt=fmt, title=project.title
