@@ -186,9 +186,11 @@ class TestCmdNew:
 
         assert code == 1
         captured = capsys.readouterr()
-        assert "Error" in captured.out
+        # Errors go to stderr on every path (residual 4) — stdout is the
+        # command's product, stderr is where anything that went wrong belongs.
+        assert "Error" in captured.err
         # Error message should indicate what went wrong
-        assert "book.txt" in captured.out or "not found" in captured.out.lower() or "Error" in captured.out
+        assert "book.txt" in captured.err or "not found" in captured.err.lower() or "Error" in captured.err
 
     def test_new_unsupported_format(self, tmp_path, capsys):
         """Unsupported file format returns error."""
@@ -202,7 +204,8 @@ class TestCmdNew:
 
         assert code == 1
         captured = capsys.readouterr()
-        assert "Unsupported" in captured.out or "error" in captured.out.lower()
+        # Errors go to stderr on every path (residual 4).
+        assert "Unsupported" in captured.err or "error" in captured.err.lower()
 
 
 # ---------------------------------------------------------------------------

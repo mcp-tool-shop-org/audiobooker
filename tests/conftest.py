@@ -16,6 +16,35 @@ from audiobooker.project import AudiobookProject
 GOLDEN_BOOK_PATH = Path(__file__).parent.parent / "examples" / "golden_book.txt"
 
 
+# ---------------------------------------------------------------------------
+# Test isolation: cli._QUIET is process-global
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _reset_cli_quiet_flag():
+    """Reset ``audiobooker.cli._QUIET`` before (and after) every test.
+
+    ``--silent`` sets a module-level flag that only ``main()`` ever writes.
+    A real CLI process calls ``main()`` once, so nothing leaks there — but in
+    the suite a test that runs ``main([..., "--silent"])`` leaves the flag True
+    for every later test that invokes a ``cmd_*`` handler DIRECTLY (those never
+    go through ``main()``, so nothing resets it). Those tests then see empty
+    stdout and fail for a reason that has nothing to do with what they assert.
+
+    It is order-dependent, so it stayed invisible: the only ``--silent`` runs
+    lived in test_health_c_cli.py, which sorts after test_cli_commands.py.
+    Adding one ``--silent`` test to an alphabetically earlier file broke five
+    unrelated tests. This fixture makes the global's default the starting
+    state of every test instead of leaving it to filename ordering.
+    """
+    import audiobooker.cli as _cli
+
+    _cli._QUIET = False
+    yield
+    _cli._QUIET = False
+
+
 @pytest.fixture
 def golden_book_path() -> Path:
     """Return the path to the golden book fixture, asserting it exists."""

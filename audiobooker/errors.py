@@ -38,6 +38,10 @@ class AudiobookerError(Exception):
         return self.detail.hint
 
     @property
+    def cause(self) -> Optional[str]:
+        return self.detail.cause
+
+    @property
     def retryable(self) -> bool:
         return self.detail.retryable
 
@@ -72,16 +76,18 @@ class ConfigValidationError(AudiobookerError, ValueError):
     raising this class directly at call sites).
 
     Wave-2 note (F-CORE-5): ``audiobooker.errors`` was entirely unreferenced
-    before this fix -- zero imports, zero instantiations anywhere in the
+    before that fix -- zero imports, zero instantiations anywhere in the
     repo -- despite SHIP_GATE.md's Gate B citing "AudiobookerError base with
-    .structured()" as evidence. This class (plus ``config_file.ConfigFileError``,
-    which also inherits ``AudiobookerError`` through this class) is what makes
-    that citation true for the paths this wave's fixes touch. ``RenderError``,
-    ``PresetError``, and ``VoiceNotFoundError`` live in
-    ``renderer/engine.py``, ``casting/presets.py``, and
-    ``casting/voice_registry.py`` -- outside this domain's owned globs this
-    wave -- so they were NOT migrated to inherit ``AudiobookerError`` here;
-    see this wave's ``skipped[]`` entry for that decision.
+    .structured()" as evidence.
+
+    Wave-3 residual 5 completed the migration: ``RenderError``
+    (``renderer/engine.py``), ``PresetError`` (``casting/presets.py``) and
+    ``VoiceNotFoundError`` (``casting/voice_registry.py``) -- the other three
+    names Gate B cites -- now inherit ``AudiobookerError`` too, each keeping
+    its historical base class in the MRO so every existing
+    ``except RuntimeError`` / ``except ValueError`` / ``except Exception``
+    call site still catches them, and each with ``str(exc)`` byte-identical
+    to before.
     """
 
     def __init__(

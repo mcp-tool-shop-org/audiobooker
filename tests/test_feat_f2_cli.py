@@ -431,7 +431,8 @@ class TestPronunciationLexicon:
         # load_lexicon never reached: import_lexicon raises FileNotFoundError first
         code = main(["pronunciation", "import", str(tmp_path / "nope.csv"), "-p", str(proj_path)])
         assert code == 1
-        assert "Error" in capsys.readouterr().out
+        # Errors go to stderr on every path (residual 4).
+        assert "Error" in capsys.readouterr().err
 
 
 class TestProjectLexiconMethods:

@@ -11,6 +11,8 @@ import importlib.util
 import logging
 import sys
 
+from audiobooker.errors import AudiobookerError, ErrorDetail
+
 logger = logging.getLogger("audiobooker.casting")
 
 # The optional dependency that supplies the voice catalog. Kept as a constant so
@@ -100,8 +102,20 @@ class VoiceBackendIncompatibleError(VoiceBackendError):
         )
 
 
-class VoiceNotFoundError(Exception):
-    """Raised when one or more voice IDs are not available."""
+class VoiceNotFoundError(AudiobookerError):
+    """Raised when one or more voice IDs are not available.
+
+    Inherits ``AudiobookerError`` (which is itself an ``Exception``), so the
+    structured ``code``/``hint``/``retryable``/``structured()`` come from the
+    one canonical ``ErrorDetail`` and ``except Exception`` call sites keep
+    catching it exactly as before.
+
+    Wave-3 residual 5: SHIP_GATE.md's Gate B cites this class by name as
+    evidence the structured error shape ships, but it used to hand-roll the
+    four attributes and its own ``structured()``. The message string is
+    byte-identical to the previous implementation -- it is asserted verbatim
+    in tests/test_phase1_config_guardrails.py and surfaced to users.
+    """
 
     def __init__(
         self,
@@ -117,21 +131,19 @@ class VoiceNotFoundError(Exception):
             f"Run 'audiobooker voices' to list them.\n"
             f"  To skip validation, set validate_voices_on_render=false in project config."
         )
-        super().__init__(msg)
-        # Structured error shape (code/message/hint/cause/retryable)
-        self.code = "INPUT_VOICE_NOT_FOUND"
-        self.hint = "Run 'audiobooker voices' to list available IDs, or set validate_voices_on_render=false."
-        self.cause = None
-        self.retryable = False
-
-    def structured(self) -> dict:
-        """Return the canonical error shape as a dict."""
-        return {
-            "code": self.code,
-            "message": str(self),
-            "hint": self.hint,
-            "retryable": self.retryable,
-        }
+        AudiobookerError.__init__(
+            self,
+            ErrorDetail(
+                code="INPUT_VOICE_NOT_FOUND",
+                message=msg,
+                hint=(
+                    "Run 'audiobooker voices' to list available IDs, or set "
+                    "validate_voices_on_render=false."
+                ),
+                cause=None,
+                retryable=False,
+            ),
+        )
 
 
 _UNSET = object()

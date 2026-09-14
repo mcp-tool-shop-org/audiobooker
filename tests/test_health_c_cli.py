@@ -62,24 +62,28 @@ def _make_project(tmp_path, text: str = SAMPLE_TEXT, title: str = "Test Book"):
 # ---------------------------------------------------------------------------
 
 class TestReportError:
+    # Residual 4: _report_error goes through _err, which is stderr-only on
+    # every path — not only in --json mode.
     def test_prints_error_line(self, capsys):
         _report_error(ValueError("boom"), SimpleNamespace(debug=False))
-        out = capsys.readouterr().out
-        assert "Error: boom" in out
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert "Error: boom" in captured.err
 
     def test_prints_hint_when_present(self, capsys):
         class Hinted(Exception):
             hint = "do X to fix it"
 
         _report_error(Hinted("nope"), SimpleNamespace(debug=False))
-        out = capsys.readouterr().out
-        assert "Error: nope" in out
-        assert "Hint: do X to fix it" in out
+        err = capsys.readouterr().err
+        assert "Error: nope" in err
+        assert "Hint: do X to fix it" in err
 
     def test_no_hint_line_when_absent(self, capsys):
         _report_error(ValueError("plain"), SimpleNamespace(debug=False))
-        out = capsys.readouterr().out
-        assert "Hint:" not in out
+        captured = capsys.readouterr()
+        assert "Hint:" not in captured.err
+        assert "Hint:" not in captured.out
 
     def test_traceback_only_with_debug(self, capsys):
         try:
@@ -152,7 +156,11 @@ class TestSilentBehavior:
         missing = tmp_path / "nope.audiobooker"
         code = main(["info", "-p", str(missing), "--silent"])
         assert code == 1
-        assert "Error" in capsys.readouterr().out
+        # --silent hides the chatter, never the problem — and the problem goes
+        # to stderr on every path (residual 4), so stdout stays empty.
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert "Error" in captured.err
 
 
 # ---------------------------------------------------------------------------
@@ -177,7 +185,8 @@ class TestExitCodes:
         monkeypatch.setattr(AudiobookProject, "load", staticmethod(boom))
         code = main(["info", "-p", str(path)])
         assert code == 2
-        assert "unexpected internal failure" in capsys.readouterr().out
+        # Residual 4: errors go to stderr on every path.
+        assert "unexpected internal failure" in capsys.readouterr().err
 
 
 # ---------------------------------------------------------------------------
@@ -209,10 +218,12 @@ class TestInstallHint:
 
         monkeypatch.setattr(builtins, "__import__", fake_import)
         code = main(["voices"])
-        out = capsys.readouterr().out
+        captured = capsys.readouterr()
+        # Residual 4: the install hint is part of an error report -> stderr.
+        combined = captured.out + captured.err
         assert code == 1
-        assert "pip install voice-soundboard" in out
-        assert "F:/" not in out
+        assert "pip install voice-soundboard" in captured.err
+        assert "F:/" not in combined
 
 
 # ---------------------------------------------------------------------------
@@ -348,12 +359,13 @@ class TestReviewImportWarning:
 
         monkeypatch.setattr(AudiobookProject, "import_reviewed", fake_import)
         code = main(["review-import", str(review_file), "-p", str(path)])
-        out = capsys.readouterr().out
+        # Residual 4: warnings go through _err -> stderr, unconditionally.
+        err = capsys.readouterr().err
         assert code == 0
-        assert "WARNING" in out
-        assert "Lost Chapter" in out
-        assert "Orphan Chapter" in out
-        assert "did not match any chapter" in out
+        assert "WARNING" in err
+        assert "Lost Chapter" in err
+        assert "Orphan Chapter" in err
+        assert "did not match any chapter" in err
 
     def test_no_warning_when_nothing_skipped(self, tmp_path, monkeypatch, capsys):
         path = _make_project(tmp_path)

@@ -676,20 +676,22 @@ class TestVoiceAudition:
         from tests.fakes.fake_registry import make_fake_registry
         registry = make_fake_registry()
 
-        try:
-            results = audition_voices(
-                "Alice",
-                casting,
-                sample_utterances=["Hello, how are you?"],
-                registry=registry,
-            )
-            assert isinstance(results, list)
-            if results:
-                assert "voice_id" in results[0]
-                assert "score" in results[0]
-        except (AttributeError, TypeError):
-            # voice_id attribute may differ on Character — acceptable
-            pytest.skip("audition_voices requires compatible voice registry")
+        # NO try/except here. This call used to be wrapped in
+        # `except (AttributeError, TypeError): pytest.skip(...)`, and that
+        # swallowed a REAL production AttributeError (audition_voices read
+        # char.voice_id; the field is Character.voice) — reporting a live
+        # crash as an inert skip inside a "1235 passed" headline. The bug is
+        # fixed; the handler that hid it is gone so the next one fails loudly.
+        results = audition_voices(
+            "Alice",
+            casting,
+            sample_utterances=["Hello, how are you?"],
+            registry=registry,
+        )
+        assert isinstance(results, list)
+        if results:
+            assert "voice_id" in results[0]
+            assert "score" in results[0]
 
     def test_audition_with_empty_utterances(self):
         from audiobooker.casting.voice_suggester import audition_voices
@@ -699,16 +701,16 @@ class TestVoiceAudition:
         casting.cast("narrator", "af_heart")
         registry = make_fake_registry()
 
-        try:
-            results = audition_voices(
-                "Bob",
-                casting,
-                sample_utterances=[],
-                registry=registry,
-            )
-            assert isinstance(results, list)
-        except (AttributeError, TypeError):
-            pytest.skip("audition_voices requires compatible voice registry")
+        # NO try/except — see test_audition_voices_returns_list above. An
+        # AttributeError or TypeError from this call path is a defect, not a
+        # reason to skip.
+        results = audition_voices(
+            "Bob",
+            casting,
+            sample_utterances=[],
+            registry=registry,
+        )
+        assert isinstance(results, list)
 
 
 # =========================================================================

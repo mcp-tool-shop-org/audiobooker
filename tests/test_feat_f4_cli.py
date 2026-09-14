@@ -221,11 +221,92 @@ class TestCastingCSV:
         project.export_casting(out)  # infers csv from extension
         text = out.read_text(encoding="utf-8")
         header = text.splitlines()[0]
+        # Residual 6: pitch_shift + default_intensity are APPENDED, so every
+        # pre-existing column keeps its position for anyone reading the sheet
+        # positionally. This assertion is the schema contract — changing it is
+        # a deliberate, versioned act, which is exactly what this is.
         assert header == (
-            "name,voice,gender,line_count,emotion,speed,emphasis,aliases,description"
+            "name,voice,gender,line_count,emotion,speed,emphasis,aliases,"
+            "description,pitch_shift,default_intensity"
         )
         assert "Al;Ally" in text
         assert "female" in text  # derived gender column
+
+    def test_csv_round_trips_pitch_and_intensity(self, tmp_path):
+        """Residual 6: the CSV cast sheet used to silently drop tuning.
+
+        A user who exported a tuned cast to CSV, edited it in a spreadsheet and
+        re-imported it lost every pitch_shift and default_intensity — the JSON
+        format round-tripped them, the CSV did not.
+        """
+        project = AudiobookProject.from_string("x", title="T")
+        project.cast("Alice", "af_sky", emotion="happy")
+        alice = project.casting.characters[project.casting.normalize_key("Alice")]
+        alice.pitch_shift = -0.35
+        alice.default_intensity = 0.8
+        alice.emphasis = 1.25
+        alice.speed = 1.1
+
+        out = tmp_path / "cast.csv"
+        project.export_casting(out)
+
+        fresh = AudiobookProject.from_string("y", title="T2")
+        fresh.import_casting(out)
+        restored = fresh.casting.characters[fresh.casting.normalize_key("Alice")]
+        assert restored.pitch_shift == pytest.approx(-0.35)
+        assert restored.default_intensity == pytest.approx(0.8)
+        assert restored.emphasis == pytest.approx(1.25)
+        assert restored.speed == pytest.approx(1.1)
+
+    def test_import_accepts_the_legacy_nine_column_header(self, tmp_path):
+        """A CSV exported before residual 6 must still import.
+
+        This is the real risk of adding columns — not the columns themselves.
+        Every cast sheet a user already has on disk carries the old header.
+        """
+        legacy = tmp_path / "legacy_cast.csv"
+        legacy.write_text(
+            "name,voice,gender,line_count,emotion,speed,emphasis,aliases,description\n"
+            "Alice,af_sky,female,12,happy,1.1,1.25,Al;Ally,The baker\n"
+            "Bob,bm_george,male,3,,1.0,1.0,,\n",
+            encoding="utf-8",
+        )
+
+        project = AudiobookProject.from_string("x", title="T")
+        project.import_casting(legacy, fmt="csv")
+
+        alice = project.casting.characters[project.casting.normalize_key("Alice")]
+        assert alice.voice == "af_sky"
+        assert alice.emotion == "happy"
+        assert alice.aliases == ["Al", "Ally"]
+        assert alice.description == "The baker"
+        assert alice.speed == pytest.approx(1.1)
+        assert alice.emphasis == pytest.approx(1.25)
+        # Absent columns fall back to the Character defaults, not to a crash.
+        assert alice.pitch_shift == pytest.approx(0.0)
+        assert alice.default_intensity is None
+
+        bob = project.casting.characters[project.casting.normalize_key("Bob")]
+        assert bob.voice == "bm_george"
+        assert bob.emotion is None
+        assert bob.default_intensity is None
+
+    def test_import_tolerates_blank_tuning_cells(self, tmp_path):
+        """New-header sheets hand-edited in a spreadsheet leave blanks."""
+        sheet = tmp_path / "blanks.csv"
+        sheet.write_text(
+            "name,voice,gender,line_count,emotion,speed,emphasis,aliases,"
+            "description,pitch_shift,default_intensity\n"
+            "Carol,bf_emma,female,0,,,,,,,\n",
+            encoding="utf-8",
+        )
+
+        project = AudiobookProject.from_string("x", title="T")
+        project.import_casting(sheet, fmt="csv")
+        carol = project.casting.characters[project.casting.normalize_key("Carol")]
+        assert carol.pitch_shift == pytest.approx(0.0)
+        assert carol.default_intensity is None
+        assert carol.speed == pytest.approx(1.0)
 
     def test_csv_round_trip(self, tmp_path):
         project = AudiobookProject.from_string("x", title="T")
@@ -578,7 +659,8 @@ class TestEmotionsMoodSpanCLI:
         path = _write_project(tmp_path)
         code = main(["emotions", "mood-span", "0", "9", "2", "sad", "-p", str(path)])
         assert code == 1
-        assert "Error" in capsys.readouterr().out
+        # Errors go to stderr on every path (residual 4).
+        assert "Error" in capsys.readouterr().err
 
 
 class TestEmotionsPresetsCLI:
