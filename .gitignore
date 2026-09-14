@@ -91,3 +91,4 @@ site/node_modules/
 
 # Dogfood swarm scratch (manifest, wave findings) — not product artifacts
 swarms/
+.swarm/
