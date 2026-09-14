@@ -83,6 +83,21 @@ def _csv_float(value, default: float) -> float:
         return default
 
 
+def _csv_optional_float(value) -> Optional[float]:
+    """Parse a CSV cell whose absence is meaningful (None, not a number).
+
+    ``Character.default_intensity`` is Optional[float]: None means "no
+    intensity override", which is a different setting from 0.0. A blank,
+    missing or unparseable cell therefore reads back as None.
+    """
+    if value is None or str(value).strip() == "":
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _csv_int(value, default: int) -> int:
     """Parse an optional CSV int cell, falling back to ``default`` when blank."""
     if value is None or str(value).strip() == "":
@@ -1080,20 +1095,50 @@ class AudiobookProject:
 
         return result
 
-    def _validate_voices(self) -> None:
+    def _validate_voices(self, engine=None) -> None:
         """
-        Check that all referenced voice IDs exist in voice-soundboard.
+        Check that all referenced voice IDs exist in the active voice catalog.
+
+        Args:
+            engine: Optional TTS engine. When it advertises ``list_voices()``
+                its catalog is authoritative (FT-ENGINE-001); otherwise the
+                voice-soundboard catalog is used, exactly as before. Passing
+                the engine matters now that the renderer runs this gate for
+                every render path -- validating Piper voice IDs against the
+                voice-soundboard catalog would be a false failure.
 
         Raises:
             VoiceNotFoundError: If any voice IDs are missing.
+            VoiceBackendIncompatibleError: If the backend IS installed but its
+                API has drifted -- an unreadable catalog cannot certify any
+                voice ID, so that is surfaced rather than swallowed.
         """
-        from audiobooker.casting.voice_registry import validate_voices, get_available_voices, VoiceNotFoundError
+        from audiobooker.casting.voice_registry import (
+            VoiceBackendUnavailableError,
+            VoiceNotFoundError,
+            get_available_voices,
+            validate_voices,
+        )
 
         # Collect all voice IDs: cast characters + fallback
         voice_ids = {char.voice for char in self.casting.characters.values()}
         voice_ids.add(self.config.fallback_voice_id)
 
-        available = get_available_voices()
+        try:
+            available = get_available_voices(engine)
+        except VoiceBackendUnavailableError:
+            # Genuine absence of the optional backend is a warn-and-skip, the
+            # same policy validate_voices() applies when it queries the
+            # catalog itself. Hard-failing here would turn every render on a
+            # machine without voice-soundboard into an ImportError raised by
+            # *validation* -- which matters now that the renderer runs this
+            # gate on all three render paths, not just Project.render().
+            logger.warning(
+                "voice-soundboard is not installed — skipping voice validation. "
+                "Voice IDs will NOT be checked before rendering."
+            )
+            return
+
         missing = validate_voices(voice_ids, available)
         if missing:
             raise VoiceNotFoundError(missing=missing, available_count=len(available))
@@ -1257,16 +1302,13 @@ class AudiobookProject:
         (omitted when unset). (F-CORE-1, wave 2 amend: pitch_shift and
         emphasis added -- previously silently dropped on export.)
 
-        CSV format (CASTING-DEPTH v2.1): columns
-        name, voice, gender, line_count, emotion, speed, emphasis,
-        aliases (';'-joined), description. NOTE: pitch_shift and
-        default_intensity are NOT representable in this CSV shape -- adding
-        columns would change the header row asserted verbatim by
-        tests/test_feat_f4_cli.py::test_export_csv_columns_and_aliases,
-        which is outside this domain's owned files this wave. A
-        JSON export/import is the only round-trip-complete format for a
-        fully-tuned Character until that CSV schema is deliberately
-        versioned; see this wave's skipped[] entry.
+        CSV format (CASTING-DEPTH v2.1; extended by wave-3 residual 6):
+        columns name, voice, gender, line_count, emotion, speed, emphasis,
+        aliases (';'-joined), description, pitch_shift, default_intensity.
+        Both formats are now round-trip-complete for a fully-tuned Character
+        -- pitch_shift and default_intensity used to be silently dropped by
+        the CSV path, so a cast tuned in the app and edited in a spreadsheet
+        came back flattened to the Character defaults.
 
         Args:
             path: Output file path.
@@ -1290,16 +1332,26 @@ class AudiobookProject:
         """CASTING-DEPTH v2.1: write the casting table as a CSV cast sheet.
 
         Columns: name, voice, gender, line_count, emotion, speed, emphasis,
-        aliases (';'-joined), description. ``gender`` is derived from the voice
-        ID prefix convention (af_/bf_ -> female, am_/bm_ -> male) so a
-        spreadsheet editor sees a useful column; it is informational only and is
-        ignored on import.
+        aliases (';'-joined), description, pitch_shift, default_intensity.
+        ``gender`` is derived from the voice ID prefix convention (af_/bf_ ->
+        female, am_/bm_ -> male) so a spreadsheet editor sees a useful column;
+        it is informational only and is ignored on import.
+
+        Wave-3 residual 6: ``pitch_shift`` and ``default_intensity`` are
+        APPENDED rather than grouped next to speed/emphasis. Import matches by
+        column NAME (csv.DictReader), so position is irrelevant there -- but
+        appending keeps every pre-existing column at its historical index for
+        anyone who reads the sheet positionally, which is the one way a schema
+        change like this can break a user silently. ``default_intensity`` is
+        Optional[float]; None is written as an empty cell and read back as
+        None (not 0.0, which is a meaningfully different setting).
         """
         import csv
 
         fieldnames = [
             "name", "voice", "gender", "line_count", "emotion",
             "speed", "emphasis", "aliases", "description",
+            "pitch_shift", "default_intensity",
         ]
         rows = 0
         # newline="" per the stdlib csv docs so the writer controls line endings.
@@ -1317,6 +1369,11 @@ class AudiobookProject:
                     "emphasis": char.emphasis,
                     "aliases": ";".join(char.aliases),
                     "description": char.description or "",
+                    "pitch_shift": char.pitch_shift,
+                    "default_intensity": (
+                        "" if char.default_intensity is None
+                        else char.default_intensity
+                    ),
                 })
                 rows += 1
         logger.info("Exported casting CSV (%d characters) to %s", rows, path)
@@ -1328,11 +1385,13 @@ class AudiobookProject:
         JSON format: array of objects with keys
         name, voice, emotion, speed, aliases, description.
 
-        CSV format (CASTING-DEPTH v2.1): columns
-        name, voice, gender, line_count, emotion, speed, emphasis,
-        aliases (';'-joined), description. Only name + voice are required;
-        every other column is optional and tolerated when missing. ``gender``
-        is informational and ignored.
+        CSV format (CASTING-DEPTH v2.1; extended by wave-3 residual 6):
+        columns name, voice, gender, line_count, emotion, speed, emphasis,
+        aliases (';'-joined), description, pitch_shift, default_intensity.
+        Only name + voice are required; every other column is optional and
+        tolerated when missing, so a cast sheet exported before the two tuning
+        columns existed still imports -- it simply leaves those fields at the
+        Character defaults. ``gender`` is informational and ignored.
 
         On conflicts (same character name), the imported entry overwrites.
 
@@ -1402,9 +1461,17 @@ class AudiobookProject:
         """CASTING-DEPTH v2.1: import a CSV cast sheet, merging into the cast.
 
         Columns: name, voice, gender, line_count, emotion, speed, emphasis,
-        aliases (';'-joined), description. Only name + voice are required; all
-        other columns are optional and tolerated when missing/blank. The
-        ``gender`` column is informational and is ignored.
+        aliases (';'-joined), description, pitch_shift, default_intensity.
+        Only name + voice are required; all other columns are optional and
+        tolerated when missing/blank. The ``gender`` column is informational
+        and is ignored.
+
+        Wave-3 residual 6: this reads BOTH the legacy nine-column header and
+        the extended eleven-column one. That falls out of matching by name
+        (``csv.DictReader`` + ``row.get``) and of the header check below
+        requiring only name + voice -- and it is the actual risk in adding
+        columns, so tests/test_feat_f4_cli.py pins the legacy header
+        explicitly rather than trusting it to stay true.
         """
         import csv
 
@@ -1435,6 +1502,13 @@ class AudiobookProject:
                     aliases=_csv_aliases(row.get("aliases")),
                     description=(row.get("description") or "").strip() or None,
                     line_count=_csv_int(row.get("line_count"), 0),
+                    # Residual 6: absent on a legacy nine-column sheet, blank
+                    # on a hand-edited one — both fall back to the Character
+                    # defaults instead of failing the import.
+                    pitch_shift=_csv_float(row.get("pitch_shift"), 0.0),
+                    default_intensity=_csv_optional_float(
+                        row.get("default_intensity")
+                    ),
                 )
                 key = self.casting.normalize_key(char.name)
                 self.casting.characters[key] = char
@@ -2181,9 +2255,11 @@ class AudiobookProject:
         self.output_path = output_path
         self.progress.status = "rendering"
 
-        # Validate voices before spending time rendering
+        # Validate voices before spending time rendering. Kept HERE (rather
+        # than left entirely to the renderer) so the gate still fires before
+        # compile() below — fail fast, not after a BookNLP pass.
         if self.config.validate_voices_on_render:
-            self._validate_voices()
+            self._validate_voices(engine=engine)
 
         # Ensure all non-excluded chapters are compiled
         uncompiled = [c for c in self.chapters if not c.is_compiled and not c.skip]
@@ -2205,6 +2281,11 @@ class AudiobookProject:
             output_profile=profile,
             bitrate=bitrate,
             split=split,
+            # The renderer runs the same voice gate for callers that reach it
+            # directly (cli.py's needs_direct path, batch/make's _process_book).
+            # This path already ran it above, so tell the renderer to stand
+            # down — otherwise the registry is queried twice per render.
+            validate_voices=False,
         )
         try:
             result_path = render_project(

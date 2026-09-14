@@ -133,15 +133,15 @@ class TestCastingRoundTripJSON:
 
 
 class TestCastingRoundTripCSV:
-    """CSV already carried `emphasis` before this fix. pitch_shift and
-    default_intensity are deliberately NOT added as new CSV columns: doing
-    so would change the header row
-    tests/test_feat_f4_cli.py::test_export_csv_columns_and_aliases asserts
-    verbatim (`"name,voice,gender,line_count,emotion,speed,emphasis,`
-    `aliases,description"`), and that file is outside this domain's owned
-    globs this wave. This class documents the resulting, deliberate split:
-    CSV carries what it always carried; JSON is the only complete format.
-    See this wave's skipped[] entry (core-1-csv-columns)."""
+    """CSV already carried `emphasis` before wave 2's fix.
+
+    Wave 2 deliberately left pitch_shift and default_intensity out of the CSV
+    because adding them changes the header row asserted verbatim in
+    tests/test_feat_f4_cli.py, a file outside that domain's owned globs
+    (skipped[] entry core-1-csv-columns). Wave-3 residual 6 closed that gap:
+    both columns are appended, the header assertion was updated in the file
+    that owns it, and import reads the legacy nine-column header too. The
+    second test below used to pin the gap and now pins its closure."""
 
     def test_csv_still_preserves_its_existing_columns(self, tmp_path):
         project = AudiobookProject.from_string("x", title="T")
@@ -168,11 +168,8 @@ class TestCastingRoundTripCSV:
         assert alice.aliases == ["Ally"]
         assert alice.description == "lead"
 
-    def test_csv_header_unchanged_pitch_shift_and_default_intensity_not_carried(
-        self, tmp_path
-    ):
-        """Documents the known, deliberate CSV gap described in this
-        class's docstring."""
+    def test_csv_now_carries_pitch_shift_and_default_intensity(self, tmp_path):
+        """Residual 6: the documented CSV gap is closed — tuning round-trips."""
         project = AudiobookProject.from_string("x", title="T")
         project.casting.characters["alice"] = Character(
             name="Alice",
@@ -186,14 +183,14 @@ class TestCastingRoundTripCSV:
         header = out.read_text(encoding="utf-8").splitlines()[0]
         assert header == (
             "name,voice,gender,line_count,emotion,speed,emphasis,"
-            "aliases,description"
+            "aliases,description,pitch_shift,default_intensity"
         )
 
         fresh = AudiobookProject.from_string("y", title="T2")
         fresh.import_casting(out)
         alice = fresh.casting.characters["alice"]
-        assert alice.pitch_shift == 0.0  # not preserved (documented gap)
-        assert alice.default_intensity is None  # not preserved (documented gap)
+        assert alice.pitch_shift == -0.2
+        assert alice.default_intensity == 0.65
 
 
 # ===========================================================================

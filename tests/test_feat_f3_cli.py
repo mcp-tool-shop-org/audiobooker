@@ -190,8 +190,8 @@ class TestConfigSections:
         ):
             code = main(["new", str(src)])
         assert code == 0  # missing aux file is a warning, not a failure
-        out = capsys.readouterr().out
-        assert "WARNING" in out
+        # Residual 4: warnings go through _err -> stderr, unconditionally.
+        assert "WARNING" in capsys.readouterr().err
 
 
 # ===========================================================================
@@ -242,7 +242,8 @@ class TestMake:
     def test_make_missing_source(self, tmp_path, capsys):
         code = main(["make", str(tmp_path / "nope.txt")])
         assert code == 1
-        assert "not found" in capsys.readouterr().out.lower()
+        # Errors go to stderr on every path (residual 4).
+        assert "not found" in capsys.readouterr().err.lower()
 
     def test_make_uses_explicit_output_path(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
@@ -756,7 +757,8 @@ class TestChapterRenameReorder:
             code = main(["chapters", "reorder", "5,6,7", "-p", str(proj)])
 
         assert code == 1
-        assert "permutation" in capsys.readouterr().out.lower()
+        # Residual 4: errors go through _err -> stderr, unconditionally.
+        assert "permutation" in capsys.readouterr().err.lower()
 
 
 # ===========================================================================

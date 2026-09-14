@@ -26,6 +26,8 @@ import re
 from pathlib import Path
 from typing import Optional
 
+from audiobooker.errors import AudiobookerError, ErrorDetail
+
 logger = logging.getLogger("audiobooker.casting.presets")
 
 _APP_NAME = "audiobooker"
@@ -35,8 +37,45 @@ _PRESET_SUBDIR = "presets"
 _SLUG_RE = re.compile(r"[^a-z0-9._-]+")
 
 
-class PresetError(ValueError):
-    """A cast preset could not be saved, loaded, or found."""
+class PresetError(AudiobookerError, ValueError):
+    """A cast preset could not be saved, loaded, or found.
+
+    Subclasses BOTH ``AudiobookerError`` (structured ``code``/``message``/
+    ``hint``/``retryable``, catchable via ``except AudiobookerError``) and
+    ``ValueError`` (its historical base -- every existing
+    ``except ValueError`` / ``except USER_ERROR_TYPES`` call site, and the
+    CLI's exit-code taxonomy that maps ValueError to exit 1, keep working
+    unchanged).
+
+    Wave-3 residual 5: SHIP_GATE.md's Gate B cites this class by name as
+    evidence the structured error shape ships; before this it was a bare
+    ``ValueError`` subclass with no ``code`` at all. ``str(exc)`` is
+    unchanged -- every call site still raises ``PresetError(message)`` and
+    ``AudiobookerError.__init__`` passes that same message through to
+    ``Exception.__init__``.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str = "INPUT_PRESET_INVALID",
+        hint: str = (
+            "Run 'audiobooker cast-preset list' to see saved presets, or "
+            "re-save the preset with 'audiobooker cast-preset save <name>'."
+        ),
+        cause: Optional[str] = None,
+    ) -> None:
+        AudiobookerError.__init__(
+            self,
+            ErrorDetail(
+                code=code,
+                message=message,
+                hint=hint,
+                cause=cause,
+                retryable=False,
+            ),
+        )
 
 
 def _config_root() -> Path:

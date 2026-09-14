@@ -287,7 +287,8 @@ class TestSampleCommand:
         assert code == 1
         assert not mock_rs.called
         captured = capsys.readouterr()
-        assert "not found" in captured.out
+        # Errors go to stderr on every path (residual 4).
+        assert "not found" in captured.err
 
 
 # ---------------------------------------------------------------------------
@@ -345,7 +346,8 @@ class TestMasterCheckCommand:
         missing = tmp_path / "nope.m4b"
         code = main(["master-check", str(missing)])
         assert code == 1
-        assert "not found" in capsys.readouterr().out
+        # Errors go to stderr on every path (residual 4).
+        assert "not found" in capsys.readouterr().err
 
 
 # ---------------------------------------------------------------------------

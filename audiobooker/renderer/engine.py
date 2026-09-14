@@ -21,6 +21,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Callable, TYPE_CHECKING
 
+from audiobooker.errors import AudiobookerError, ErrorDetail
 from audiobooker.renderer.protocols import TTSEngine, SynthesisResult
 
 if TYPE_CHECKING:
@@ -1043,6 +1044,29 @@ def validate_casting_completeness(
     return uncast_list
 
 
+def _validate_project_voices(project: "AudiobookProject", engine=None) -> None:
+    """Run the project's voice-ID gate, honoring ``validate_voices_on_render``.
+
+    Thin adapter so the renderer -- the one chokepoint every render path goes
+    through -- enforces the same check ``Project.render()`` does, without
+    duplicating the collection/lookup logic that lives on the project.
+
+    Duck-typed on purpose: ``render_project`` is called with stand-in project
+    objects in tests, and a missing ``config`` or ``_validate_voices`` must
+    never turn into a render failure.
+
+    Raises:
+        VoiceNotFoundError: If any referenced voice ID is unavailable.
+    """
+    config = getattr(project, "config", None)
+    if not getattr(config, "validate_voices_on_render", False):
+        return
+    validator = getattr(project, "_validate_voices", None)
+    if not callable(validator):
+        return
+    validator(engine=engine)
+
+
 # ---------------------------------------------------------------------------
 # Render summary (returned to caller for user-facing messages)
 # ---------------------------------------------------------------------------
@@ -1121,6 +1145,7 @@ def _render_project_impl(
     bitrate: Optional[str] = None,
     output_profile: str = "podcast",
     split: bool = False,
+    validate_voices: bool = True,
     **kwargs,
 ) -> "RenderSummary":
     """
@@ -1156,6 +1181,11 @@ def _render_project_impl(
             I=-20:TP=-3:LRA=11, 44.1k/192k) (FT-ACX-001).
         split: If True for AAC output, emit per-chapter .m4a files plus an
             index playlist instead of a single m4b (FT-RENDER-M-007).
+        validate_voices: If True (the default), check every cast voice ID
+            against the active catalog before rendering anything. Callers that
+            already ran the gate pass False (``Project.render`` does) so the
+            registry is not queried twice. NOT the same knob as ``force``,
+            which only bypasses casting *completeness*.
 
     Returns:
         RenderSummary with the output path and per-chapter accounting.
@@ -1184,6 +1214,17 @@ def _render_project_impl(
 
     # FT-RENDER-011: Casting completeness validation
     validate_casting_completeness(project, force=force)
+
+    # Wave-3 residual 2: voice-ID gate. This lives HERE, not only in
+    # Project.render(), because cli.py bypasses Project.render() entirely for
+    # --cover/--normalize/--profile/--bitrate/--split/--engine (its
+    # `needs_direct` branch) and for batch/make's _process_book — i.e. the gate
+    # used to be skipped on exactly the longest, most elaborate renders, and a
+    # typo'd voice surfaced hours in instead of immediately. Deliberately
+    # above the ffmpeg preflight and below casting completeness: both are
+    # cheap, local checks that should fail before a multi-hour synthesis.
+    if validate_voices:
+        _validate_project_voices(project, engine=engine)
 
     # FT-RENDER-003 / FT-RENDER-M-006 / FT-RENDER-M-007: Select assembler by
     # format. 'split' on an AAC format emits per-chapter .m4a files.
@@ -1988,8 +2029,23 @@ def _handle_chapter_failure(
         ) from error
 
 
-class RenderError(RuntimeError):
-    """Rendering failed with recoverable context."""
+class RenderError(AudiobookerError, RuntimeError):
+    """Rendering failed with recoverable context.
+
+    Subclasses BOTH ``AudiobookerError`` (so ``code``/``hint``/``cause``/
+    ``retryable``/``structured()`` come from the one canonical
+    ``ErrorDetail``, and ``except AudiobookerError`` catches it) and
+    ``RuntimeError`` (its historical base -- every existing
+    ``except RuntimeError`` / ``except Exception`` call site keeps working
+    unchanged).
+
+    Wave-3 residual 5: SHIP_GATE.md's Gate B cites this class by name as
+    evidence that the structured error shape ships, but it used to hand-roll
+    the four attributes and its own ``structured()`` instead of belonging to
+    the family. ``str(exc)`` is unchanged -- ``AudiobookerError.__init__``
+    passes the same message to ``Exception.__init__`` -- so every assertion
+    across the suite that reads the message still holds.
+    """
 
     def __init__(
         self,
@@ -2001,25 +2057,17 @@ class RenderError(RuntimeError):
         cause: Optional[str] = None,
         retryable: bool = True,
     ):
-        super().__init__(message)
+        AudiobookerError.__init__(
+            self,
+            ErrorDetail(
+                code=code,
+                message=message,
+                hint=hint,
+                cause=cause,
+                retryable=retryable,
+            ),
+        )
         self.summary = summary
-        # Structured error shape (code/message/hint/cause/retryable)
-        self.code = code
-        self.hint = hint
-        self.cause = cause
-        self.retryable = retryable
-
-    def structured(self) -> dict:
-        """Return the canonical error shape as a dict."""
-        d: dict = {
-            "code": self.code,
-            "message": str(self),
-            "hint": self.hint,
-            "retryable": self.retryable,
-        }
-        if self.cause:
-            d["cause"] = self.cause
-        return d
 
 
 def _resolve_project_dir(project: "AudiobookProject") -> Path:
