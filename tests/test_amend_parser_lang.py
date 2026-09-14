@@ -252,16 +252,45 @@ class TestAttributionIsNotAsciiOnly:
         ja = get_profile("ja")
         assert _attributes(ja, "太郎は言った"), "ja attribution must not need spaces"
 
-    def test_english_name_pattern_is_unchanged(self):
-        """The English patterns must stay byte-for-byte what they were."""
+    def test_english_name_pattern_shape(self):
+        """Pin the English name fragment.
+
+        This test used to assert the patterns were "byte-for-byte what they
+        were" and pinned the literal
+        ``(?:(?:Mr\\.|Mrs\\.|...|Old|Young)\\s+)?[A-Z][a-z]+``. Two HIGH Stage B
+        findings made that exact string wrong on purpose:
+
+        * PH-B-003 — the title list was one of two tables that had to agree and
+          didn't. It is now derived from the TTS normalizer's expansion map, so
+          it carries every abbreviation AND every expansion, ``Prof.``
+          included. The old 12-title literal cannot come back.
+        * PH-B-004 — the blanket ``re.IGNORECASE`` let ``[A-Z][a-z]+`` match
+          lowercase words, manufacturing speakers (``Nobody``, ``Something``).
+          Case-insensitivity is now scoped to the closed vocabularies with
+          inline ``(?i:...)`` groups.
+
+        The pin is kept, aimed at the new shape, and the two defects are
+        asserted un-returnable.
+        """
         en = get_profile("en")
-        pats = [p.pattern for p in en.build_said_patterns()]
-        expected_name = (
-            r"(?:(?:Mr\.|Mrs\.|Ms\.|Dr\.|Miss|Captain|Lord|Lady|Sir|the|Old|Young)\s+)?"
-            r"[A-Z][a-z]+"
-        )
-        assert any(expected_name in p for p in pats)
+        compiled = en.build_said_patterns()
+        pats = [p.pattern for p in compiled]
         assert len(pats) == 3
+
+        fragment = en.name_pattern_fragment()
+        # The name fragment itself is still the ASCII English shape...
+        assert fragment.endswith(r"[A-Z][a-z]+)")
+        # ...reached through a case-insensitive CLOSED title vocabulary...
+        assert r"(?i:" in fragment
+        # ...that covers both spellings of every honorific (PH-B-003).
+        for spelling in (r"Mr\.", "Mister", r"Dr\.", "Doctor", r"Prof\.", "Professor"):
+            assert spelling in fragment, f"{spelling!r} missing from the title list"
+        # No pattern may carry a blanket IGNORECASE again (PH-B-004).
+        for pattern in compiled:
+            assert not pattern.flags & re.IGNORECASE, (
+                f"{pattern.pattern!r} re-introduced blanket case-insensitivity"
+            )
+        assert any(fragment in p for p in pats)
 
 
 # ---------------------------------------------------------------------------

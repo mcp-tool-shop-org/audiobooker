@@ -12,8 +12,11 @@ import html
 import json
 import logging
 import re
+from collections.abc import Set as AbstractSet
 from pathlib import Path
 from typing import Callable, Optional
+
+from audiobooker.models import normalize_speaker_key
 
 logger = logging.getLogger("audiobooker.parser")
 
@@ -278,7 +281,22 @@ def _override_pattern(word: str) -> str:
     return lead + re.escape(word) + trail
 
 
-def apply_pronunciation_overrides(text: str, overrides: dict[str, str]) -> str:
+def _looks_like_proper_noun(word: str) -> bool:
+    """Cheap heuristic: a capitalized, non-ALL-CAPS alphabetic token (PH-B-005).
+
+    Deliberately crude — it only decides whether to emit a warning, never
+    whether to apply an override. The hard check is ``protected_names``.
+    """
+    head = word.strip()[:1]
+    return bool(head) and head.isupper() and not word.strip().isupper()
+
+
+def apply_pronunciation_overrides(
+    text: str,
+    overrides: dict[str, str],
+    *,
+    protected_names: Optional[AbstractSet[str]] = None,
+) -> str:
     """
     Substitute pronunciation overrides in text (FT-CORE-011).
 
@@ -295,9 +313,32 @@ def apply_pronunciation_overrides(text: str, overrides: dict[str, str]) -> str:
     An override that matches nothing anywhere in the text is logged at WARNING,
     so a lexicon entry that silently never fires is visible.
 
+    PH-B-005 — overrides vs attribution
+    -----------------------------------
+    ``AudiobookProject._preprocess_text`` applies these BEFORE
+    ``compile_chapter``, so they rewrite the text that speaker attribution then
+    runs against — and the lexicon's primary documented use case is proper
+    nouns. With ``{'Siobhan': 'shiv-AWN'}``, ``said Siobhan, folding the map``
+    attributed to ``Siobhan`` before the override and to ``None`` after it: the
+    character silently stops being cast.
+
+    Pass ``protected_names`` (see :meth:`CastingTable.protected_names`) and an
+    override that would rewrite a cast member's name or alias is REFUSED and
+    reported at ERROR rather than applied. Without it, an override key that
+    looks like a proper noun still draws a WARNING, because at parse time this
+    function cannot tell a pronunciation hint from an un-casting.
+
+    The right long-term shape is to apply overrides at RENDER time, on
+    utterance text, where attribution has already happened. That lives in
+    ``renderer/`` and belongs to another agent; this is the
+    "if they must stay in preprocessing" half of the fix.
+
     Args:
         text: Text to process.
         overrides: Dict mapping word -> replacement pronunciation.
+        protected_names: Normalized cast names and aliases that must not be
+            rewritten. Keys are compared with
+            :func:`audiobooker.models.normalize_speaker_key`.
 
     Returns:
         Text with overrides applied.
@@ -307,6 +348,28 @@ def apply_pronunciation_overrides(text: str, overrides: dict[str, str]) -> str:
     for word, replacement in overrides.items():
         if not word:
             continue
+
+        if protected_names and normalize_speaker_key(word) in protected_names:
+            logger.error(
+                "Pronunciation override %r matches a CAST CHARACTER's name or "
+                "alias and was refused. Overrides are applied before speaker "
+                "attribution runs, so rewriting %r to %r would leave every "
+                "line that character speaks unattributed and render them in "
+                "the narrator voice. Remove the override, or set the "
+                "pronunciation on the character instead of on the text.",
+                word, word, replacement,
+            )
+            continue
+
+        if protected_names is None and _looks_like_proper_noun(word):
+            logger.warning(
+                "Pronunciation override %r looks like a proper noun and is "
+                "being applied BEFORE speaker attribution, which can silently "
+                "un-cast that character. Cast the name first so the override "
+                "can be checked against the casting table.",
+                word,
+            )
+
         try:
             pattern = re.compile(_override_pattern(word), re.IGNORECASE)
         except re.error as e:

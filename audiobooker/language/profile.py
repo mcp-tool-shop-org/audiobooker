@@ -23,6 +23,8 @@ from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Optional
 
+from audiobooker.models import normalize_speaker_key
+
 logger = logging.getLogger("audiobooker.language")
 
 
@@ -63,6 +65,13 @@ class LanguageProfile:
         r"Mr\.", r"Mrs\.", r"Ms\.", r"Dr\.", "Miss", "Captain",
         "Lord", "Lady", "Sir", "the", "Old", "Young",
     )
+    # PH-B-003: (spoken expansion casefolded, written abbreviation) pairs. A
+    # matched speaker whose title is an expansion is rewritten to the
+    # abbreviation, so TTS normalization \u2014 which runs BEFORE compile_chapter
+    # and defaults to on \u2014 cannot split one character into two cast members
+    # ("Mr. Holmes" pre-normalization, "Mister Holmes" post-). A tuple of pairs
+    # rather than a dict so the frozen dataclass stays hashable.
+    title_aliases: tuple[tuple[str, str], ...] = ()
     # Separator between a speech verb and an adjacent name. Space-delimited
     # languages use whitespace; Japanese uses topic/quotative particles with no
     # whitespace at all.
@@ -72,6 +81,14 @@ class LanguageProfile:
     # Definite article used in the "said the Doctor" pattern. Empty disables
     # that third pattern for languages where it does not apply.
     definite_article: str = "the"
+    # PH-B-004: what may follow the definite article as a referent
+    # ("said the guard", "the traveler replied"). Unlike name_fragment this is
+    # deliberately case-INSENSITIVE in its first character: the article is the
+    # evidence that a referent follows, so capitalization is not needed and
+    # English prose overwhelmingly writes these common nouns in lower case.
+    # Without an article there is no such evidence, which is exactly why the
+    # bare name fragment must stay capital-initial.
+    common_noun_fragment: str = r"[A-Za-z][a-z]+"
 
     # Gender cue words for voice suggestion (language-specific)
     female_cue_words: frozenset[str] = frozenset({
@@ -98,19 +115,61 @@ class LanguageProfile:
         )
 
     def normalize_name(self, name: str) -> str:
-        """Canonical form for speaker lookup keys."""
-        return name.casefold().strip()
+        """Canonical form for speaker lookup keys.
+
+        PH-B-007: delegates to the same helper ``CastingTable.normalize_key``
+        uses. These two were independent ``casefold().strip()`` calls, so a
+        profile-normalized name and a casting-table key could disagree on any
+        input where Unicode normalization matters.
+        """
+        return normalize_speaker_key(name)
 
     def is_valid_name(self, name: str) -> bool:
         """Check if a string looks like a valid speaker name."""
         return bool(re.match(self.valid_name_pattern, name))
 
     def name_pattern_fragment(self) -> str:
-        """The profile's name shape, with its optional title prefixes."""
+        """The profile's name shape, with its optional title prefixes.
+
+        PH-B-004: the title alternation is wrapped in an inline ``(?i:...)``
+        because titles are a CLOSED vocabulary where case is noise, while the
+        name fragment itself stays case-SENSITIVE. The patterns used to carry a
+        blanket ``re.IGNORECASE``, which let ``[A-Z][a-z]+`` match lowercase
+        words and manufacture speakers out of ``nobody`` and ``something``.
+
+        The one place a lowercase referent IS accepted is directly after the
+        definite article — ``said the guard``, ``the traveler replied``. The
+        article is positive evidence that a referent follows; ``said nobody``
+        has no such evidence, which is the whole difference between the two.
+        """
         if self.name_titles:
             titles = "|".join(self.name_titles)
-            return rf"(?:(?:{titles})\s+)?{self.name_fragment}"
-        return self.name_fragment
+            titled = rf"(?:(?i:{titles})\s+)?{self.name_fragment}"
+        else:
+            titled = self.name_fragment
+        if self.definite_article and self.common_noun_fragment:
+            article_ref = (
+                rf"(?i:{self.definite_article})\s+{self.common_noun_fragment}"
+            )
+            return rf"(?:{article_ref}|{titled})"
+        return titled
+
+    def canonicalize_speaker_name(self, name: str) -> str:
+        """Rewrite a spoken title back to its written abbreviation (PH-B-003).
+
+        ``"Mister Holmes"`` -> ``"Mr. Holmes"``. Returns ``name`` unchanged for
+        profiles that declare no ``title_aliases`` and for names that do not
+        start with a known expansion.
+        """
+        if not self.title_aliases or not name:
+            return name
+        head, sep, tail = name.partition(" ")
+        if not sep or not tail.strip():
+            return name
+        for expansion, abbreviation in self.title_aliases:
+            if head.casefold() == expansion:
+                return f"{abbreviation} {tail}"
+        return name
 
     def build_said_patterns(self) -> list[re.Pattern]:
         """Build compiled verb-name / name-verb regex patterns (cached)."""
@@ -139,7 +198,7 @@ class LanguageProfile:
 def _cached_said_patterns(
     profile_code: str,
     speaker_verbs: frozenset[str],
-    name_pat: str = r'(?:(?:Mr\.|Mrs\.|Ms\.|Dr\.|Miss|Captain|Lord|Lady|Sir|the|Old|Young)\s+)?[A-Z][a-z]+',
+    name_pat: str = r'(?:(?i:Mr\.|Mrs\.|Ms\.|Dr\.|Miss|Captain|Lord|Lady|Sir|the|Old|Young)\s+)?[A-Z][a-z]+',
     separator: str = r"\s+",
     boundary: str = r"(?:\s|[,.\!\?]|$)",
     article: str = "the",
@@ -153,26 +212,34 @@ def _cached_said_patterns(
     declared — and the verb/name join is whitespace only for languages that
     actually delimit words with whitespace. The cache stays correct because it
     is keyed on ``profile_code`` plus every fragment that shapes the output.
+
+    PH-B-004: case-insensitivity is applied per FRAGMENT, not to the whole
+    pattern. Speech verbs, titles and the definite article are closed
+    vocabularies where case carries no information, so they get an inline
+    ``(?i:...)``. The name fragment does NOT: every profile's ``name_fragment``
+    opens with an uppercase class (``[A-Z][a-z]+``,
+    ``[A-ZÀ-ɏ][a-zÀ-ɏ]+``, …) precisely because capitalization is the only
+    evidence a word is a name. A blanket ``re.IGNORECASE`` destroyed that
+    evidence and turned every lowercase word after a speech verb into a
+    speaker: ``"Hello?" asked nobody in particular`` attributed to ``Nobody``
+    and ``"Listen," said something in the dark`` to ``Something``. Because a
+    phantom is an ACCEPTED attribution rather than an ``unknown``, it also
+    lowered the unattributed rate — the quality signal improved as attribution
+    got worse.
     """
     if not speaker_verbs:
         return []
-    verb_alt = "|".join(re.escape(v) for v in sorted(speaker_verbs))
+    verb_alt = "(?i:" + "|".join(re.escape(v) for v in sorted(speaker_verbs)) + ")"
     patterns = [
         # "said Mr. Holmes" / "whispered the Doctor" / "sagte Müller"
-        re.compile(
-            rf"(?:{verb_alt}){separator}({name_pat}){boundary}",
-            re.IGNORECASE,
-        ),
+        re.compile(rf"(?:{verb_alt}){separator}({name_pat}){boundary}"),
         # "Mr. Holmes said" / "Captain Ahab whispered" / "太郎は言った"
-        re.compile(
-            rf"({name_pat}){separator}(?:{verb_alt})",
-            re.IGNORECASE,
-        ),
+        re.compile(rf"({name_pat}){separator}(?:{verb_alt})"),
     ]
     if article:
         # "said the Doctor" (explicit definite-article pattern)
         patterns.append(re.compile(
-            rf"(?:{verb_alt}){separator}({article}\s+{bare_name}){boundary}",
+            rf"(?:{verb_alt}){separator}((?i:{article})\s+{bare_name}){boundary}",
         ))
     return patterns
 

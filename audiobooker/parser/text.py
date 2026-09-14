@@ -43,6 +43,36 @@ def _get_scene_break_patterns(profile: Optional[LanguageProfile] = None) -> list
     return list(profile.scene_break_patterns)
 
 
+# PH-B-006: how far apart a pattern's first and last match must be, as a
+# fraction of the document, before its matches count as DISTRIBUTED rather
+# than CLUSTERED. A table of contents occupies a few percent of a book; real
+# chapter headings span nearly all of it.
+_MIN_MATCH_SPREAD = 0.25
+
+# Scanning every line is O(lines x patterns). Above this, sample the head, the
+# tail and a uniform stride through the middle instead — enough to measure both
+# frequency and spread without walking a 100 MB file line by line.
+_MAX_SCAN_LINES = 40_000
+
+# Below this many matched heading lines the "matched a lot, emitted almost
+# nothing" check is noise — a 3-heading file that yields 1 chapter is ordinary.
+_IMPLAUSIBLE_MIN_MATCHES = 5
+
+
+def _sampled_lines(lines: list[str]) -> list[tuple[int, str]]:
+    """(index, line) pairs to score, covering head, tail and middle."""
+    total = len(lines)
+    if total <= _MAX_SCAN_LINES:
+        return list(enumerate(lines))
+    edge = _MAX_SCAN_LINES // 4
+    picked = set(range(edge)) | set(range(total - edge, total))
+    remaining = _MAX_SCAN_LINES - len(picked)
+    if remaining > 0:
+        stride = max(1, (total - 2 * edge) // remaining)
+        picked.update(range(edge, total - edge, stride))
+    return [(i, lines[i]) for i in sorted(picked)]
+
+
 def detect_chapter_pattern(
     text: str,
     *,
@@ -51,31 +81,83 @@ def detect_chapter_pattern(
     """
     Detect which chapter pattern is used in the text.
 
-    Scans the text and returns the most commonly matching pattern.
+    Scores every profile pattern across the WHOLE document (sampled for very
+    large files) and prefers a pattern whose matches are spread through the
+    text over one whose matches are clustered in a single run.
+
+    PH-B-006: this used to score only the first 200 lines and take whichever
+    pattern matched most often there. On a Gutenberg-shaped file — title page,
+    a 40-entry numbered contents list, then boilerplate, with the real
+    ``Chapter N`` headings starting past line 200 — the numbered-list pattern
+    won on a window it was the only thing visible in. A 40-chapter book parsed
+    to TWO chapters, the body filed under a title lifted from the last contents
+    entry, with no warning at any level. Frequency alone cannot tell a contents
+    list from a book; distribution can.
     """
     chapter_patterns = _get_chapter_patterns(profile)
-    pattern_counts = {pattern: 0 for pattern in chapter_patterns}
-
-    for line in text.split("\n")[:200]:  # Check first 200 lines
-        line = line.strip()
-        if not line:
-            continue
-        for pattern in chapter_patterns:
-            if re.match(pattern, line, re.MULTILINE):
-                pattern_counts[pattern] += 1
-
-    # Return pattern with most matches (if > 1)
-    if not pattern_counts:  # Defensive: empty when custom profiles provide no patterns
+    if not chapter_patterns:  # Defensive: custom profiles may provide none
         return None
-    best_pattern = max(pattern_counts, key=pattern_counts.get)
-    if pattern_counts[best_pattern] > 1:
-        logger.info(
-            "Detected chapter pattern (%d matches): %s",
-            pattern_counts[best_pattern], best_pattern,
-        )
-        return re.compile(best_pattern, re.MULTILINE)
 
-    return None
+    lines = text.split("\n")
+    total_lines = max(1, len(lines))
+    counts: dict[str, int] = {p: 0 for p in chapter_patterns}
+    first_at: dict[str, int] = {}
+    last_at: dict[str, int] = {}
+
+    compiled = [(p, re.compile(p, re.MULTILINE)) for p in chapter_patterns]
+    for index, line in _sampled_lines(lines):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        for pattern, rx in compiled:
+            if rx.match(stripped):
+                counts[pattern] += 1
+                first_at.setdefault(pattern, index)
+                last_at[pattern] = index
+
+    candidates = [p for p, c in counts.items() if c > 1]
+    if not candidates:
+        return None
+
+    def spread(pattern: str) -> float:
+        return (last_at[pattern] - first_at[pattern] + 1) / total_lines
+
+    distributed = [p for p in candidates if spread(p) >= _MIN_MATCH_SPREAD]
+    pool = distributed or candidates
+    best = max(pool, key=lambda p: (counts[p], spread(p)))
+
+    if not distributed:
+        # Every candidate's matches sit in one run. That is the contents-list
+        # shape; say so rather than returning a confident-looking pattern.
+        logger.warning(
+            "Detected chapter pattern %s matches %d times but all matches fall "
+            "within lines %d-%d of %d (%.0f%% of the document) — this looks "
+            "like a table of contents or an index rather than the book's "
+            "headings. Check the result, and pass --chapter-delimiter if the "
+            "chapters come out wrong.",
+            best, counts[best], first_at[best], last_at[best], total_lines,
+            100.0 * spread(best),
+        )
+    else:
+        logger.info(
+            "Detected chapter pattern (%d matches, spread over %.0f%% of the "
+            "document): %s",
+            counts[best], 100.0 * spread(best), best,
+        )
+        clustered_losers = [
+            p for p in candidates
+            if p not in distributed and counts[p] > counts[best]
+        ]
+        for loser in clustered_losers:
+            logger.info(
+                "Ignored chapter pattern %s: %d matches but all within lines "
+                "%d-%d (%.0f%% of the document) — clustered, most likely a "
+                "contents list.",
+                loser, counts[loser], first_at[loser], last_at[loser],
+                100.0 * spread(loser),
+            )
+
+    return re.compile(best, re.MULTILINE)
 
 
 def is_scene_break(
@@ -173,6 +255,7 @@ def split_into_chapters(
     current_title = None
     current_content = []
     matched_any = False
+    matched_count = 0
 
     for line in lines:
         # Check if this line is a chapter delimiter
@@ -180,6 +263,7 @@ def split_into_chapters(
 
         if match:
             matched_any = True
+            matched_count += 1
             # Save previous chapter if exists
             if current_title is not None or current_content:
                 title = current_title or "Untitled"
@@ -216,6 +300,22 @@ def split_into_chapters(
             "Chapter delimiter %r matched no lines — treating the whole file "
             "as a single chapter. Check the pattern against your headings.",
             delimiter_pattern,
+        )
+
+    # PH-B-006: warn when the chapter count is implausible for what matched.
+    #
+    # A heading line only becomes a chapter if there is body text after it, so
+    # a contents list — where every "heading" is immediately followed by the
+    # next one — matches many times and emits almost nothing. That is exactly
+    # how a 40-chapter book parsed to TWO chapters, and nothing said a word.
+    if matched_count >= _IMPLAUSIBLE_MIN_MATCHES and len(chapters) * 2 < matched_count:
+        logger.warning(
+            "Chapter detection matched %d heading lines but produced only %d "
+            "chapter(s) — most matches had no body text after them, which is "
+            "what a table of contents or an index looks like. The chapters "
+            "below are almost certainly wrong. Pass --chapter-delimiter with a "
+            "regex matching the real headings, or strip the front matter.",
+            matched_count, len(chapters),
         )
 
     return chapters
