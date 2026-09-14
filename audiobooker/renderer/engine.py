@@ -13,6 +13,7 @@ import os
 import shutil
 import threading
 import time
+import uuid
 from xml.sax.saxutils import escape as _xml_escape
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, asdict, field
@@ -737,7 +738,7 @@ def render_chapter_incremental(
             # format), only narrower in scope.
             from audiobooker.casting.dialogue import utterances_to_script
             script = utterances_to_script([utt], casting)
-            tmp = target.with_suffix(".wav.tmp")
+            tmp = _chapter_tmp_path(target)
             try:
                 result = engine.synthesize(
                     script=script,
@@ -857,6 +858,14 @@ def _stitch_utterance_wavs(
 
 LOCKFILE_NAME = ".render.lock"
 
+# Identity of THIS interpreter process, minted once at import. A PID alone is
+# ambiguous in both directions: the OS recycles PIDs (a dead render's PID can
+# be re-used by an unrelated process, making a stale lock look live), and the
+# old "lock_pid == os.getpid() means stale" shortcut treated this process's own
+# LIVE lock as garbage — two renders in one process happily shared a cache.
+# pid + token answers "is this lock mine, and is it still running?" exactly.
+_PROCESS_TOKEN = uuid.uuid4().hex
+
 
 def _is_pid_running(pid: int) -> bool:
     """Check if a process with the given PID is still running."""
@@ -867,38 +876,99 @@ def _is_pid_running(pid: int) -> bool:
         return False
 
 
+def _chapter_tmp_path(target_path: Path) -> Path:
+    """Per-process scratch name for a chapter WAV.
+
+    Two processes rendering into the same cache both wrote
+    ``chapter_0000.wav.tmp`` and clobbered each other's partial output. Keep
+    the ``.wav.tmp`` tail (cleanup globs and tests match on it) and make the
+    middle unique per process.
+    """
+    return target_path.with_name(
+        f"{target_path.stem}.{os.getpid()}.{_PROCESS_TOKEN[:8]}{target_path.suffix}.tmp"
+    )
+
+
+def _write_lockfile(lock_path: Path) -> bool:
+    """Atomically create the lockfile. False when it already exists.
+
+    O_CREAT|O_EXCL is a single atomic syscall: exactly one of two racing
+    processes can win it. The previous exists()-then-write_text() pair left a
+    window in which both saw "no lock" and both wrote one.
+    """
+    payload = json.dumps({
+        "pid": os.getpid(),
+        "token": _PROCESS_TOKEN,
+        "started_at": datetime.now(timezone.utc).isoformat(),
+    })
+    try:
+        fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+    except FileExistsError:
+        return False
+    try:
+        os.write(fd, payload.encode("utf-8"))
+    finally:
+        os.close(fd)
+    return True
+
+
 def _acquire_render_lock(cache_root: Path) -> Path:
     """
-    Create .render.lock containing PID + timestamp.
-    Checks for stale locks (PID no longer running) and removes them.
-    Raises RenderError if another render is genuinely active.
+    Atomically create .render.lock containing PID + process token + timestamp.
+
+    Reclaims a lock only when it can be PROVEN dead — the writing process is
+    gone, or the PID matches but the token does not (so the PID was recycled
+    and the original writer is gone). Anything else is treated as a live
+    render and raises RenderError.
     """
     lock_path = cache_root / LOCKFILE_NAME
 
-    if lock_path.exists():
+    for _attempt in (0, 1):
+        if _write_lockfile(lock_path):
+            logger.info(f"RENDER_LOCK: Acquired {lock_path} (PID {os.getpid()})")
+            return lock_path
+
+        # Someone else holds it. Decide whether it is live or reclaimable.
         try:
             lock_data = json.loads(lock_path.read_text(encoding="utf-8"))
-            lock_pid = lock_data.get("pid", -1)
-            if _is_pid_running(lock_pid) and lock_pid != os.getpid():
-                raise RenderError(
-                    f"Another render is already running (PID {lock_pid}, "
-                    f"started {lock_data.get('started_at', 'unknown')}). "
-                    f"If this is stale, delete {lock_path}"
-                )
-            else:
-                logger.info(f"RENDER_LOCK: Removing stale lock (PID {lock_pid} not running)")
-                lock_path.unlink(missing_ok=True)
-        except (json.JSONDecodeError, KeyError):
+        except (OSError, json.JSONDecodeError):
             logger.warning(f"RENDER_LOCK: Corrupt lockfile at {lock_path}, removing")
             lock_path.unlink(missing_ok=True)
+            continue
 
-    lock_data = {
-        "pid": os.getpid(),
-        "started_at": datetime.now(timezone.utc).isoformat(),
-    }
-    lock_path.write_text(json.dumps(lock_data), encoding="utf-8")
-    logger.info(f"RENDER_LOCK: Acquired {lock_path} (PID {os.getpid()})")
-    return lock_path
+        lock_pid = lock_data.get("pid", -1)
+        lock_token = lock_data.get("token")
+
+        if lock_token == _PROCESS_TOKEN:
+            # Our own process already holds it — a second concurrent render
+            # against the same cache. The old code deleted this lock because
+            # the PID matched; that is precisely the collision the lock exists
+            # to prevent.
+            raise RenderError(
+                f"This process is already rendering into {cache_root} "
+                f"(lock held since {lock_data.get('started_at', 'unknown')}). "
+                f"Run one render per cache directory at a time."
+            )
+
+        if _is_pid_running(lock_pid) and lock_pid != os.getpid():
+            raise RenderError(
+                f"Another render is already running (PID {lock_pid}, "
+                f"started {lock_data.get('started_at', 'unknown')}). "
+                f"If this is stale, delete {lock_path}"
+            )
+
+        # Either the writer is gone, or its PID was recycled into us (same PID,
+        # different token) — the original render is dead either way.
+        logger.info(
+            f"RENDER_LOCK: Removing stale lock (PID {lock_pid} is not the "
+            f"process that wrote it)"
+        )
+        lock_path.unlink(missing_ok=True)
+
+    raise RenderError(
+        f"Could not acquire the render lock at {lock_path} — another render "
+        f"keeps re-creating it. Delete the file if no render is running."
+    )
 
 
 def _release_render_lock(lock_path: Path) -> None:
@@ -988,13 +1058,51 @@ class RenderSummary:
     cache_dir: str = ""
     manifest_path: str = ""
     failed_chapters: list[dict] = field(default_factory=list)
+    # Indices of chapters that had no audio at assembly time and were dropped
+    # because allow_partial was set. Non-empty means the output is INCOMPLETE.
+    missing_chapters: list[int] = field(default_factory=list)
+    # FT-ACX-001: master_check() report for an 'acx' render (None otherwise).
+    acx_check: Optional[dict] = None
+
+    @property
+    def is_complete(self) -> bool:
+        """True when every chapter made it into the assembled output."""
+        return not self.failed and not self.missing_chapters
+
+
+class RenderedOutputPath(type(Path())):  # type: ignore[misc]
+    """A Path that also carries the RenderSummary for the render that made it.
+
+    ``render_project`` built a full RenderSummary and then threw it away,
+    returning only the output path — the summary was reachable ONLY via
+    RenderError, i.e. only when the render failed outright. Under
+    ``allow_partial`` a short book therefore looked byte-identical to a
+    complete one at the call site, and the CLI recorded status "success".
+
+    Subclassing Path (rather than changing the return type) keeps every
+    existing caller working: it compares equal to the plain Path, passes
+    isinstance checks, and supports the whole Path API.
+    """
+
+    __slots__ = ("render_summary",)
+
+
+def _attach_summary(path: Path, summary: "RenderSummary") -> Path:
+    """Return ``path`` carrying ``summary``, degrading to a plain Path."""
+    try:
+        enriched = RenderedOutputPath(path)
+        enriched.render_summary = summary
+        return enriched
+    except Exception:  # pragma: no cover - never fail a render over metadata
+        logger.debug("RENDER_SUMMARY_ATTACH_FAILED: returning a plain Path")
+        return path
 
 
 # ---------------------------------------------------------------------------
 # Project rendering (with persistent cache + resume)
 # ---------------------------------------------------------------------------
 
-def render_project(
+def _render_project_impl(
     project: "AudiobookProject",
     output_path: Path,
     progress_callback: Optional[Callable[[int, int, str], None]] = None,
@@ -1014,9 +1122,12 @@ def render_project(
     output_profile: str = "podcast",
     split: bool = False,
     **kwargs,
-) -> Path:
+) -> "RenderSummary":
     """
     Render all chapters and assemble final audiobook.
+
+    Shared implementation behind ``render_project`` (returns the output path)
+    and ``render_project_detailed`` (returns this RenderSummary).
 
     Chapter WAVs are persisted to a stable cache directory so that
     failures are non-catastrophic and reruns skip completed work.
@@ -1047,7 +1158,7 @@ def render_project(
             index playlist instead of a single m4b (FT-RENDER-M-007).
 
     Returns:
-        Path to final audiobook file.
+        RenderSummary with the output path and per-chapter accounting.
 
     Raises:
         RenderError: If a chapter fails (unless allow_partial is True)
@@ -1160,9 +1271,18 @@ def render_project(
         f"cache={cache_root} resume={resume} jobs={jobs} format={fmt}"
     )
 
-    # Compute current hashes
+    # Compute current hashes. The engine and the effective output profile are
+    # part of the render-params key — rendering the same text with a different
+    # TTS engine or a different mastering profile must not hit the cache.
     current_casting_hash = casting_hash(project.casting)
-    current_params_hash = render_params_hash(project.config)
+    current_params_hash = render_params_hash(
+        project.config, engine=engine, output_profile=output_profile
+    )
+
+    # FT-CAST-026: the emphasis preset the chapters actually render with. This
+    # was declared on ProjectConfig and accepted by render_chapter but threaded
+    # by no caller, so every non-neutral preset was dead code.
+    emotion_preset = getattr(project.config, "emotion_preset", "neutral")
 
     # Load or create manifest
     manifest = load_manifest(manifest_path) if resume else None
@@ -1249,11 +1369,14 @@ def render_project(
                 progress_callback(done_count, len(project.chapters), status)
 
             target_path = get_chapter_wav_path(cache_root, i)
-            tmp_path = target_path.with_suffix(".wav.tmp")
+            tmp_path = _chapter_tmp_path(target_path)
 
             start = time.time()
             try:
-                render_chapter(chapter, project.casting, tmp_path, engine=engine)
+                render_chapter(
+                    chapter, project.casting, tmp_path,
+                    engine=engine, emotion_preset=emotion_preset,
+                )
 
                 try:
                     os.replace(str(tmp_path), str(target_path))
@@ -1282,6 +1405,9 @@ def render_project(
                     duration_s=chapter.duration_seconds,
                     status="ok",
                     created_at=datetime.now(timezone.utc).isoformat(),
+                    # Record the size so a later truncation (disk full, power
+                    # cut, half-copied file) is detectable on resume.
+                    size_bytes=file_size,
                 )
                 # FT-RENDER-001 / ENGINE-A-005: counter increment must be under
                 # the lock — parallel workers otherwise lose increments via the
@@ -1362,6 +1488,7 @@ def render_project(
 
         # Verify all chapters are ready for assembly
         ok_paths = []
+        missing_indices: list[int] = []
         for i, chapter in enumerate(project.chapters):
             if chapter.audio_path and chapter.audio_path.exists():
                 ok_paths.append((chapter.audio_path, chapter.title, chapter.duration_seconds))
@@ -1371,9 +1498,31 @@ def render_project(
                     f"cannot assemble. Use --allow-partial or fix and --resume.",
                     summary=summary,
                 )
+            else:
+                missing_indices.append(i)
 
         if not ok_paths:
             raise RenderError("No chapters rendered successfully.", summary=summary)
+
+        # A partial book is assembled and returned exactly like a complete one.
+        # Say so, loudly and by chapter number, or the user ships a 29-of-30
+        # chapter audiobook believing it finished.
+        if missing_indices:
+            summary.missing_chapters = list(missing_indices)
+            human = ", ".join(str(i + 1) for i in missing_indices)
+            logger.warning(
+                f"RENDER_PARTIAL: assembling WITHOUT {len(missing_indices)} of "
+                f"{len(project.chapters)} chapters (chapter numbers: {human}; "
+                f"indices: {missing_indices}). --allow-partial suppressed the "
+                f"failure — the output is INCOMPLETE. Fix the failures and "
+                f"re-run with --resume to fill the gaps."
+            )
+            if progress_callback:
+                progress_callback(
+                    len(project.chapters), len(project.chapters),
+                    f"WARNING: {len(missing_indices)} chapter(s) missing "
+                    f"({human}) — output is incomplete.",
+                )
 
         # Assembly
         if progress_callback:
@@ -1463,8 +1612,24 @@ def render_project(
 
         total_duration = sum(dur for _, _, dur in ok_paths)
 
-        # FT-RENDER-016: Post-render validation via ffprobe
-        _post_render_validate(assembly.output_path, total_duration)
+        # FT-RENDER-016: Post-render validation via ffprobe.
+        # The expectation must come from the FULL chapter list, not from the
+        # chapters that survived: summing ok_paths compares the short book
+        # against itself, so the ratio is 1.0 by construction and a dropped
+        # chapter can never be detected. Chapters with no audio contribute
+        # their estimated duration so the shortfall actually shows up.
+        expected_duration = sum(
+            (ch.duration_seconds or _estimate_chapter_duration(ch))
+            for ch in project.chapters
+        )
+        _post_render_validate(assembly.output_path, expected_duration)
+
+        # FT-ACX-001: an 'acx' render is a RETAIL master. Verify it instead of
+        # asserting it: master_check() existed but was wired only to the
+        # standalone CLI command, so nothing on the render path ever measured
+        # the file it had just produced.
+        if output_profile == "acx" and assembler in _builtin_assemblers:
+            _verify_acx_master(assembly, summary)
 
         if not assembly.chapters_embedded:
             logger.warning(
@@ -1481,7 +1646,7 @@ def render_project(
             failure_report.save()
 
         _log_summary(summary)
-        return assembly.output_path
+        return summary
 
     except RenderError:
         _log_summary(summary)
@@ -1503,6 +1668,48 @@ def render_project(
     finally:
         # FT-RENDER-010: Always release lockfile
         _release_render_lock(lock_path)
+
+
+def render_project_detailed(
+    project: "AudiobookProject",
+    output_path: Path,
+    progress_callback: Optional[Callable[[int, int, str], None]] = None,
+    **kwargs,
+) -> "RenderSummary":
+    """Render a project and return the full RenderSummary.
+
+    Prefer this over ``render_project`` whenever the caller needs to know
+    whether the book is COMPLETE. ``summary.failed`` /
+    ``summary.missing_chapters`` / ``summary.is_complete`` distinguish a
+    partial render (assembled from fewer chapters than the project has,
+    because ``allow_partial`` suppressed a failure) from a finished one.
+    """
+    return _render_project_impl(project, output_path, progress_callback, **kwargs)
+
+
+def render_project(
+    project: "AudiobookProject",
+    output_path: Path,
+    progress_callback: Optional[Callable[[int, int, str], None]] = None,
+    **kwargs,
+) -> Path:
+    """Render all chapters and assemble the final audiobook.
+
+    Returns the output path. The path also carries the render's
+    ``render_summary`` (see ``RenderedOutputPath``), so a caller can tell a
+    partial render from a complete one without changing its call shape::
+
+        path = render_project(project, out, allow_partial=True)
+        summary = getattr(path, "render_summary", None)
+        if summary and not summary.is_complete:
+            ...  # do NOT report this render as a success
+
+    ``render_project_detailed`` returns that summary directly.
+
+    See ``_render_project_impl`` for the full argument reference.
+    """
+    summary = _render_project_impl(project, output_path, progress_callback, **kwargs)
+    return _attach_summary(summary.output_path, summary)
 
 
 # ---------------------------------------------------------------------------
@@ -1600,6 +1807,9 @@ def render_sample(
     cached_path = get_chapter_wav_path(cache_root, from_chapter)
     manifest_path = get_manifest_path(cache_root)
     manifest = load_manifest(manifest_path)
+    # Tracks whether the cache had an OPINION about this chapter. An entry that
+    # exists and failed validation is a positive REJECTION, not an absence.
+    entry_rejected = False
     if manifest is not None:
         entry = manifest.get_entry(from_chapter)
         if entry is not None:
@@ -1607,7 +1817,9 @@ def render_sample(
                 valid = entry.is_valid(
                     chapter_text_hash(chapter),
                     casting_hash(project.casting),
-                    render_params_hash(project.config),
+                    render_params_hash(
+                        project.config, engine=engine, output_profile=output_profile
+                    ),
                 )
             except Exception:
                 valid = False
@@ -1616,11 +1828,34 @@ def render_sample(
                 logger.info(
                     f"SAMPLE_CACHE_HIT: chapter={from_chapter} reusing {chapter_wav}"
                 )
+            else:
+                entry_rejected = True
+                logger.info(
+                    f"SAMPLE_CACHE_STALE: chapter={from_chapter} manifest entry "
+                    f"failed validation — re-rendering instead of reusing "
+                    f"{entry.wav_path!r}"
+                )
 
-    if chapter_wav is None and cached_path.exists() and cached_path.stat().st_size > 1024:
-        # WAV present on disk even without a manifest entry — reuse it.
+    if (
+        chapter_wav is None
+        and not entry_rejected
+        and cached_path.exists()
+        and cached_path.stat().st_size > 1024
+    ):
+        # WAV on disk with NO manifest entry: nothing claims it is stale, so
+        # reuse it rather than re-rendering a whole chapter for a 3-minute
+        # sample — but say out loud that it could not be verified.
+        #
+        # The `not entry_rejected` guard is the fix: this branch used to run
+        # even when the hash check above had just REJECTED that exact file, so
+        # `audiobooker sample` re-served pre-edit audio as the retail sample.
         chapter_wav = cached_path
-        logger.info(f"SAMPLE_CACHE_DISK: reusing on-disk chapter WAV {chapter_wav}")
+        logger.warning(
+            f"SAMPLE_CACHE_UNVERIFIED: reusing on-disk chapter WAV "
+            f"{chapter_wav} — there is no cache manifest entry for chapter "
+            f"{from_chapter}, so it could not be verified against the current "
+            f"text/casting. Run 'audiobooker render' if the sample sounds stale."
+        )
 
     if chapter_wav is None:
         # Render the chapter fresh into the cache location.
@@ -1633,7 +1868,13 @@ def render_sample(
             )
         cached_path.parent.mkdir(parents=True, exist_ok=True)
         logger.info(f"SAMPLE_RENDER: rendering chapter {from_chapter} for sample")
-        render_chapter(chapter, project.casting, cached_path, engine=engine)
+        render_chapter(
+            chapter, project.casting, cached_path,
+            engine=engine,
+            # FT-CAST-026: the sample must use the same emphasis preset the
+            # book renders with, or the retail sample misrepresents the book.
+            emotion_preset=getattr(project.config, "emotion_preset", "neutral"),
+        )
         chapter_wav = cached_path
 
     # --- Output path / extension ---
@@ -1794,6 +2035,73 @@ def _resolve_project_dir(project: "AudiobookProject") -> Path:
         "Save the project first to get a stable cache location."
     )
     return Path.cwd()
+
+
+def _verify_acx_master(assembly, summary: "RenderSummary") -> None:
+    """Measure a finished 'acx' render against the ACX retail limits.
+
+    Warns loudly rather than raising: the chapters are rendered and the file
+    exists, so destroying a multi-hour render over a measurement is worse than
+    telling the user exactly what to fix. The verdict is recorded on the
+    summary so a caller can refuse to report the render as retail-ready.
+    """
+    from audiobooker.renderer.output import master_check
+
+    output = Path(getattr(assembly, "output_path", "") or "")
+    if not output.is_file():
+        # --split emits a directory of per-chapter files; there is no single
+        # master to measure.
+        logger.info(
+            "ACX_MASTER_CHECK: skipped — output is not a single audio file "
+            f"({output})"
+        )
+        return
+
+    if not getattr(assembly, "mastering_applied", True):
+        reason = getattr(assembly, "mastering_error", "") or "reason unknown"
+        summary.acx_check = {"passes": False, "failures": [reason]}
+        logger.error(
+            "ACX_MASTER_NOT_APPLIED: the ACX render shipped WITHOUT loudness "
+            f"normalization — {reason}. It will not pass ACX review."
+        )
+        return
+
+    try:
+        report = master_check(output, profile="acx")
+    except Exception as e:  # pragma: no cover - measurement must never kill a render
+        logger.warning(f"ACX_MASTER_CHECK_ERROR: could not measure output: {e}")
+        return
+
+    summary.acx_check = report
+    if report.get("passes"):
+        logger.info(
+            f"ACX_MASTER_CHECK: PASS rms={report.get('measured_rms_db')} dB "
+            f"peak={report.get('measured_peak_db')} dBTP "
+            f"floor={report.get('measured_noise_floor_db')} dB"
+        )
+        return
+
+    logger.warning(
+        "ACX_MASTER_CHECK: the finished ACX master does NOT meet the "
+        "measurable ACX limits: " + "; ".join(report.get("failures") or ["unknown"])
+    )
+    for note in report.get("warnings") or []:
+        logger.warning(f"ACX_MASTER_CHECK: {note}")
+
+
+def _estimate_chapter_duration(chapter: "Chapter", wpm: int = 150) -> float:
+    """Rough spoken duration for a chapter that has no rendered audio.
+
+    Used only to size the *expectation* in post-render validation, so that a
+    chapter dropped by --allow-partial still shows up as a duration shortfall.
+    """
+    try:
+        words = int(getattr(chapter, "word_count", 0) or 0)
+    except (TypeError, ValueError):
+        return 0.0
+    if words <= 0 or wpm <= 0:
+        return 0.0
+    return (words / float(wpm)) * 60.0
 
 
 def _post_render_validate(output_path: Path, expected_duration: float) -> None:

@@ -17,7 +17,13 @@ from typing import Optional
 
 logger = logging.getLogger("audiobooker.cache")
 
-MANIFEST_VERSION = 1
+# v2 (wave-2 amend): render_params_hash now keys the TTS engine + its version
+# and the output profile. Entries written by v1 were keyed without them, so a
+# v1 manifest cannot prove its WAVs came from the engine that is about to run.
+# Every v1 entry therefore misses on the hash comparison and re-renders once;
+# the bump additionally stops an OLDER audiobooker from trusting a v2 manifest
+# whose key schema it cannot reproduce (load_manifest refuses future versions).
+MANIFEST_VERSION = 2
 MANIFEST_FILENAME = "render_v1.json"
 
 # FT-RENDER-P-004: the utterance-level incremental cache lives in its OWN
@@ -42,9 +48,13 @@ class ChapterCacheEntry:
     status: str = "pending"   # pending | ok | failed
     error_summary: str = ""
     created_at: str = ""
+    # Byte size recorded at write time. 0 means "not recorded" (a manifest
+    # written before this field existed), which falls back to the old
+    # non-empty-only check rather than invalidating every legacy entry.
+    size_bytes: int = 0
 
     def is_valid(self, text_hash: str, casting_hash: str, render_params_hash: str) -> bool:
-        """Check if this entry is still valid (hashes match, WAV exists, and is non-empty)."""
+        """Check if this entry is still valid (hashes match, WAV intact on disk)."""
         if self.status != "ok":
             return False
         if self.text_hash != text_hash:
@@ -56,9 +66,28 @@ class ChapterCacheEntry:
         wav = Path(self.wav_path)
         if not wav.exists():
             return False
+        # Mirror UtteranceCacheEntry.is_valid: a stat() on a cache file can
+        # fail for reasons other than absence (I/O error, a network path that
+        # vanished, a permission change). Treat that as "not reusable".
+        try:
+            actual_size = wav.stat().st_size
+        except OSError as e:
+            logger.warning(f"Cached WAV could not be stat'd ({e}): {self.wav_path}")
+            return False
         # F-RENDER-B-007: Verify file is non-empty
-        if wav.stat().st_size == 0:
+        if actual_size == 0:
             logger.warning(f"Cached WAV is empty (0 bytes): {self.wav_path}")
+            return False
+        # "Non-empty" does not mean "complete". A render killed by a full disk
+        # or a hard power cut leaves a WAV with a valid header and half the
+        # audio, which the old check happily reused forever. Compare against
+        # the size recorded when the file was written.
+        if self.size_bytes and actual_size != self.size_bytes:
+            logger.warning(
+                f"Cached WAV size changed since render "
+                f"({actual_size} bytes on disk, {self.size_bytes} recorded) — "
+                f"treating as truncated/corrupt: {self.wav_path}"
+            )
             return False
         return True
 
