@@ -26,6 +26,19 @@ Rules:
 - Blank lines are preserved for readability but don't affect output
 - Delete a speaker block to remove it from output
 - Change @Unknown to @ActualName to fix attribution
+
+CLI-1 (wave 2): ONE @-tag block == ONE utterance. Export writes a speaker tag
+for EVERY utterance, not only when the speaker/emotion changes. The old
+"tag on change" form made the block boundary invisible whenever consecutive
+utterances shared a speaker — which is most of a real book — so a zero-edit
+export/import round trip silently fused them into a single utterance and
+destroyed every non-NARRATION utterance_type in the run (a PAUSE marker came
+back as narrated prose). The boundary must be explicit on BOTH sides.
+
+CLI-2 (wave 2): an @-leading line that does NOT parse as a speaker tag is
+NEVER body text. Absorbing it made the renderer narrate the literal string
+"@Bob, the baker" aloud while losing the character. Such lines are collected
+into ``stats['malformed_lines']`` so the CLI can refuse the import.
 """
 
 import logging
@@ -42,8 +55,20 @@ logger = logging.getLogger("audiobooker.review")
 
 
 # Pattern for speaker tag: @SpeakerName or @SpeakerName (emotion)
-# Supports names with spaces, hyphens, apostrophes, and dots (e.g. "Mary Jane", "O'Brien")
-SPEAKER_PATTERN = re.compile(r"^@([\w .'\-]+?)(?:\s*\(([^)]+)\))?$")
+# Supports names with spaces, hyphens, apostrophes, and dots (e.g. "Mary Jane",
+# "O'Brien").
+#
+# CLI-2: commas, ampersands and colons are ordinary in the appositive labels
+# BookNLP produces ("Bob, the baker", "Mrs. Hale, the housekeeper"). The old
+# class excluded them, so those tags failed to parse and were absorbed as body
+# text — the renderer then narrated "@Bob, the baker" aloud.
+#
+# The emotion group deliberately stays single-level (``[^)]+``): a line like
+# "@Bob (terrified) (fearful)" — what the file's own instruction ("change
+# @Name (old) to @Name (new)") produces when a user appends rather than
+# replaces — is genuinely ambiguous. It must be REPORTED as malformed by
+# import_reviewed, never guessed at and never absorbed as body text.
+SPEAKER_PATTERN = re.compile(r"^@([\w .,'\-&:]+?)(?:\s*\(([^)]+)\))?$")
 
 # Pattern for chapter marker: === Chapter Title === or === Chapter Title === [id:abc123]
 CHAPTER_PATTERN = re.compile(r'^===\s*(.+?)\s*===(?:\s*\[id:([^\]]+)\])?$')
@@ -67,6 +92,21 @@ def _unescape_body_line(text: str) -> str:
     if text.startswith("\\"):
         return text[1:]
     return text
+
+
+def _unescape_indented_body_line(text: str) -> str:
+    """Drop the escaping backslash while preserving the line's indentation.
+
+    ``_escape_body_line`` prefixes the backslash to the WHOLE line, so the
+    original leading whitespace sits after it; a hand-written file may also
+    indent the backslash itself. Either way, remove exactly the first
+    backslash and keep everything else byte-for-byte (CLI-1: verse keeps its
+    shape).
+    """
+    idx = text.find("\\")
+    if idx == -1:
+        return text
+    return text[:idx] + text[idx + 1:]
 
 
 def export_for_review(project: "AudiobookProject", output_path: Optional[Path] = None) -> Path:
@@ -118,24 +158,18 @@ def export_for_review(project: "AudiobookProject", output_path: Optional[Path] =
             lines.append("")
             continue
 
-        current_speaker = None
-        current_emotion = None
+        # CLI-1: one @-tag per utterance. Emitting the tag only when the
+        # speaker/emotion CHANGED left consecutive same-speaker utterances with
+        # no boundary at all in the file, and import fused them back into one.
+        for i, utterance in enumerate(chapter.utterances):
+            # Blank line between blocks (except before the first one).
+            if i:
+                lines.append("")
 
-        for utterance in chapter.utterances:
-            # Check if speaker/emotion changed
-            if utterance.speaker != current_speaker or utterance.emotion != current_emotion:
-                # Add blank line before new speaker (except at start)
-                if current_speaker is not None:
-                    lines.append("")
-
-                # Speaker tag
-                if utterance.emotion:
-                    lines.append(f"@{utterance.speaker} ({utterance.emotion})")
-                else:
-                    lines.append(f"@{utterance.speaker}")
-
-                current_speaker = utterance.speaker
-                current_emotion = utterance.emotion
+            if utterance.emotion:
+                lines.append(f"@{utterance.speaker} ({utterance.emotion})")
+            else:
+                lines.append(f"@{utterance.speaker}")
 
             # Text content. REVIEW-A-002: escape body lines that would otherwise
             # be parsed as control tokens (#, @, ===) so they round-trip.
@@ -175,12 +209,18 @@ def import_reviewed(project: "AudiobookProject", review_path: Path) -> dict:
     current_speaker = None
     current_emotion = None
     current_text_lines = []
+    # CLI-2: @-leading lines that parse as neither a speaker tag nor an escaped
+    # body line. Recorded (with 1-based line numbers) rather than narrated.
+    malformed_lines: list[dict] = []
 
     def flush_utterance():
         """Save accumulated text as utterance."""
         nonlocal current_text_lines, current_speaker
         if current_speaker and current_text_lines:
-            text = " ".join(current_text_lines).strip()
+            # CLI-1: join on newline, not space, so a multi-line utterance
+            # (verse, an epigraph, a stanza) keeps its shape through the round
+            # trip. Only the outer edges are stripped.
+            text = "\n".join(current_text_lines).strip()
             if text:
                 current_chapter_utterances.append({
                     "speaker": current_speaker,
@@ -202,15 +242,18 @@ def import_reviewed(project: "AudiobookProject", review_path: Path) -> dict:
         current_chapter_utterances = []
         current_chapter_id = None
 
-    for line in lines:
+    for line_no, line in enumerate(lines, 1):
         line_stripped = line.strip()
+        # CLI-1: body keeps its leading indentation (only trailing whitespace
+        # and the CR of a CRLF file are dropped) so verse survives the trip.
+        body_line = line.rstrip()
 
         # REVIEW-A-002: A leading backslash marks an escaped body line whose
         # text coincidentally starts with a control token (#, @, ===). Treat it
         # as body and unescape — never as a comment/speaker/chapter marker.
         if line_stripped.startswith("\\"):
             if current_speaker:
-                current_text_lines.append(_unescape_body_line(line_stripped))
+                current_text_lines.append(_unescape_indented_body_line(body_line))
             continue
 
         # Skip comments
@@ -239,9 +282,23 @@ def import_reviewed(project: "AudiobookProject", review_path: Path) -> dict:
             current_emotion = speaker_match.group(2)
             continue
 
+        # CLI-2: an @-leading line that did not parse as a speaker tag is a
+        # MALFORMED TAG, never body text. Absorbing it made the renderer speak
+        # the literal "@Bob, the baker" and dropped the character entirely.
+        if line_stripped.startswith("@"):
+            malformed_lines.append({"line": line_no, "text": line_stripped})
+            logger.warning(
+                "Review file line %d is not a valid speaker tag and was NOT "
+                "imported: %r. Expected '@Name' or '@Name (emotion)'; escape it "
+                "with a leading backslash if it is body text.",
+                line_no,
+                line_stripped,
+            )
+            continue
+
         # Regular text line - accumulate
         if current_speaker:
-            current_text_lines.append(line_stripped)
+            current_text_lines.append(body_line)
 
     # Flush final chapter
     flush_chapter()
@@ -256,6 +313,12 @@ def import_reviewed(project: "AudiobookProject", review_path: Path) -> dict:
         # CLI can warn the user instead of leaving them wondering where edits went.
         "chapters_skipped": 0,
         "skipped_titles": [],
+        # CLI-2: @-leading lines that parsed as neither a speaker tag nor an
+        # escaped body line. Non-empty means the file is not safe to apply.
+        "malformed_lines": malformed_lines,
+        # CLI-1: chapters that HAD utterances and came back with none. Almost
+        # always a review-file edit gone wrong, and it silently mutes a chapter.
+        "emptied_chapters": [],
     }
 
     for chapter_data in chapters_data:
@@ -320,6 +383,19 @@ def import_reviewed(project: "AudiobookProject", review_path: Path) -> dict:
             new_utterances.append(utterance)
             stats["speakers_found"].add(utt_data["speaker"])
 
+        # CLI-1: a chapter that had content and now has none is a silent mute
+        # in the finished audiobook. Name it so the CLI can warn.
+        if original_utterances and not new_utterances:
+            title = matching_chapter.title or f"(chapter {matching_chapter.index})"
+            stats["emptied_chapters"].append(title)
+            logger.warning(
+                "Chapter %r had %d utterance(s) before import and has none "
+                "after — it will render silent. Check the review file for a "
+                "deleted or mistyped block.",
+                title,
+                len(original_utterances),
+            )
+
         matching_chapter.utterances = new_utterances
         stats["chapters_updated"] += 1
         stats["utterances_imported"] += len(new_utterances)
@@ -352,21 +428,16 @@ def preview_review_format(project: "AudiobookProject", chapter_index: int = 0) -
         lines.append("# (Not compiled)")
         return "\n".join(lines)
 
-    current_speaker = None
-    current_emotion = None
+    # CLI-1: mirror export_for_review exactly — one @-tag per utterance — so
+    # the preview shows the real block boundaries the importer relies on.
+    for i, utterance in enumerate(chapter.utterances):
+        if i:
+            lines.append("")
 
-    for utterance in chapter.utterances:
-        if utterance.speaker != current_speaker or utterance.emotion != current_emotion:
-            if current_speaker is not None:
-                lines.append("")
-
-            if utterance.emotion:
-                lines.append(f"@{utterance.speaker} ({utterance.emotion})")
-            else:
-                lines.append(f"@{utterance.speaker}")
-
-            current_speaker = utterance.speaker
-            current_emotion = utterance.emotion
+        if utterance.emotion:
+            lines.append(f"@{utterance.speaker} ({utterance.emotion})")
+        else:
+            lines.append(f"@{utterance.speaker}")
 
         lines.append(utterance.text)
 
