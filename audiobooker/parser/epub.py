@@ -10,7 +10,6 @@ import re
 from pathlib import Path
 from typing import Optional
 from html.parser import HTMLParser
-from io import StringIO
 
 from audiobooker.models import Chapter
 from audiobooker.language.profile import LanguageProfile
@@ -55,6 +54,43 @@ def _decode_item_content(content: bytes, name: str) -> str:
     return text
 
 
+# Tokens that mark a footnote span while text is in flight. They are internal
+# to the extractor: process_footnotes consumes them, and _strip_sentinels is the
+# unconditional backstop that guarantees none reaches Chapter.raw_text
+# (PARSER-AMEND-1).
+_FOOTNOTE_TOKEN_RE = re.compile(r"\x02?FOOTNOTE_(?:START|END)\x02?")
+
+# C0 controls that must never reach the TTS engine. \n and \t are the only
+# control characters legal in narratable text.
+_ILLEGAL_CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+
+# Markup class/epub:type tokens that identify a real footnote element.
+_NOTE_TOKENS = frozenset({
+    "noteref", "footnote", "footnotes", "endnote", "endnotes",
+    "rearnote", "rearnotes", "note", "notes", "fn", "fnref",
+})
+
+
+def _strip_sentinels(text: str) -> str:
+    """Remove footnote sentinels and illegal control characters (PARSER-AMEND-1).
+
+    Defensive and unconditional: whatever route text took to get here, the
+    literal token ``FOOTNOTE_START`` and the \\x02 delimiter must never be
+    handed to a TTS engine. Applied at every boundary that produces text a
+    ``Chapter`` will carry.
+    """
+    if not text:
+        return text
+    cleaned = _FOOTNOTE_TOKEN_RE.sub("", text)
+    cleaned = _ILLEGAL_CONTROL_RE.sub("", cleaned)
+    if cleaned != text:
+        logger.debug(
+            "Stripped footnote sentinels / control characters from extracted text."
+        )
+        cleaned = re.sub(r"[^\S\n]{2,}", " ", cleaned)
+    return cleaned
+
+
 class HTMLTextExtractor(HTMLParser):
     """
     Extract plain text from HTML, preserving paragraph structure.
@@ -63,7 +99,15 @@ class HTMLTextExtractor(HTMLParser):
     - Block elements (p, div, h1-h6) -> newlines
     - Inline elements -> preserved
     - Whitespace normalization
-    - Footnote elements (aside, sup, epub:type="noteref") -> tagged markers
+    - Footnote elements (aside, epub:type="noteref"/"footnote") -> tagged markers
+
+    Footnote spans are tracked on a STACK of open tag names and closed by the
+    matching end tag (PARSER-AMEND-2). The previous implementation opened a
+    span for any element carrying ``epub:type="noteref"`` but only ever
+    decremented on ``aside``/``sup``, so EPUB3's canonical
+    ``<a epub:type="noteref">`` marker opened a span that could never close —
+    and a stray later ``</sup>`` could close the orphan at an arbitrary point,
+    making ``footnote_behavior="skip"`` delete legitimate prose.
     """
 
     # Sentinel markers for footnote spans (FT-CORE-019)
@@ -79,74 +123,155 @@ class HTMLTextExtractor(HTMLParser):
     # Tags to skip entirely
     SKIP_TAGS = {"script", "style", "head", "meta", "link", "nav", "footer"}
 
-    # Tags that indicate footnote content (FT-CORE-019)
+    # Tags that always indicate footnote content (FT-CORE-019)
     FOOTNOTE_TAGS = {"aside"}
+
+    # Tags that are a footnote marker about as often as they are ordinary
+    # inline markup ("the 1<sup>st</sup> century", math exponents). Classified
+    # by their own content when the span closes, so 'skip' can never delete an
+    # ordinal suffix.
+    AMBIGUOUS_FOOTNOTE_TAGS = {"sup"}
 
     def __init__(self):
         super().__init__()
-        self.output = StringIO()
+        self._parts: list[str] = []
         self.skip_depth = 0
         self._pending_newline = False
-        self._footnote_depth = 0
+        self._pending_space = False
+        # Open footnote elements, innermost last (PARSER-AMEND-2).
+        self._footnote_stack: list[str] = []
+        self._span_start_index: Optional[int] = None
+        self._span_explicit = False
 
-    def _is_footnote_element(self, tag: str, attrs: list) -> bool:
-        """Check if a tag+attrs represents a footnote element (FT-CORE-019)."""
+    # -- footnote classification -------------------------------------------
+
+    def _classify_footnote(self, tag: str, attrs: list) -> Optional[str]:
+        """Return "explicit", "ambiguous", or None for a start tag."""
+        attrs_dict = {
+            (k or "").lower(): (v or "")
+            for k, v in attrs
+        }
+        blob = f"{attrs_dict.get('epub:type', '')} {attrs_dict.get('class', '')}"
+        tokens = {t for t in re.split(r"[\s_\-]+", blob.lower()) if t}
+        if tokens & _NOTE_TOKENS:
+            return "explicit"
         if tag in self.FOOTNOTE_TAGS:
+            return "explicit"
+        if tag in self.AMBIGUOUS_FOOTNOTE_TAGS:
+            return "ambiguous"
+        return None
+
+    @staticmethod
+    def _looks_like_note_marker(content: str) -> bool:
+        """A bare <sup> is a note reference only if it carries no letters."""
+        stripped = _FOOTNOTE_TOKEN_RE.sub("", content).strip()
+        if not stripped:
             return True
-        if tag == "sup":
-            return True
-        # Check epub:type="noteref" or epub:type="footnote"
-        attrs_dict = dict(attrs)
-        epub_type = attrs_dict.get("epub:type", "")
-        if "noteref" in epub_type or "footnote" in epub_type:
-            return True
-        return False
+        return not any(ch.isalpha() for ch in stripped)
+
+    def _close_footnote_span(self) -> None:
+        start = self._span_start_index
+        explicit = self._span_explicit
+        self._span_start_index = None
+        self._span_explicit = False
+        if start is None:
+            return
+        content = "".join(self._parts[start:])
+        if not explicit and not self._looks_like_note_marker(content):
+            # Ordinary inline markup — emit as plain text, no sentinels.
+            return
+        self._parts.insert(start, self.FOOTNOTE_START)
+        self._parts.append(self.FOOTNOTE_END)
+
+    # -- HTMLParser hooks ---------------------------------------------------
 
     def handle_starttag(self, tag: str, attrs: list) -> None:
         tag = tag.lower()
         if tag in self.SKIP_TAGS:
             self.skip_depth += 1
-        elif self._is_footnote_element(tag, attrs):
-            self._footnote_depth += 1
-            if self._footnote_depth == 1:
-                self.output.write(self.FOOTNOTE_START)
-        elif tag in self.BLOCK_TAGS:
+            return
+
+        kind = self._classify_footnote(tag, attrs)
+        if kind is not None:
+            explicit = kind == "explicit"
+            if not self._footnote_stack:
+                self._span_start_index = len(self._parts)
+                self._span_explicit = explicit
+            else:
+                self._span_explicit = self._span_explicit or explicit
+            self._footnote_stack.append(tag)
+            return
+
+        if tag in self.BLOCK_TAGS:
             self._pending_newline = True
 
     def handle_endtag(self, tag: str) -> None:
         tag = tag.lower()
         if tag in self.SKIP_TAGS:
             self.skip_depth = max(0, self.skip_depth - 1)
-        elif tag in self.FOOTNOTE_TAGS or tag == "sup":
-            if self._footnote_depth > 0:
-                self._footnote_depth -= 1
-                if self._footnote_depth == 0:
-                    self.output.write(self.FOOTNOTE_END)
-        elif tag in self.BLOCK_TAGS:
+            return
+
+        # Close the matching OPEN footnote element (and anything malformed
+        # nested inside it). A tag that is not on the stack closes nothing —
+        # that is what stops a stray </sup> truncating an open noteref span.
+        if tag in self._footnote_stack:
+            idx = len(self._footnote_stack) - 1 - self._footnote_stack[::-1].index(tag)
+            del self._footnote_stack[idx:]
+            if not self._footnote_stack:
+                self._close_footnote_span()
+            return
+
+        if tag in self.BLOCK_TAGS:
             self._pending_newline = True
+
+    def handle_startendtag(self, tag: str, attrs: list) -> None:
+        """Self-closing elements (``<a epub:type="noteref"/>``) open and close."""
+        self.handle_starttag(tag, attrs)
+        self.handle_endtag(tag.lower())
 
     def handle_data(self, data: str) -> None:
         if self.skip_depth > 0:
             return
 
-        # Normalize whitespace
-        text = " ".join(data.split())
-        if not text:
+        if not data.strip():
+            # Whitespace-only run: remember that a space belongs here rather
+            # than emitting one unconditionally.
+            if data:
+                self._pending_space = True
             return
 
-        if self._pending_newline:
-            self.output.write("\n\n")
-            self._pending_newline = False
+        lead_space = data[:1].isspace()
+        trail_space = data[-1:].isspace()
+        text = " ".join(data.split())
 
-        self.output.write(text + " ")
+        if self._pending_newline:
+            self._parts.append("\n\n")
+            self._pending_newline = False
+            self._pending_space = False
+        elif (
+            (self._pending_space or lead_space)
+            and self._parts
+            and not self._parts[-1].endswith((" ", "\n"))
+        ):
+            self._parts.append(" ")
+
+        self._pending_space = trail_space
+        self._parts.append(text)
 
     def get_text(self) -> str:
         """Get extracted text with normalized whitespace."""
-        text = self.output.getvalue()
+        # Force-close a span left open by malformed markup, so an unbalanced
+        # START can never escape (PARSER-AMEND-2).
+        self._footnote_stack.clear()
+        if self._span_start_index is not None:
+            self._close_footnote_span()
+
+        text = "".join(self._parts)
         # Normalize multiple newlines
         text = re.sub(r"\n{3,}", "\n\n", text)
-        # Clean up extra spaces
-        text = re.sub(r" +", " ", text)
+        # Clean up extra horizontal whitespace, including around line breaks
+        text = re.sub(r"[^\S\n]+", " ", text)
+        text = re.sub(r" *\n *", "\n", text)
         return text.strip()
 
 
@@ -208,12 +333,24 @@ def process_footnotes(text: str, behavior: str = "inline") -> str:
     return result
 
 
-def html_to_text(html_content: str) -> str:
+def html_to_text(html_content: str, *, footnote_behavior: str = "inline") -> str:
     """
     Convert HTML to plain text.
 
+    Footnote spans found during extraction are resolved here according to
+    ``footnote_behavior`` ("inline" / "end" / "skip"), and the result is passed
+    through :func:`_strip_sentinels` unconditionally, so the internal
+    ``FOOTNOTE_*`` tokens can never reach a caller (PARSER-AMEND-1). Before
+    this, ``process_footnotes`` was defined but called from nowhere, and the
+    raw sentinels were handed straight to the TTS engine for any EPUB using
+    ``<sup>`` or ``<aside>`` — which is essentially every real EPUB.
+
     Args:
         html_content: HTML string
+        footnote_behavior: How to resolve footnote spans — "inline" (read in
+            place, the default and the historical content-preserving choice),
+            "end" (collect at the end of the text with numbered references),
+            or "skip" (remove entirely).
 
     Returns:
         Plain text with paragraph structure preserved
@@ -226,8 +363,10 @@ def html_to_text(html_content: str) -> str:
         logger.warning("HTML parsing failed, falling back to tag stripping: %s", e)
         text = re.sub(r"<[^>]+>", " ", html_content)
         text = " ".join(text.split())
-        return text
-    return extractor.get_text()
+        return _strip_sentinels(text)
+    text = extractor.get_text()
+    text = process_footnotes(text, footnote_behavior)
+    return _strip_sentinels(text)
 
 
 def extract_title_from_html(html_content: str) -> Optional[str]:
@@ -310,12 +449,61 @@ def _anchor_pos(html_content: str, anchor: str) -> Optional[int]:
     return m.start() if m else None
 
 
+def _posix_name(name: str) -> str:
+    """Normalize a manifest/href path to comparable POSIX segments."""
+    normalized = (name or "").replace("\\", "/")
+    # Collapse '.' segments; keep '..' as-is (it is never a legal manifest name).
+    segments = [s for s in normalized.split("/") if s not in ("", ".")]
+    return "/".join(segments)
+
+
+# Sentinel: a TOC href that matches more than one manifest document.
+_AMBIGUOUS_HREF = object()
+
+
+def _match_doc_name(doc_name: str, docs_by_name: dict):
+    """Resolve a TOC href's document path to a manifest entry name.
+
+    Matching is anchored on path SEGMENT boundaries (PARSER-AMEND-9). The
+    previous ``name.endswith(doc_name) or doc_name.endswith(name)`` test was
+    unanchored, so the href ``ch1.xhtml`` happily bound to the manifest entry
+    ``OEBPS/xch1.xhtml`` and narrated the wrong document under the right title.
+    When more than one manifest entry matches, the TOC is reported as
+    ambiguous rather than guessed at by dict-iteration order.
+
+    Returns the manifest name, ``None`` if nothing matches, or
+    ``_AMBIGUOUS_HREF``.
+    """
+    target = _posix_name(doc_name)
+    if not target:
+        return None
+    if doc_name in docs_by_name:
+        return doc_name
+
+    exact = [n for n in docs_by_name if _posix_name(n) == target]
+    if len(exact) == 1:
+        return exact[0]
+    if len(exact) > 1:
+        return _AMBIGUOUS_HREF
+
+    suffix = [
+        n for n in docs_by_name
+        if _posix_name(n).endswith("/" + target) or target.endswith("/" + _posix_name(n))
+    ]
+    if len(suffix) == 1:
+        return suffix[0]
+    if len(suffix) > 1:
+        return _AMBIGUOUS_HREF
+    return None
+
+
 def _chapters_from_toc(
     toc_entries: list[tuple[str, str]],
     *,
     min_chapter_words: int,
     keep_titled_short_chapters: bool,
     docs_by_name: dict,
+    footnote_behavior: str = "inline",
 ) -> Optional[list[Chapter]]:
     """Build chapters from flattened TOC entries (FT-PARSE-003).
 
@@ -330,17 +518,22 @@ def _chapters_from_toc(
     resolved: list[tuple[str, str, Optional[str]]] = []
     for title, href in toc_entries:
         doc_name, anchor = _split_href(href)
-        # Normalize: hrefs may be relative with directories; match by suffix.
+        # Normalize: hrefs may be relative with directories; match on whole
+        # POSIX path segments (PARSER-AMEND-9), never on a bare suffix.
         item = docs_by_name.get(doc_name)
         if item is None:
-            # Try matching on the basename / any doc whose name ends with href.
-            for name, it in docs_by_name.items():
-                if name.endswith(doc_name) or doc_name.endswith(name):
-                    item = it
-                    doc_name = name
-                    break
-        if item is None:
-            continue
+            matched = _match_doc_name(doc_name, docs_by_name)
+            if matched is _AMBIGUOUS_HREF:
+                logger.info(
+                    "EPUB TOC href %r matches more than one manifest document — "
+                    "the TOC is ambiguous, falling back to spine/document splitting.",
+                    href,
+                )
+                return None
+            if matched is None:
+                continue
+            item = docs_by_name[matched]
+            doc_name = matched
         resolved.append((title, doc_name, anchor))
 
     if len(resolved) < 2:
@@ -370,7 +563,7 @@ def _chapters_from_toc(
         # An entry with an anchor starts at that anchor's position; the first
         # entry (no anchor or anchor missing) starts at 0. Each slice ends where
         # the next same-doc anchor begins, or at end of document.
-        positions: list[int] = []
+        entries_with_pos: list[tuple[int, int, str]] = []
         for k, (_t, a) in enumerate(same_doc):
             pos = 0
             if a:
@@ -381,14 +574,46 @@ def _chapters_from_toc(
                     # Anchor not found mid-document — abandon TOC slicing for
                     # safety; fall back to spine (return None).
                     return None
-            positions.append(pos)
+            entries_with_pos.append((pos, k, _t))
 
-        for k, (entry_title, _a) in enumerate(same_doc):
+        # PARSER-AMEND-8: a TOC may list anchors out of document order. The
+        # boundaries were previously used as-computed, so content[start:end]
+        # with end < start silently produced '' — a 0-word chapter that
+        # survived the filter because it was titled — and filed the first
+        # section's prose under the wrong title. Order the slices by their
+        # real position and verify the boundaries increase before slicing.
+        ordered = sorted(entries_with_pos, key=lambda e: (e[0], e[1]))
+        if [e[1] for e in ordered] != [e[1] for e in entries_with_pos]:
+            logger.info(
+                "EPUB TOC entries for %r are out of document order — "
+                "reordering %d section(s) by anchor position.",
+                doc_name, len(ordered),
+            )
+        positions = [e[0] for e in ordered]
+        titles = [e[2] for e in ordered]
+
+        for k, entry_title in enumerate(titles):
             start = positions[k]
             end = positions[k + 1] if k + 1 < len(positions) else len(content)
+            if end < start:
+                # Unreachable after the sort above; a hard stop rather than a
+                # silently empty slice if that ever changes.
+                logger.warning(
+                    "EPUB TOC produced a non-monotonic slice in %r (%d > %d) — "
+                    "falling back to spine/document splitting.",
+                    doc_name, start, end,
+                )
+                return None
             slice_html = content[start:end]
-            text = html_to_text(slice_html)
+            text = html_to_text(slice_html, footnote_behavior=footnote_behavior)
             word_count = len(text.split())
+
+            if word_count == 0:
+                logger.info(
+                    "Dropping empty TOC section: %r (0 words)",
+                    entry_title or doc_name,
+                )
+                continue
 
             if word_count < min_chapter_words:
                 if entry_title and keep_titled_short_chapters:
@@ -407,7 +632,7 @@ def _chapters_from_toc(
             chapters.append(Chapter(
                 index=chapter_index,
                 title=chap_title,
-                raw_text=text,
+                raw_text=_strip_sentinels(text),
                 source_file=doc_name,
             ))
             chapter_index += 1
@@ -426,6 +651,7 @@ def parse_epub(
     *,
     profile: Optional[LanguageProfile] = None,
     use_toc: str = "auto",
+    footnote_behavior: str = "inline",
 ) -> tuple[dict, list[Chapter]]:
     """
     Parse an EPUB file into chapters.
@@ -434,6 +660,12 @@ def parse_epub(
         path: Path to EPUB file
         min_chapter_words: Minimum word count for a section to be kept.
         keep_titled_short_chapters: Keep short sections that have a heading/title.
+        footnote_behavior: How footnote spans are rendered — "inline" (read in
+            place, the default), "end" (collected at the end of the chapter
+            with numbered references), or "skip" (removed). Mirrors
+            ``ProjectConfig.footnote_behavior``. Whatever the value, no
+            footnote sentinel ever reaches ``Chapter.raw_text``
+            (PARSER-AMEND-1).
         profile: Language profile (used for the parse summary; EPUB chapter
             boundaries come from the book's own spine/document structure rather
             than heading-pattern detection, so this does not change splitting).
@@ -468,6 +700,13 @@ def parse_epub(
     if use_toc not in _VALID_USE_TOC:
         raise ValueError(
             f"Invalid use_toc: {use_toc!r}. Must be one of: {', '.join(_VALID_USE_TOC)}"
+        )
+
+    _VALID_FOOTNOTE_BEHAVIOR = ("inline", "end", "skip")
+    if footnote_behavior not in _VALID_FOOTNOTE_BEHAVIOR:
+        raise ValueError(
+            f"Invalid footnote_behavior: {footnote_behavior!r}. "
+            f"Must be one of: {', '.join(_VALID_FOOTNOTE_BEHAVIOR)}"
         )
 
     path = Path(path)
@@ -595,6 +834,7 @@ def parse_epub(
                 min_chapter_words=min_chapter_words,
                 keep_titled_short_chapters=keep_titled_short_chapters,
                 docs_by_name=docs_by_name,
+                footnote_behavior=footnote_behavior,
             )
             if toc_chapters:
                 chapters = toc_chapters
@@ -621,7 +861,7 @@ def parse_epub(
             content = _decode_item_content(content, item.get_name())
 
         # Convert to plain text
-        text = html_to_text(content)
+        text = html_to_text(content, footnote_behavior=footnote_behavior)
         word_count = len(text.split())
 
         # Try to extract title (reuse cached content instead of calling get_content() again)
@@ -648,7 +888,7 @@ def parse_epub(
         chapter = Chapter(
             index=chapter_index,
             title=title,
-            raw_text=text,
+            raw_text=_strip_sentinels(text),
             source_file=item.get_name(),
         )
         chapters.append(chapter)
@@ -667,7 +907,7 @@ def parse_epub(
             if isinstance(content, bytes):
                 content = _decode_item_content(content, item.get_name())
 
-            text = html_to_text(content)
+            text = html_to_text(content, footnote_behavior=footnote_behavior)
             word_count = len(text.split())
             title = extract_title_from_html(content)
 
@@ -691,7 +931,7 @@ def parse_epub(
             chapter = Chapter(
                 index=chapter_index,
                 title=title,
-                raw_text=text,
+                raw_text=_strip_sentinels(text),
                 source_file=item.get_name(),
             )
             chapters.append(chapter)

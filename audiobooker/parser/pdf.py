@@ -66,9 +66,23 @@ def _compile_chapter_patterns(
     return compiled
 
 
+# Corroboration thresholds for the all-caps heading fallback (PARSER-AMEND-6).
+# Print-origin PDFs carry an all-caps running head on every page and page text
+# is concatenated with no header/footer removal, so an uncorroborated all-caps
+# rule turns a 300-page book into ~300 identically titled chapters.
+_MAX_ALLCAPS_HEADING_WORDS = 6
+_ALLCAPS_TRAILING_PUNCT = (".", "!", "?", ",", ";", ":")
+# A candidate seen on more than this fraction of pages is a running head.
+_RUNNING_HEAD_PAGE_FRACTION = 0.25
+_RUNNING_HEAD_MIN_PAGES = 4
+
+
 def _is_chapter_heading(
     line: str,
     patterns: Optional[list[re.Pattern]] = None,
+    *,
+    isolated: bool = True,
+    banned_lines: frozenset = frozenset(),
 ) -> Optional[str]:
     """
     Check if a line looks like a chapter heading.
@@ -76,6 +90,12 @@ def _is_chapter_heading(
     Args:
         line: A single line of text.
         patterns: Compiled heading patterns to test (default: English).
+        isolated: Whether the line stands alone (blank line above and below).
+            Only the all-caps fallback consults this: a typographic heading sits
+            on its own, while all-caps prose ("HE SLAMMED THE DOOR") sits inside
+            a paragraph. Explicit "Chapter N" patterns are unaffected.
+        banned_lines: All-caps lines already identified as recurring running
+            heads; never treated as headings.
 
     Returns the chapter title if it is, None otherwise.
     """
@@ -98,21 +118,138 @@ def _is_chapter_heading(
             else:
                 return line
 
-    # All-caps line that looks like a title (3-60 chars, mostly letters)
+    # All-caps line that looks like a title (3-60 chars, mostly letters) AND
+    # carries a corroborating signal: it stands alone, is short, does not end
+    # like a sentence, and is not a page-recurring running head.
     if (
         line.isupper()
         and 3 <= len(line) <= 60
         and sum(c.isalpha() for c in line) > len(line) * 0.5
         and not line.startswith("PAGE")
+        and isolated
+        and len(line.split()) <= _MAX_ALLCAPS_HEADING_WORDS
+        and not line.endswith(_ALLCAPS_TRAILING_PUNCT)
+        and line not in banned_lines
     ):
         return line.title()
 
     return None
 
 
+def _find_running_heads(page_texts: list[str]) -> frozenset:
+    """All-caps lines that recur on more than a small fraction of the pages.
+
+    These are running heads/feet, not chapter headings (PARSER-AMEND-6).
+    """
+    total_pages = len(page_texts)
+    if total_pages < _RUNNING_HEAD_MIN_PAGES:
+        return frozenset()
+
+    counts: dict[str, int] = {}
+    for page_text in page_texts:
+        seen = {
+            s for s in (raw.strip() for raw in page_text.split("\n"))
+            if s and s.isupper()
+        }
+        for s in seen:
+            counts[s] = counts.get(s, 0) + 1
+
+    limit = max(2, int(total_pages * _RUNNING_HEAD_PAGE_FRACTION))
+    heads = frozenset(s for s, c in counts.items() if c > limit)
+    if heads:
+        logger.info(
+            "Ignoring %d recurring all-caps line(s) as running heads: %s",
+            len(heads), ", ".join(sorted(heads)[:3]),
+        )
+    return heads
+
+
+def _chapters_from_outline(
+    outline: list,
+    page_texts: list[str],
+    source: str,
+    *,
+    min_chapter_words: int,
+    keep_titled_short_chapters: bool,
+) -> Optional[list[Chapter]]:
+    """Build chapters from the PDF's own outline / bookmarks (PARSER-AMEND-6).
+
+    The outline is authored metadata, so it is a far better chapter source than
+    a text heuristic. Only the top outline level is used, so a deep outline does
+    not shred the book into sections. Returns None when the outline does not
+    yield at least two usable chapters (caller falls back to text heuristics).
+    """
+    rows: list[tuple[int, str, int]] = []
+    for row in outline or []:
+        try:
+            level, title, page = row[0], row[1], row[2]
+            level = int(level)
+            page_idx = int(page) - 1
+        except (TypeError, ValueError, IndexError, KeyError):
+            continue
+        title = str(title or "").strip()
+        if not title or page_idx < 0 or page_idx >= len(page_texts):
+            continue
+        rows.append((level, title, page_idx))
+
+    if len(rows) < 2:
+        return None
+
+    top_level = min(r[0] for r in rows)
+    entries = [(t, p) for lvl, t, p in rows if lvl == top_level]
+    entries.sort(key=lambda e: e[1])
+
+    # One slice per page: two outline entries on the same page would otherwise
+    # produce overlapping (or empty) slices.
+    deduped: list[tuple[str, int]] = []
+    seen_pages: set[int] = set()
+    for title, page_idx in entries:
+        if page_idx in seen_pages:
+            continue
+        seen_pages.add(page_idx)
+        deduped.append((title, page_idx))
+
+    if len(deduped) < 2:
+        return None
+
+    chapters: list[Chapter] = []
+    for k, (title, start_page) in enumerate(deduped):
+        end_page = deduped[k + 1][1] if k + 1 < len(deduped) else len(page_texts)
+        content = "\n".join(
+            line.strip() for line in "\n".join(page_texts[start_page:end_page]).split("\n")
+        ).strip()
+        word_count = len(content.split())
+        if word_count == 0:
+            logger.info("Dropping empty PDF outline section: %r", title)
+            continue
+        if word_count < min_chapter_words:
+            if keep_titled_short_chapters:
+                logger.info(
+                    "Keeping short titled section: %r (%d words < %d threshold)",
+                    title, word_count, min_chapter_words,
+                )
+            else:
+                logger.info(
+                    "Skipping short section: %r (%d words < %d threshold)",
+                    title, word_count, min_chapter_words,
+                )
+                continue
+        chapters.append(Chapter(
+            index=len(chapters),
+            title=title,
+            raw_text=content,
+            source_file=source,
+        ))
+
+    if len(chapters) < 2:
+        return None
+    return chapters
+
+
 def parse_pdf(
     path: Path,
     min_chapter_words: int = 50,
+    keep_titled_short_chapters: bool = False,
     *,
     profile: Optional[LanguageProfile] = None,
     force_text: bool = False,
@@ -131,6 +268,12 @@ def parse_pdf(
     Args:
         path: Path to PDF file.
         min_chapter_words: Minimum word count for a section to be kept.
+        keep_titled_short_chapters: Keep short sections that have a detected
+            title, mirroring ``parse_epub``. Defaults to False, which is the
+            historical PDF behavior — but the drop is now LOGGED either way
+            (PARSER-AMEND-7): a short prologue, dedication, or poem used to
+            vanish from the audiobook with no signal at all, while
+            ``parse_epub``/``parse_docx`` both logged the equivalent.
         profile: Language profile for chapter-heading detection (default English).
         force_text: Parse even when the PDF looks scanned/sparse. Use this for a
             legitimately sparse PDF (lots of blank or figure-only pages) that
@@ -181,7 +324,17 @@ def parse_pdf(
     metadata: dict = {}
     page_texts: list[str] = []
     pages_with_text = 0
+    outline: list = []
     try:
+        # The PDF's own outline is authored metadata and beats any text
+        # heuristic — read it before the handle is closed (PARSER-AMEND-6).
+        get_toc = getattr(doc, "get_toc", None)
+        if callable(get_toc):
+            try:
+                outline = list(get_toc(simple=True) or [])
+            except Exception as e:  # malformed/absent outline must not abort
+                logger.debug("PDF outline unavailable for '%s': %s", path.name, e)
+
         pdf_meta = doc.metadata or {}
         if pdf_meta.get("title"):
             metadata["title"] = pdf_meta["title"]
@@ -235,52 +388,95 @@ def parse_pdf(
             "real text, pass --force-text to parse it anyway."
         )
 
-    # Split into chapters using heading detection
+    # Split into chapters. The PDF outline is the primary source; text heading
+    # heuristics are the fallback when there is no usable outline
+    # (PARSER-AMEND-6).
     chapters: list[Chapter] = []
     current_title: Optional[str] = None
     current_lines: list[str] = []
     headings_seen = 0
+    split_source = "text-heuristics"
+
+    outline_chapters = _chapters_from_outline(
+        outline,
+        page_texts,
+        str(path),
+        min_chapter_words=min_chapter_words,
+        keep_titled_short_chapters=keep_titled_short_chapters,
+    )
+    if outline_chapters:
+        chapters = outline_chapters
+        split_source = "outline"
+        logger.info(
+            "Using PDF outline for chapter boundaries (%d entries -> %d chapters).",
+            len(outline), len(chapters),
+        )
 
     full_text = "\n".join(page_texts)
     lines = full_text.split("\n")
+    banned_lines = frozenset() if chapters else _find_running_heads(page_texts)
 
-    for line in lines:
-        stripped = line.strip()
-        if not stripped:
-            current_lines.append("")
-            continue
+    def _emit_section(section_lines: list[str], title: Optional[str]) -> None:
+        """Close out one detected section, logging any short-section drop."""
+        content = "\n".join(section_lines).strip()
+        if not content:
+            return
+        word_count = len(content.split())
+        label = title or f"Chapter {len(chapters) + 1}"
+        if word_count < min_chapter_words:
+            # PARSER-AMEND-7: parse_epub logs this and parse_docx logs an
+            # equivalent; parse_pdf discarded the section with no log at all,
+            # so a short prologue/dedication/poem simply vanished.
+            if title and keep_titled_short_chapters:
+                logger.info(
+                    "Keeping short titled section: %r "
+                    "(%d words < %d threshold)",
+                    label, word_count, min_chapter_words,
+                )
+            else:
+                logger.info(
+                    "Skipping short section: %r (%d words < %d threshold)",
+                    label, word_count, min_chapter_words,
+                )
+                return
+        chapters.append(Chapter(
+            index=len(chapters),
+            title=label,
+            raw_text=content,
+            source_file=str(path),
+        ))
 
-        heading = _is_chapter_heading(stripped, chapter_patterns)
-        if heading is not None:
-            headings_seen += 1
-            # Save previous chapter
-            if current_lines:
-                content = "\n".join(current_lines).strip()
-                if content and len(content.split()) >= min_chapter_words:
-                    title = current_title or f"Chapter {len(chapters) + 1}"
-                    chapters.append(Chapter(
-                        index=len(chapters),
-                        title=title,
-                        raw_text=content,
-                        source_file=str(path),
-                    ))
+    if not chapters:
+        for idx, line in enumerate(lines):
+            stripped = line.strip()
+            if not stripped:
+                current_lines.append("")
+                continue
 
-            current_title = heading
-            current_lines = []
-        else:
-            current_lines.append(stripped)
+            # A typographic heading stands alone; all-caps prose does not.
+            prev_blank = idx == 0 or not lines[idx - 1].strip()
+            next_blank = idx + 1 >= len(lines) or not lines[idx + 1].strip()
 
-    # Don't forget the last section
-    if current_lines:
-        content = "\n".join(current_lines).strip()
-        if content and len(content.split()) >= min_chapter_words:
-            title = current_title or f"Chapter {len(chapters) + 1}"
-            chapters.append(Chapter(
-                index=len(chapters),
-                title=title,
-                raw_text=content,
-                source_file=str(path),
-            ))
+            heading = _is_chapter_heading(
+                stripped,
+                chapter_patterns,
+                isolated=prev_blank and next_blank,
+                banned_lines=banned_lines,
+            )
+            if heading is not None:
+                headings_seen += 1
+                # Save previous chapter
+                if current_lines:
+                    _emit_section(current_lines, current_title)
+
+                current_title = heading
+                current_lines = []
+            else:
+                current_lines.append(stripped)
+
+        # Don't forget the last section
+        if current_lines:
+            _emit_section(current_lines, current_title)
 
     # If no chapter breaks detected, treat the whole thing as one chapter.
     used_empty_fallback = False
@@ -330,10 +526,20 @@ def parse_pdf(
     if "title" not in metadata:
         metadata["title"] = path.stem
 
+    # PARSER-AMEND-6: make a suspicious split visible BEFORE rendering. A
+    # running head promoted to a heading yields roughly one chapter per page.
+    if total_pages >= 5 and len(chapters) > max(3, total_pages * 0.5):
+        logger.warning(
+            "Detected %d chapter(s) across %d page(s) of '%s' — heading "
+            "detection may be latching onto a running head or a per-page "
+            "title. Check the chapter list before rendering.",
+            len(chapters), total_pages, path.name,
+        )
+
     # Parse-observability summary (PARSER-C).
     logger.info(
-        "Parsed PDF '%s': %d chapter(s), profile=%s, headings=%s",
-        path.name, len(chapters), profile_code,
+        "Parsed PDF '%s': %d chapter(s), profile=%s, source=%s, headings=%s",
+        path.name, len(chapters), profile_code, split_source,
         "none (single-chapter fallback)" if single_chapter and headings_seen == 0 else headings_seen,
     )
 

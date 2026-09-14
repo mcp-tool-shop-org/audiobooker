@@ -12,13 +12,17 @@ GERMAN = LanguageProfile(
     name="German",
 
     # --- Dialogue detection ---
-    # German uses low-high quotes as primary dialogue markers
+    # German uses low-high quotes (\u201e\u2026\u201c) as its primary dialogue marker, and
+    # REVERSED guillemets (\u00bb\u2026\u00ab) very widely in printed fiction. The profile
+    # previously shipped only the Swiss inward form (\u00ab\u2026\u00bb), so a standard German
+    # novel using \u00bb\u2026\u00ab detected no dialogue at all and rendered single-voice.
     dialogue_quotes=(
-        ("\u201e", "\u201c"),   # lower/upper double quotes
+        ("\u201e", "\u201c"),   # \u201e \u201c  lower/upper double quotes
+        ("\u00bb", "\u00ab"),   # \u00bb \u00ab  reversed guillemets (standard German)
         ('"', '"'),             # ASCII double quotes (common in digital texts)
     ),
     smart_quotes=(
-        ("\u00ab", "\u00bb"),   # guillemets (used in Swiss German)
+        ("\u00ab", "\u00bb"),   # \u00ab \u00bb  guillemets (used in Swiss German)
     ),
     single_quotes=(
         ("\u201a", "\u2018"),   # lower/upper single quotes
@@ -78,6 +82,15 @@ GERMAN = LanguageProfile(
 
     # German name pattern: handles umlauts, von/van particles
     valid_name_pattern=r"^(?:(?:Herr|Frau|Dr\.|Prof\.|Hauptmann|Graf|Gr\u00e4fin|von|van|der|die)\s+)?[A-Za-z\u00C0-\u024F\u00df][A-Za-z\u00C0-\u024F\u00df'\-\s\.]{0,48}[A-Za-z\u00C0-\u024F\u00df]$",
+
+    # Attribution fragments: the same Unicode range the name pattern above
+    # already declares, so "sagte M\u00fcller" attributes like "sagte Mueller".
+    name_fragment=r"[A-Z\u00C0-\u024F][a-z\u00C0-\u024F\u00df]+",
+    name_titles=(
+        "Herr", "Frau", r"Dr\.", r"Prof\.", "Hauptmann", "Graf",
+        "Gr\u00e4fin", "von", "van",
+    ),
+    definite_article="",
 
     # Gender cue words (German)
     female_cue_words=frozenset({

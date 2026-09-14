@@ -13,9 +13,16 @@ SPANISH = LanguageProfile(
     name="Spanish",
 
     # --- Dialogue detection ---
-    # Spanish uses angular quotes (guillemets) and em-dash style dialogue
+    # Modern Spanish fiction marks speech overwhelmingly with a line-leading
+    # em dash (raya): "\u2014Ven aqu\u00ed \u2014dijo ella." Guillemets are the other
+    # convention. The em-dash form was claimed in this module's docstring and
+    # in the comment above but was never actually shipped, so a typical Spanish
+    # novel detected NO dialogue and rendered single-voice, silently. Modelled
+    # on pt.py's line-terminated ('\u2014', '\n') pair.
     dialogue_quotes=(
-        ("\u00ab", "\u00bb"),   # « »  guillemets (primary)
+        ("\u2014", "\n"),       # —    em dash (raya), line-leading speech
+        ("\u2013", "\n"),       # –    en dash (editions that set a short raya)
+        ("\u00ab", "\u00bb"),   # « »  guillemets
         ('"', '"'),             # ASCII double quotes (common in digital texts)
     ),
     smart_quotes=(
@@ -73,6 +80,15 @@ SPANISH = LanguageProfile(
         "bruscamente", "repentinamente", "finalmente", "luego",
         "sin embargo", "adem\u00e1s", "entonces", "despu\u00e9s",
     }),
+
+    # Attribution fragments: the Unicode range this profile's own
+    # valid_name_pattern already declares, so "dijo Mu\u00f1oz" attributes.
+    name_fragment=r"[A-Z\u00C0-\u024F][a-z\u00C0-\u024F]+",
+    name_titles=(
+        r"Sr\.", r"Sra\.", r"Srta\.", r"Dr\.", "Don", "Do\u00f1a",
+        "Capit\u00e1n", "Conde", "Condesa",
+    ),
+    definite_article="",
 
     # Spanish name pattern: handles accented characters, particles (de, del, la)
     valid_name_pattern=r"^(?:(?:Sr\.|Sra\.|Srta\.|Dr\.|Don|Do\u00f1a|Capit\u00e1n|Conde|Condesa|el|la|de|del)\s+)?[A-Za-z\u00C0-\u024F][A-Za-z\u00C0-\u024F'\-\s\.]{0,48}[A-Za-z\u00C0-\u024F]$",

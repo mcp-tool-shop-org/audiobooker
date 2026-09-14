@@ -91,6 +91,27 @@ JAPANESE = LanguageProfile(
     # Also allows romanized names for mixed-language texts
     valid_name_pattern=r"^[\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ffA-Za-z\u00C0-\u024F][\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ffA-Za-z\u00C0-\u024F'\-\s\.]{0,28}[\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ffA-Za-z\u00C0-\u024F]$",
 
+    # --- Speaker attribution fragments ---
+    # Japanese is written WITHOUT spaces, so the historical `\s+` join between
+    # verb and name could never match and this profile's 20 speaker verbs and
+    # 8 emotion hints were structurally unreachable. The name is kanji /
+    # katakana (hiragana is excluded so a trailing particle is not swallowed
+    # into the name) with an optional honorific suffix, and the separator is a
+    # topic/quotative particle with no whitespace requirement.
+    name_fragment=(
+        r"[\u4e00-\u9fff\u30a0-\u30ff]{1,8}"
+        r"(?:\u3055\u3093|\u69d8|\u541b|\u3061\u3083\u3093|\u5148\u751f)?"
+    ),
+    name_titles=(),
+    # \u3068 (to) / \u306f (wa) / \u304c (ga) / \u3082 (mo), optionally with
+    # ASCII or ideographic space around them.
+    attribution_separator=r"[\s\u3000]*[\u3068\u306f\u304c\u3082]?[\s\u3000]*",
+    # Japanese sentence punctuation and corner brackets end a name.
+    name_boundary=(
+        r"(?:[\s\u3000]|[,.\!\?\u3002\u3001\u300c\u300d\u300e\u300f]|$)"
+    ),
+    definite_article="",
+
     # Gender cue words (Japanese)
     female_cue_words=frozenset({
         "\u5f7c\u5973",   # kanojo (she/her)

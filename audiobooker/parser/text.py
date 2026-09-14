@@ -332,18 +332,34 @@ _FILENAME_NUM_PREFIX_RE = re.compile(
 )
 
 
+# Splits a stem into alternating text / number runs so digits are compared
+# numerically wherever they appear, not only as a leading prefix.
+_NUM_RUN_RE = re.compile(r"(\d+)")
+
+
 def _natural_sort_key(stem: str) -> tuple:
-    """Sort key that orders numeric filename prefixes numerically.
+    """Sort key that orders numbers inside a filename numerically.
 
     "1", "01", "1.", "1_intro", "10_end" sort so 2 < 10 (not lexicographic
     "10" < "2"). Files with no numeric prefix sort after numbered ones, then
-    alphabetically (case-insensitive).
+    naturally (case-insensitive).
+
+    The number no longer has to be a LEADING prefix (PARSER-AMEND-5). The
+    previous key only parsed a leading run, so a book split as
+    "chapter1.txt"…"chapter12.txt" fell back to a lexicographic compare and was
+    narrated 1, 10, 11, 12, 2, 3 — while the docstring advertised natural
+    sorting, so the user got no signal. The whole stem is tokenized into
+    alternating text and number runs and compared run by run.
     """
     m = _FILENAME_NUM_PREFIX_RE.match(stem)
-    if m and m.group(1):
-        # (0 => numbered first) , numeric value, then remainder for ties.
-        return (0, int(m.group(1)), m.group(2).casefold())
-    return (1, 0, stem.casefold())
+    # Numbered-prefix files still sort ahead of unnumbered ones.
+    group = 0 if (m and m.group(1)) else 1
+    runs = tuple(
+        (1, int(part), "") if part.isdigit() else (0, 0, part)
+        for part in _NUM_RUN_RE.split(stem.casefold())
+        if part != ""
+    )
+    return (group, runs)
 
 
 def _title_from_stem(stem: str) -> str:

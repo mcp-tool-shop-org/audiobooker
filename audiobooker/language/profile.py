@@ -46,6 +46,33 @@ class LanguageProfile:
     speaker_blacklist: frozenset[str] = frozenset()
     valid_name_pattern: str = r"^[A-Za-z\u00C0-\u024F][A-Za-z\u00C0-\u024F'\-]{0,22}[A-Za-z\u00C0-\u024F]$"
 
+    # --- Speaker-attribution regex fragments (i18n) ---
+    # build_said_patterns used to hardcode an ASCII-English name shape
+    # (`[A-Z][a-z]+` plus English titles) and join verb and name with `\s+`.
+    # That made "sagte M\u00FCller" unmatchable, and made Japanese \u2014 written without
+    # spaces \u2014 structurally unreachable, so dialogue in 6 of the 7 shipped
+    # languages fell to the narrator voice. Each profile now supplies its own
+    # fragments; the defaults below reproduce the historical English patterns
+    # byte-for-byte.
+    #
+    # name_fragment: matches a bare name, no anchors, no capture group.
+    name_fragment: str = r"[A-Z][a-z]+"
+    # name_titles: ordered regex alternatives for optional title prefixes.
+    # Order is load-bearing \u2014 it is the alternation order in the built pattern.
+    name_titles: tuple[str, ...] = (
+        r"Mr\.", r"Mrs\.", r"Ms\.", r"Dr\.", "Miss", "Captain",
+        "Lord", "Lady", "Sir", "the", "Old", "Young",
+    )
+    # Separator between a speech verb and an adjacent name. Space-delimited
+    # languages use whitespace; Japanese uses topic/quotative particles with no
+    # whitespace at all.
+    attribution_separator: str = r"\s+"
+    # What may follow a matched name.
+    name_boundary: str = r"(?:\s|[,.\!\?]|$)"
+    # Definite article used in the "said the Doctor" pattern. Empty disables
+    # that third pattern for languages where it does not apply.
+    definite_article: str = "the"
+
     # Gender cue words for voice suggestion (language-specific)
     female_cue_words: frozenset[str] = frozenset({
         "she", "her", "hers", "herself", "woman", "girl", "mother",
@@ -78,9 +105,24 @@ class LanguageProfile:
         """Check if a string looks like a valid speaker name."""
         return bool(re.match(self.valid_name_pattern, name))
 
+    def name_pattern_fragment(self) -> str:
+        """The profile's name shape, with its optional title prefixes."""
+        if self.name_titles:
+            titles = "|".join(self.name_titles)
+            return rf"(?:(?:{titles})\s+)?{self.name_fragment}"
+        return self.name_fragment
+
     def build_said_patterns(self) -> list[re.Pattern]:
         """Build compiled verb-name / name-verb regex patterns (cached)."""
-        return _cached_said_patterns(self.code, self.speaker_verbs)
+        return _cached_said_patterns(
+            self.code,
+            self.speaker_verbs,
+            self.name_pattern_fragment(),
+            self.attribution_separator,
+            self.name_boundary,
+            self.definite_article,
+            self.name_fragment,
+        )
 
     def build_emotion_verb_pattern(self) -> Optional[re.Pattern]:
         """Build a pattern matching verbs that carry emotion hints (cached)."""
@@ -97,30 +139,42 @@ class LanguageProfile:
 def _cached_said_patterns(
     profile_code: str,
     speaker_verbs: frozenset[str],
+    name_pat: str = r'(?:(?:Mr\.|Mrs\.|Ms\.|Dr\.|Miss|Captain|Lord|Lady|Sir|the|Old|Young)\s+)?[A-Z][a-z]+',
+    separator: str = r"\s+",
+    boundary: str = r"(?:\s|[,.\!\?]|$)",
+    article: str = "the",
+    bare_name: str = r"[A-Z][a-z]+",
 ) -> list[re.Pattern]:
+    """Compile the verb/name attribution patterns for one profile.
+
+    ``name_pat``, ``separator`` and ``boundary`` come from the profile
+    (``LanguageProfile.name_pattern_fragment`` etc.), so the name shape is that
+    language's own — the Unicode ranges its ``valid_name_pattern`` already
+    declared — and the verb/name join is whitespace only for languages that
+    actually delimit words with whitespace. The cache stays correct because it
+    is keyed on ``profile_code`` plus every fragment that shapes the output.
+    """
     if not speaker_verbs:
         return []
     verb_alt = "|".join(re.escape(v) for v in sorted(speaker_verbs))
-    # Multi-word name pattern: captures "Mr. Holmes", "Captain Ahab",
-    # "the Doctor", "Old Tom", or simple "Alice"
-    # Title prefixes: Mr., Mrs., Ms., Dr., Captain, Lord, Lady, Sir, the, Old, Young
-    name_pat = r'(?:(?:Mr\.|Mrs\.|Ms\.|Dr\.|Miss|Captain|Lord|Lady|Sir|the|Old|Young)\s+)?[A-Z][a-z]+'
-    return [
-        # "said Mr. Holmes" / "whispered the Doctor"
+    patterns = [
+        # "said Mr. Holmes" / "whispered the Doctor" / "sagte Müller"
         re.compile(
-            rf"(?:{verb_alt})\s+({name_pat})(?:\s|[,.\!\?]|$)",
+            rf"(?:{verb_alt}){separator}({name_pat}){boundary}",
             re.IGNORECASE,
         ),
-        # "Mr. Holmes said" / "Captain Ahab whispered"
+        # "Mr. Holmes said" / "Captain Ahab whispered" / "太郎は言った"
         re.compile(
-            rf"({name_pat})\s+(?:{verb_alt})",
+            rf"({name_pat}){separator}(?:{verb_alt})",
             re.IGNORECASE,
-        ),
-        # "said the Doctor" (explicit 'the' pattern)
-        re.compile(
-            rf"(?:{verb_alt})\s+(the\s+[A-Z][a-z]+)(?:\s|[,.\!\?]|$)",
         ),
     ]
+    if article:
+        # "said the Doctor" (explicit definite-article pattern)
+        patterns.append(re.compile(
+            rf"(?:{verb_alt}){separator}({article}\s+{bare_name}){boundary}",
+        ))
+    return patterns
 
 
 @lru_cache(maxsize=16)

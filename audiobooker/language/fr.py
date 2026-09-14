@@ -75,6 +75,14 @@ FRENCH = LanguageProfile(
     # French name pattern: handles accented characters, particles (de, du, le, la)
     valid_name_pattern=r"^(?:(?:M\.|Mme|Mlle|Dr\.|Capitaine|Comte|Comtesse|le|la|du|de)\s+)?[A-Za-z\u00C0-\u024F][A-Za-z\u00C0-\u024F'\-\s\.]{0,48}[A-Za-z\u00C0-\u024F]$",
 
+    # Attribution fragments: the Unicode range this profile's own
+    # valid_name_pattern already declares, so "dit S\u00E9verine" attributes.
+    name_fragment=r"[A-Z\u00C0-\u024F][a-z\u00C0-\u024F]+",
+    name_titles=(
+        r"M\.", "Mme", "Mlle", r"Dr\.", "Capitaine", "Comte", "Comtesse",
+    ),
+    definite_article="",
+
     # Gender cue words (French)
     female_cue_words=frozenset({
         "elle", "la", "sa", "ses", "femme", "fille", "m\u00e8re",

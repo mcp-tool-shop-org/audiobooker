@@ -84,6 +84,15 @@ ITALIAN = LanguageProfile(
     # like di/de/della used in surnames.
     valid_name_pattern=r"^(?:(?:Signor|Signora|Signorina|Dottor|Dottore|Don|Donna|Padre|Capitano|Conte|Contessa|di|de|della|del)\s+)?[A-Za-zÀ-ɏ][A-Za-zÀ-ɏ'\-\s\.]{0,48}[A-Za-zÀ-ɏ]$",
 
+    # Attribution fragments: the Unicode range this profile's own
+    # valid_name_pattern already declares, so "disse Niccolò" attributes.
+    name_fragment=r"[A-ZÀ-ɏ][a-zÀ-ɏ]+",
+    name_titles=(
+        "Signor", "Signora", "Signorina", "Dottor", "Dottore",
+        "Don", "Donna", "Padre", "Capitano", "Conte", "Contessa",
+    ),
+    definite_article="",
+
     # Gender cue words (Italian)
     female_cue_words=frozenset({
         "lei", "ella", "essa", "sua", "donna", "ragazza", "madre",
