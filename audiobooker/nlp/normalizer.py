@@ -14,6 +14,11 @@ from __future__ import annotations
 import re
 from typing import Optional
 
+# PH-B-003: the honorific table lives in one leaf module that both the TTS
+# normalizer and the language profiles read, so the two can no longer drift.
+# Re-exported here because `Mr. -> Mister` is this module's documented job.
+from audiobooker.language._titles import TITLE_EXPANSIONS
+
 
 # ---------------------------------------------------------------------------
 # Number word tables
@@ -263,20 +268,17 @@ def normalize_numbers(text: str) -> str:
 # their period has to be restored when it is the sentence's own.
 
 # Titles — always followed by a name, never sentence-final.
+#
+# PH-B-003: derived from audiobooker.language._titles.TITLE_EXPANSIONS rather
+# than restated here. This table and LanguageProfile.name_titles are the two
+# halves of the same fact, and they disagreed: expanding "Mr." to "Mister"
+# while attribution only knew the spelling "Mr." made the bare [A-Z][a-z]+
+# fallback capture the honorific, so `"Elementary," said Mr. Holmes` attributed
+# to the phantom speaker "Mister". Adding a title in one place now adds it in
+# both.
 _TITLE_ABBREVIATIONS: dict[str, str] = {
-    r"\bDr\.": "Doctor",
-    r"\bMr\.": "Mister",
-    r"\bMrs\.": "Missus",
-    r"\bMs\.": "Miz",
-    r"\bProf\.": "Professor",
-    r"\bSgt\.": "Sergeant",
-    r"\bCpt\.": "Captain",
-    r"\bCpl\.": "Corporal",
-    r"\bGen\.": "General",
-    r"\bLt\.": "Lieutenant",
-    r"\bCol\.": "Colonel",
-    r"\bAdm\.": "Admiral",
-    r"\bRev\.": "Reverend",
+    rf"\b{re.escape(abbrev)}": expansion
+    for abbrev, expansion in TITLE_EXPANSIONS.items()
 }
 
 # May legitimately end a sentence — the trailing period must survive.
