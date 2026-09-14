@@ -85,6 +85,13 @@ class AssemblyResult:
     output_path: Path
     chapters_embedded: bool
     chapter_error: str = ""
+    # Whether loudness mastering actually ran and produced the shipped file.
+    # A best-effort loudnorm pass that failed used to log a warning and ship
+    # the UN-normalized audio as a finished master, with nothing on this
+    # object for the caller to check. Defaults to True so assemblers that do
+    # no mastering (and every existing construction site) are unaffected.
+    mastering_applied: bool = True
+    mastering_error: str = ""
 
 
 def check_ffmpeg() -> bool:
@@ -97,9 +104,14 @@ def check_ffmpeg() -> bool:
             ["ffmpeg", "-version"],
             capture_output=True,
             text=True,
+            # See ffmpeg_runner._TEXT_KWARGS: without an explicit encoding the
+            # locale codepage decodes ffmpeg's UTF-8 output and dies on CJK.
+            encoding="utf-8",
+            errors="replace",
         )
         _ffmpeg_checked = result.returncode == 0
-    except FileNotFoundError:
+    except OSError:
+        # Not on PATH, not executable, bad interpreter — all "no ffmpeg".
         _ffmpeg_checked = False
     return _ffmpeg_checked
 
@@ -131,16 +143,22 @@ def get_audio_duration(audio_path: Path) -> float:
             ],
             capture_output=True,
             text=True,
+            # ffprobe echoes the (possibly CJK) path back on stderr; decode it
+            # as UTF-8 rather than the locale codepage. See check_ffmpeg().
+            encoding="utf-8",
+            errors="replace",
         )
+        stdout = result.stdout or ""
+        stderr = result.stderr or ""
         if result.returncode != 0:
             # F-RENDER-B-002: Log warning on ffprobe failure instead of silent 0.0
             logger.warning(
                 f"ffprobe failed for {audio_path} (rc={result.returncode}): "
-                f"{result.stderr.strip()[:200]}"
+                f"{stderr.strip()[:200]}"
             )
             return 0.0
-        return float(result.stdout.strip())
-    except (subprocess.SubprocessError, ValueError) as e:
+        return float(stdout.strip())
+    except (OSError, subprocess.SubprocessError, ValueError) as e:
         # F-RENDER-B-002: Log warning on ffprobe failure
         logger.warning(f"ffprobe error for {audio_path}: {e}")
         return 0.0
@@ -348,6 +366,104 @@ def _sanitize_metadata_value(value: str) -> str:
 # FT-RENDER-M-001: Full metadata tagging
 # ---------------------------------------------------------------------------
 
+def _measure_loudnorm(
+    concat_list_path: Path,
+    loudnorm_filter: str,
+    *,
+    runner: "FFmpegRunner",
+) -> Optional[dict]:
+    """First half of the standard two-pass loudnorm flow.
+
+    Runs the filter in analysis mode over the concatenated chapters and returns
+    its JSON report, or None when it cannot be measured (the caller then falls
+    back to single-pass dynamic normalization).
+    """
+    probe = runner.run([
+        "ffmpeg", "-hide_banner", "-y",
+        "-f", "concat",
+        "-safe", "0",
+        "-i", str(concat_list_path),
+        "-af", f"{loudnorm_filter}:print_format=json",
+        "-f", "null", "-",
+    ])
+    if probe.returncode != 0:
+        logger.info(
+            f"ASSEMBLY_NORMALIZE_MEASURE: analysis pass returned "
+            f"rc={probe.returncode}; falling back to single-pass loudnorm"
+        )
+        return None
+    return _parse_loudnorm_json(probe.stderr or "")
+
+
+def _loudnorm_second_pass_filter(
+    base_filter: str,
+    measured: dict,
+) -> Optional[str]:
+    """Build the measured (second-pass) loudnorm filter string.
+
+    Returns None when the report is missing a required field, so the caller can
+    fall back rather than emit a half-populated filter.
+    """
+    required = ("input_i", "input_tp", "input_lra", "input_thresh")
+    values: dict[str, float] = {}
+    for key in required:
+        try:
+            values[key] = float(measured[key])
+        except (KeyError, TypeError, ValueError):
+            return None
+
+    parts = [
+        base_filter,
+        f"measured_I={values['input_i']}",
+        f"measured_TP={values['input_tp']}",
+        f"measured_LRA={values['input_lra']}",
+        f"measured_thresh={values['input_thresh']}",
+        "linear=true",
+    ]
+    try:
+        parts.append(f"offset={float(measured['target_offset'])}")
+    except (KeyError, TypeError, ValueError):
+        pass
+    return ":".join(parts)
+
+
+def _cue_quoted(value: str) -> str:
+    """Body of a CUE-sheet quoted string.
+
+    CUE has no escape sequence for a double quote inside a quoted string, so a
+    title containing one (EPUB TOC entries routinely do — ``The "Quiet" Room``)
+    terminates the string early and produces a malformed sheet that players
+    reject or silently truncate. The interoperable convention, and what
+    CD-ripping tools emit, is to fold the inner quotes to typographic quotes.
+    """
+    sanitized = _sanitize_metadata_value(str(value))
+    return sanitized.replace('"', "”")
+
+
+def _safe_chapter_filename(
+    title: str,
+    index: int,
+    max_len: int = 60,
+) -> str:
+    """Filesystem-safe, length-bounded stem for a per-chapter output file.
+
+    Chapter titles come from the EPUB TOC and are unbounded — a document whose
+    "chapter title" is its first paragraph produced a path that blew past the
+    OS limit (260 chars on Windows without long-path support) and failed the
+    whole render at the last step. Trailing dots and spaces are illegal at the
+    end of a Windows filename, and a title made entirely of punctuation
+    collapses to an empty stem, so both fall back to ``chapter_NN``.
+    """
+    cleaned = "".join(c if c.isalnum() or c in " -_" else "_" for c in str(title))
+    cleaned = cleaned[:max_len]
+    # Collapse the runs of underscores that punctuation-heavy titles produce,
+    # then drop the trailing characters Windows will not accept.
+    cleaned = re.sub(r"_{2,}", "_", cleaned).strip(" ._-")
+    if not cleaned:
+        cleaned = f"chapter_{index + 1:02d}"
+    return f"{index + 1:02d}_{cleaned}"
+
+
 def _metadata_ffmetadata_lines(metadata: Optional["BookMetadata"]) -> list[str]:
     """
     Build FFMETADATA key=value lines from a BookMetadata for the m4b path.
@@ -525,20 +641,76 @@ def assemble_m4b(
                   escaped_silence = _escape_concat_path(silence_path.absolute().as_posix())
                   f.write(f"file '{escaped_silence}'\n")
 
-      # Single-pass: concat → AAC encode → output in one FFmpeg command
+      # Single-pass: concat → (optional loudnorm) → AAC encode → output.
       aac_path = temp_dir / "audio.m4a"
       encode_start = _time.time()
 
-      result = runner.run([
-          "ffmpeg", "-y",
-          "-f", "concat",
-          "-safe", "0",
-          "-i", str(concat_list_path),
-          "-c:a", "aac",
-          "-b:a", aac_bitrate,
-          "-ar", sample_rate,
-          str(aac_path),
-      ])
+      # FT-RENDER-019 / FT-ACX-001: mastering belongs in THIS pass.
+      # It used to run afterwards as an AAC→AAC re-encode, i.e. a second lossy
+      # generation applied to already-quantized audio — the worst place to do
+      # gain work. Filtering here operates on the lossless chapter WAVs and
+      # encodes once. The standard loudnorm flow is also two-pass (measure,
+      # then encode with the measured values); the single-pass dynamic mode it
+      # used before is explicitly the lower-quality path.
+      mastering_applied = True
+      mastering_error = ""
+      loudnorm_args: list[str] = []
+      if normalize:
+          base_loudnorm = profile["loudnorm"]
+          measured = _measure_loudnorm(concat_list_path, base_loudnorm, runner=runner)
+          measured_filter = (
+              _loudnorm_second_pass_filter(base_loudnorm, measured) if measured else None
+          )
+          if measured_filter:
+              logger.info(
+                  f"ASSEMBLY_NORMALIZE: two-pass loudnorm "
+                  f"(profile={loudnorm_profile}, measured I={measured.get('input_i')})"
+              )
+              loudnorm_args = ["-af", measured_filter]
+          else:
+              logger.info(
+                  f"ASSEMBLY_NORMALIZE: measurement pass produced no usable "
+                  f"report; falling back to single-pass dynamic loudnorm "
+                  f"(profile={loudnorm_profile}, {base_loudnorm})"
+              )
+              loudnorm_args = ["-af", base_loudnorm]
+
+      def _concat_encode(extra_filter_args: list[str]):
+          return runner.run([
+              "ffmpeg", "-y",
+              "-f", "concat",
+              "-safe", "0",
+              "-i", str(concat_list_path),
+              *extra_filter_args,
+              "-c:a", "aac",
+              "-b:a", aac_bitrate,
+              "-ar", sample_rate,
+              str(aac_path),
+          ])
+
+      result = _concat_encode(loudnorm_args)
+
+      if result.returncode != 0 and loudnorm_args:
+          # Mastering is what broke the pass. Keep the book — but record that
+          # the shipped file is NOT normalized instead of logging a warning
+          # nobody reads and returning a result that looks finished.
+          mastering_applied = False
+          mastering_error = (
+              f"loudnorm pass failed (rc={result.returncode}, "
+              f"profile={loudnorm_profile}): {(result.stderr or '')[:300]}"
+          )
+          log = logger.error if loudnorm_profile == "acx" else logger.warning
+          log(
+              f"ASSEMBLY_NORMALIZE_FAIL: {mastering_error} — retrying without "
+              f"normalization; the output will NOT be loudness-normalized"
+              + (
+                  " and cannot meet the ACX retail spec."
+                  if loudnorm_profile == "acx"
+                  else "."
+              )
+          )
+          loudnorm_args = []
+          result = _concat_encode([])
 
       if result.returncode == 0:
           encode_elapsed = _time.time() - encode_start
@@ -558,14 +730,33 @@ def assemble_m4b(
           concat_elapsed = _time.time() - assembly_start
           logger.info(f"ASSEMBLY_CONCAT: {len(audio_paths)} chapters concatenated in {concat_elapsed:.1f}s")
 
-          result = runner.run([
-              "ffmpeg", "-y",
-              "-i", str(concat_path),
-              "-c:a", "aac",
-              "-b:a", aac_bitrate,
-              "-ar", sample_rate,
-              str(aac_path),
-          ])
+          def _wav_encode(extra_filter_args: list[str]):
+              return runner.run([
+                  "ffmpeg", "-y",
+                  "-i", str(concat_path),
+                  *extra_filter_args,
+                  "-c:a", "aac",
+                  "-b:a", aac_bitrate,
+                  "-ar", sample_rate,
+                  str(aac_path),
+              ])
+
+          # Still a single encode from lossless audio — carry the mastering
+          # filter here too rather than re-encoding the AAC afterwards.
+          result = _wav_encode(loudnorm_args)
+          if result.returncode != 0 and loudnorm_args:
+              mastering_applied = False
+              mastering_error = (
+                  f"loudnorm pass failed (rc={result.returncode}, "
+                  f"profile={loudnorm_profile}): {(result.stderr or '')[:300]}"
+              )
+              log = logger.error if loudnorm_profile == "acx" else logger.warning
+              log(
+                  f"ASSEMBLY_NORMALIZE_FAIL: {mastering_error} — encoding "
+                  f"without normalization."
+              )
+              loudnorm_args = []
+              result = _wav_encode([])
 
           if result.returncode != 0:
               raise RuntimeError(f"FFmpeg AAC conversion failed: {result.stderr}")
@@ -573,34 +764,8 @@ def assemble_m4b(
           encode_elapsed = _time.time() - encode_start
           logger.info(f"ASSEMBLY_ENCODE: AAC encoding completed in {encode_elapsed:.1f}s")
 
-      # FT-RENDER-019 / FT-ACX-001: Audio normalization via the selected
-      # loudnorm profile ('podcast' = EBU R128 -16 LUFS, 'acx' = -20 LUFS TP -3).
-      if normalize:
-          norm_path = temp_dir / "audio_normalized.m4a"
-          loudnorm_filter = profile["loudnorm"]
-          logger.info(
-              f"ASSEMBLY_NORMALIZE: Running loudnorm filter "
-              f"(profile={loudnorm_profile}, {loudnorm_filter})"
-          )
-          norm_result = runner.run([
-              "ffmpeg", "-y",
-              "-i", str(aac_path),
-              "-af", loudnorm_filter,
-              "-c:a", "aac",
-              "-b:a", aac_bitrate,
-              "-ar", sample_rate,
-              str(norm_path),
-          ])
-          if norm_result.returncode == 0 and norm_path.exists():
-              # Replace original with normalized version
-              aac_path.unlink(missing_ok=True)
-              norm_path.rename(aac_path)
-              logger.info("ASSEMBLY_NORMALIZE: Normalization complete")
-          else:
-              logger.warning(
-                  f"ASSEMBLY_NORMALIZE_FAIL: rc={norm_result.returncode}, "
-                  f"continuing without normalization. stderr: {norm_result.stderr[:300]}"
-              )
+      if normalize and mastering_applied:
+          logger.info("ASSEMBLY_NORMALIZE: Normalization complete")
 
       # Add chapter metadata (and cover art if provided — FT-RENDER-006)
       metadata_cmd = [
@@ -650,11 +815,15 @@ def assemble_m4b(
               output_path=output_path,
               chapters_embedded=False,
               chapter_error=stderr_tail,
+              mastering_applied=mastering_applied,
+              mastering_error=mastering_error,
           )
 
       return AssemblyResult(
           output_path=output_path,
           chapters_embedded=True,
+          mastering_applied=mastering_applied,
+          mastering_error=mastering_error,
       )
 
 
@@ -769,9 +938,9 @@ def assemble_mp3_chapters(
     mp3_paths = []
 
     for i, (audio_path, chapter_title, _) in enumerate(chapter_files):
-        # Sanitize filename
-        safe_title = "".join(c if c.isalnum() or c in " -_" else "_" for c in chapter_title)
-        mp3_path = output_dir / f"{i+1:02d}_{safe_title}.mp3"
+        # Sanitize + bound the filename (unbounded EPUB TOC titles blew the
+        # OS path limit and failed the render at the last step).
+        mp3_path = output_dir / f"{_safe_chapter_filename(chapter_title, i)}.mp3"
 
         safe_chapter_title = _sanitize_metadata_value(chapter_title)
         safe_album = _sanitize_metadata_value(title)
@@ -1137,8 +1306,7 @@ def assemble_m4a_split(
     m4a_paths: list[Path] = []
 
     for i, (audio_path, chapter_title, _) in enumerate(chapter_files):
-        safe_name = "".join(c if c.isalnum() or c in " -_" else "_" for c in chapter_title)
-        m4a_path = output_dir / f"{i+1:02d}_{safe_name}.m4a"
+        m4a_path = output_dir / f"{_safe_chapter_filename(chapter_title, i)}.m4a"
         safe_chapter_title = _sanitize_metadata_value(chapter_title)
 
         cmd = ["ffmpeg", "-y", "-i", str(audio_path)]
@@ -1196,6 +1364,26 @@ def _parse_loudnorm_json(stderr: str) -> Optional[dict]:
         return None
 
 
+def _parse_volumedetect_mean_db(stderr: str) -> Optional[float]:
+    """Extract ``mean_volume`` (unweighted RMS, dBFS) from volumedetect output.
+
+    This is the quantity ACX's spec actually gates on. ACX states its
+    requirement as an RMS window ("between -23dB and -18dB RMS") and uses no
+    loudness-standard vocabulary; ffmpeg's ``loudnorm`` reports ``input_i`` as
+    EBU R128 *integrated loudness* in LUFS — K-weighted and gated, a different
+    measurement that disagrees with RMS by several dB on speech. Audacity's
+    ACX Check plugin and the open-source acx-rms tooling both measure plain
+    RMS for this reason.
+    """
+    matches = re.findall(r"mean_volume:\s*(-?\d+(?:\.\d+)?)\s*dB", stderr)
+    if matches:
+        try:
+            return float(matches[-1])
+        except ValueError:
+            return None
+    return None
+
+
 def _parse_astats_floor_db(stderr: str) -> Optional[float]:
     """Extract the overall noise-floor (min level, dB) from astats output."""
     # astats prints e.g. "Noise floor dB: -72.345678" in the Overall section.
@@ -1218,13 +1406,22 @@ def master_check(
     """
     FT-ACX-001: Measure an audio file against retail mastering limits.
 
-    Runs ffmpeg loudnorm (print_format=json) for integrated loudness +
-    true-peak, and astats for the noise floor, then evaluates them against
-    the ACX retail spec:
+    Runs three ffmpeg measurement passes and evaluates them against the ACX
+    retail spec:
 
-        - RMS / integrated loudness in [-23, -18] dB
-        - true peak <= -3 dBTP
-        - noise floor <= -60 dB
+        - RMS in [-23, -18] dB   (volumedetect ``mean_volume``)
+        - true peak <= -3 dBTP   (loudnorm ``input_tp``)
+        - noise floor <= -60 dB  (astats)
+
+    ACX publishes its loudness requirement as an **RMS** window and its noise
+    floor as an **RMS** figure; it uses no loudness-standard vocabulary. This
+    check previously compared loudnorm's ``input_i`` — EBU R128 integrated
+    loudness in LUFS, K-weighted and gated — against that RMS window and
+    printed PASS on a quantity ACX does not gate on. ``input_i`` is still
+    measured and reported, under its correct name ``measured_lufs``.
+
+    True peak is kept for the peak comparison: TP is stricter than ACX's plain
+    "peak", so using it errs safe.
 
     Args:
         file_path: Path to the audio file to check.
@@ -1234,8 +1431,9 @@ def master_check(
 
     Returns:
         Dict with keys:
-            profile, measured_rms_db, measured_peak_db,
-            measured_noise_floor_db, passes (bool), failures (list[str]).
+            profile, measured_rms_db, measured_lufs, rms_source,
+            measured_peak_db, measured_noise_floor_db, passes (bool),
+            failures (list[str]), warnings (list[str]).
         On a missing/broken ffmpeg or unreadable file, ``passes`` is False
         and ``failures`` carries a clear, structured reason (never raises).
     """
@@ -1244,10 +1442,13 @@ def master_check(
     result: dict = {
         "profile": profile,
         "measured_rms_db": None,
+        "measured_lufs": None,
+        "rms_source": None,
         "measured_peak_db": None,
         "measured_noise_floor_db": None,
         "passes": False,
         "failures": [],
+        "warnings": [],
     }
 
     if not check_ffmpeg():
@@ -1288,7 +1489,7 @@ def master_check(
 
     measured_i = _to_float(report.get("input_i"))
     measured_tp = _to_float(report.get("input_tp"))
-    result["measured_rms_db"] = measured_i
+    result["measured_lufs"] = measured_i
     result["measured_peak_db"] = measured_tp
 
     # --- Measurement pass 2: astats (noise floor) ---
@@ -1301,15 +1502,39 @@ def master_check(
     floor = _parse_astats_floor_db(stats.stderr)
     result["measured_noise_floor_db"] = floor
 
+    # --- Measurement pass 3: volumedetect (unweighted RMS — what ACX gates on) ---
+    vol = runner.run([
+        "ffmpeg", "-hide_banner",
+        "-i", str(file_path),
+        "-af", "volumedetect",
+        "-f", "null", "-",
+    ])
+    measured_rms = _parse_volumedetect_mean_db(vol.stderr)
+    warnings: list[str] = []
+    if measured_rms is not None:
+        result["measured_rms_db"] = measured_rms
+        result["rms_source"] = "volumedetect"
+    else:
+        # Degrade rather than refuse to report, but never let a LUFS number
+        # masquerade as an RMS number without saying so.
+        result["measured_rms_db"] = measured_i
+        result["rms_source"] = "loudnorm-integrated-lufs-fallback"
+        warnings.append(
+            "volumedetect produced no mean_volume reading; the reported RMS is "
+            "loudnorm's EBU R128 integrated loudness (LUFS), which is NOT the "
+            "quantity ACX specifies. Treat the loudness verdict as advisory."
+        )
+    measured_rms_value = result["measured_rms_db"]
+
     # --- Evaluate against limits ---
     failures: list[str] = []
     is_acx = profile == "acx"
 
-    if measured_i is None:
-        failures.append("Integrated loudness could not be measured.")
-    elif is_acx and not (ACX_RMS_MIN_DB <= measured_i <= ACX_RMS_MAX_DB):
+    if measured_rms_value is None:
+        failures.append("Loudness could not be measured.")
+    elif is_acx and not (ACX_RMS_MIN_DB <= measured_rms_value <= ACX_RMS_MAX_DB):
         failures.append(
-            f"RMS/loudness {measured_i:.1f} dB is outside the ACX range "
+            f"RMS {measured_rms_value:.1f} dB is outside the ACX range "
             f"[{ACX_RMS_MIN_DB:.0f}, {ACX_RMS_MAX_DB:.0f}] dB."
         )
 
@@ -1332,6 +1557,7 @@ def master_check(
         )
 
     result["failures"] = failures
+    result["warnings"] = warnings
     result["passes"] = not failures
     return result
 
@@ -1439,12 +1665,12 @@ def export_chapter_metadata(
         return f"{minutes:02d}:{secs:02d}:{frames:02d}"
 
     cue_lines = [
-        f'TITLE "{_sanitize_metadata_value(title)}"',
+        f'TITLE "{_cue_quoted(title)}"',
         'FILE "audiobook.wav" WAVE',
     ]
     for entry in normalized:
         cue_lines.append(f"  TRACK {entry['index'] + 1:02d} AUDIO")
-        cue_lines.append(f'    TITLE "{_sanitize_metadata_value(entry["title"])}"')
+        cue_lines.append(f'    TITLE "{_cue_quoted(entry["title"])}"')
         cue_lines.append(f"    INDEX 01 {_cue_timestamp(entry['start'])}")
     return "\n".join(cue_lines) + "\n"
 

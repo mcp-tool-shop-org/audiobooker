@@ -75,6 +75,19 @@ class RunResult:
     stdout: str = ""
     stderr: str = ""
 
+    def __post_init__(self) -> None:
+        """Enforce the declared ``str`` contract on both streams.
+
+        Every consumer of this type calls ``.strip()`` on stdout/stderr. A
+        runner that hands back None (subprocess does exactly that when a
+        text-mode decode fails in its reader thread) would break all of them
+        identically, so normalize at the boundary instead.
+        """
+        if self.stdout is None:
+            self.stdout = ""
+        if self.stderr is None:
+            self.stderr = ""
+
 
 @runtime_checkable
 class FFmpegRunner(Protocol):
