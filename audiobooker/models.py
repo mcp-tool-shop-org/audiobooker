@@ -11,10 +11,48 @@ These are the fundamental units that flow through the system:
 
 import hashlib
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from pathlib import Path
 from typing import Optional
+
+from audiobooker.errors import ConfigValidationError
+
+
+# ---------------------------------------------------------------------------
+# F-CORE-6 (wave 2 amend): shared path-validation helper.
+#
+# Originally a closure defined INSIDE AudiobookProject.load() (project.py),
+# so it validated source_path/output_path but was unreachable from here --
+# meaning Chapter.from_dict's audio_path and BookMetadata.from_dict's
+# cover_art_path were deserialized from an untrusted project file WITHOUT the
+# same '..'-traversal / null-byte checks load() applies to source_path and
+# output_path. Moved to module level (in this module, not project.py) so
+# both call sites can share it: models.py defines it and uses it locally in
+# Chapter.from_dict/BookMetadata.from_dict, and project.py imports it back
+# (project.py already imports FROM audiobooker.models, so this direction
+# carries no circular-import risk -- the reverse would).
+# ---------------------------------------------------------------------------
+
+
+def _validated_path(raw: Optional[str]) -> Optional[Path]:
+    """Validate a deserialized path is safe to use.
+
+    Trust boundary: source/audio/cover-art files can live anywhere on the
+    filesystem because the user (or a prior render) chose them. We do NOT
+    confine to the project directory. We only reject two classes of
+    malicious input:
+    - '..' traversal components (directory escape)
+    - Null bytes (\\x00) which can confuse C-level filesystem calls
+    """
+    if raw is None:
+        return None
+    if "\x00" in raw:
+        raise ValueError(f"Path {raw!r} contains null bytes")
+    # Reject paths with explicit traversal components
+    if ".." in Path(raw).parts:
+        raise ValueError(f"Path {raw!r} contains '..' traversal components")
+    return Path(raw)
 
 
 class UtteranceType(Enum):
@@ -236,7 +274,20 @@ class Chapter:
             title=data["title"],
             raw_text=data["raw_text"],
             source_file=data.get("source_file"),
-            audio_path=Path(data["audio_path"]) if data.get("audio_path") else None,
+            # F-CORE-6: route through the same '..'/null-byte check that
+            # AudiobookProject.load() applies to source_path/output_path, so
+            # a project file cannot smuggle a traversal path in via
+            # audio_path (this field IS deserialized from the project file,
+            # same trust boundary as those two). The `if data.get(...) else
+            # None` guard (rather than passing the raw value straight
+            # through) preserves the original falsy-treated-as-absent
+            # behavior for "" byte-for-byte; only a real path string reaches
+            # the validator.
+            audio_path=(
+                _validated_path(data.get("audio_path"))
+                if data.get("audio_path")
+                else None
+            ),
             duration_seconds=data.get("duration_seconds", 0.0),
             skip=data.get("skip", False),
             pause_before_ms=data.get("pause_before_ms"),
@@ -344,6 +395,30 @@ class Character:
         )
 
 
+class _Unset:
+    """Sentinel distinguishing "argument not passed" from an explicit value.
+
+    F-CORE-3 (wave 2 amend): CastingTable.cast()'s emotion/description/speed
+    parameters default to None/None/1.0, which are also valid values a
+    caller might want to set explicitly. A plain default can't tell "caller
+    omitted this" from "caller explicitly passed the default" -- and cast()
+    needs that distinction to update an existing Character in place without
+    wiping fields the caller didn't mention. See CastingTable.cast().
+    """
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:
+        return "<unset>"
+
+
+# Module-level (not a CastingTable class attribute) so project.py can import
+# it directly and use the identical sentinel as AudiobookProject.cast()'s own
+# defaults -- both layers must agree on what "not passed" looks like, or the
+# fix only works when CastingTable.cast() is called directly.
+UNSET = _Unset()
+
+
 @dataclass
 class CastingTable:
     """
@@ -384,31 +459,69 @@ class CastingTable:
         self,
         name: str,
         voice: str,
-        emotion: Optional[str] = None,
-        description: Optional[str] = None,
-        speed: float = 1.0,
+        emotion: Optional[str] = UNSET,
+        description: Optional[str] = UNSET,
+        speed: float = UNSET,
     ) -> Character:
         """
         Assign a voice to a character.
 
+        F-CORE-3 (wave 2 amend): re-casting an ALREADY-cast name (e.g. to
+        change just the emotion) now updates that Character in place instead
+        of constructing a fresh one from only this method's 5 parameters.
+        Previously every call replaced the whole Character, so a re-cast
+        silently reset pitch_shift/emphasis/aliases/default_intensity/
+        line_count to their defaults even when the caller only meant to
+        tweak one field -- and cast() is the only public way to touch an
+        existing entry, so there was no way to change emotion without losing
+        prior tuning. emotion/description/speed now default to the module
+        sentinel UNSET rather than None/None/1.0, so "caller didn't mention
+        this field" is distinguishable from "caller explicitly passed
+        None/1.0" -- an unmentioned field is left exactly as it was on the
+        existing Character.
+
         Args:
             name: Character name (display form preserved in Character.name)
             voice: Voice ID (e.g., "af_bella", "bm_george")
-            emotion: Default emotion
-            description: Notes about the character
-            speed: Speech speed multiplier (0.5-2.0, default 1.0)
+            emotion: Default emotion. Omit to leave an existing character's
+                emotion unchanged; pass None explicitly to clear it.
+            description: Notes about the character. Same omit/None-clears
+                distinction as emotion.
+            speed: Speech speed multiplier (0.5-2.0). Omit to leave an
+                existing character's speed unchanged; a brand-new character
+                still defaults to 1.0.
 
         Returns:
             The created/updated Character
         """
         key = self.normalize_key(name)
-        char = Character(
-            name=name,
-            voice=voice,
-            emotion=emotion,
-            description=description,
-            speed=speed,
-        )
+        existing = self.characters.get(key)
+
+        if existing is None:
+            char = Character(
+                name=name,
+                voice=voice,
+                emotion=None if emotion is UNSET else emotion,
+                description=None if description is UNSET else description,
+                speed=1.0 if speed is UNSET else speed,
+            )
+        else:
+            # dataclasses.replace() copies every field NOT named in
+            # overrides straight from `existing` (pitch_shift, emphasis,
+            # aliases, default_intensity, line_count included) and then
+            # re-runs Character.__post_init__ via a normal constructor call,
+            # so range validation on the fields that DO change still
+            # applies exactly as it did when cast() always built a fresh
+            # Character.
+            overrides: dict = {"name": name, "voice": voice}
+            if emotion is not UNSET:
+                overrides["emotion"] = emotion
+            if description is not UNSET:
+                overrides["description"] = description
+            if speed is not UNSET:
+                overrides["speed"] = speed
+            char = replace(existing, **overrides)
+
         self.characters[key] = char
         return char
 
@@ -545,6 +658,89 @@ class CastingTable:
         for key, char_data in data.get("characters", {}).items():
             table.characters[key] = Character.from_dict(char_data)
         return table
+
+
+# ---------------------------------------------------------------------------
+# F-CORE-2 (wave 2 amend): type/range validators for ProjectConfig fields.
+#
+# Before this fix, ProjectConfig.__post_init__ only validated 8 of its 30
+# fields (the enum-like strings below). The other 22 -- mostly numeric
+# tuning knobs -- were accepted unconditionally, so e.g.
+# ProjectConfig(compile_workers="four", sample_rate=-1,
+# emotion_confidence_threshold=5.0) constructed with no error at all. The
+# bad compile_workers value then surfaced as a bare
+# "TypeError: '<' not supported between instances of 'int' and 'str'" deep
+# inside project._compile_parallel's `min(config.compile_workers, 3)`, with
+# no connection back to the field that caused it -- and
+# emotion_confidence_threshold=5.0 didn't raise at all, it just made every
+# `confidence >= threshold` comparison in the emotion inferencer false
+# forever, silently disabling emotion inference.
+#
+# Raises ConfigValidationError (AudiobookerError + ValueError, see
+# audiobooker.errors) rather than a plain ValueError, so these new checks
+# are catchable via `except ValueError` exactly like the pre-existing enum
+# checks below AND via `except AudiobookerError` for callers that want
+# code/hint/retryable. The pre-existing enum checks are left as plain
+# ValueError -- they are unrelated to this finding and heavily exercised by
+# existing tests, so migrating them isn't worth the risk in this pass.
+# ---------------------------------------------------------------------------
+
+
+def _check_positive_int(value: object, field_name: str) -> None:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ConfigValidationError(
+            f"{field_name} must be a positive integer, got {value!r}."
+        )
+
+
+def _check_non_negative_int(value: object, field_name: str) -> None:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ConfigValidationError(
+            f"{field_name} must be a non-negative integer, got {value!r}."
+        )
+
+
+def _check_unit_interval(value: object, field_name: str) -> None:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not (0.0 <= value <= 1.0)
+    ):
+        raise ConfigValidationError(
+            f"{field_name} must be a number between 0.0 and 1.0, got {value!r}."
+        )
+
+
+def _check_bool(value: object, field_name: str) -> None:
+    if not isinstance(value, bool):
+        raise ConfigValidationError(
+            f"{field_name} must be a bool (True/False), got {value!r} "
+            f"({type(value).__name__})."
+        )
+
+
+def _check_str_dict(value: object, field_name: str) -> None:
+    if not isinstance(value, dict) or not all(
+        isinstance(k, str) and isinstance(v, str) for k, v in value.items()
+    ):
+        raise ConfigValidationError(
+            f"{field_name} must be a dict of str -> str, got {value!r}."
+        )
+
+
+def _check_non_empty_str(value: object, field_name: str) -> None:
+    if not isinstance(value, str) or not value.strip():
+        raise ConfigValidationError(
+            f"{field_name} must be a non-empty string, got {value!r}."
+        )
+
+
+def _check_optional_str(value: object, field_name: str) -> None:
+    if value is not None and not isinstance(value, str):
+        raise ConfigValidationError(
+            f"{field_name} must be a string or None, got {value!r} "
+            f"({type(value).__name__})."
+        )
 
 
 @dataclass
@@ -688,6 +884,38 @@ class ProjectConfig:
                 f"Must be one of: {', '.join(self._VALID_EMOTION_PRESETS)}"
             )
 
+        # F-CORE-2 (wave 2 amend): the remaining 22 fields, previously
+        # accepted unconditionally. See the validator block above this class
+        # for the full rationale.
+        _check_positive_int(self.sample_rate, "sample_rate")
+        _check_positive_int(self.compile_workers, "compile_workers")
+        _check_positive_int(self.estimated_wpm, "estimated_wpm")
+        _check_non_negative_int(self.chapter_pause_ms, "chapter_pause_ms")
+        _check_non_negative_int(self.narrator_pause_ms, "narrator_pause_ms")
+        _check_non_negative_int(self.dialogue_pause_ms, "dialogue_pause_ms")
+        _check_non_negative_int(self.min_chapter_words, "min_chapter_words")
+        _check_unit_interval(
+            self.emotion_confidence_threshold, "emotion_confidence_threshold"
+        )
+
+        _check_bool(self.validate_voices_on_render, "validate_voices_on_render")
+        _check_bool(self.keep_titled_short_chapters, "keep_titled_short_chapters")
+        _check_bool(self.clean_text, "clean_text")
+        _check_bool(self.normalize_text, "normalize_text")
+        _check_bool(self.parallel_compile, "parallel_compile")
+        _check_bool(self.utterance_cache, "utterance_cache")
+
+        _check_str_dict(self.pronunciation_overrides, "pronunciation_overrides")
+        _check_str_dict(self.user_emotion_rules, "user_emotion_rules")
+        _check_str_dict(self.phoneme_overrides, "phoneme_overrides")
+
+        _check_non_empty_str(self.language_code, "language_code")
+        _check_non_empty_str(self.fallback_voice_id, "fallback_voice_id")
+        _check_non_empty_str(self.tts_engine, "tts_engine")
+
+        _check_optional_str(self.aac_bitrate, "aac_bitrate")
+        _check_optional_str(self.mp3_bitrate, "mp3_bitrate")
+
     def to_dict(self) -> dict:
         """Serialize to dictionary."""
         return {
@@ -801,7 +1029,15 @@ class BookMetadata:
     def from_dict(cls, data: dict) -> "BookMetadata":
         """Deserialize from dictionary."""
         return cls(
-            cover_art_path=Path(data["cover_art_path"]) if data.get("cover_art_path") else None,
+            # F-CORE-6: same '..'/null-byte trust-boundary check load()
+            # already applies to source_path/output_path (see
+            # _validated_path's docstring). The falsy guard preserves "" ->
+            # None byte-for-byte, matching the pre-fix behavior.
+            cover_art_path=(
+                _validated_path(data.get("cover_art_path"))
+                if data.get("cover_art_path")
+                else None
+            ),
             genre=data.get("genre", ""),
             series=data.get("series", ""),
             series_index=data.get("series_index"),
