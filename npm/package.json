@@ -15,6 +15,7 @@
     "bin/",
     "README.md",
     "README.*.md",
+    "CHANGELOG.md",
     "LICENSE"
   ],
   "repository": {

@@ -92,3 +92,7 @@ site/node_modules/
 # Dogfood swarm scratch (manifest, wave findings) — not product artifacts
 swarms/
 .swarm/
+
+# Staged into the npm launcher at publish time from the repo root (release.yml).
+# One source of truth; a committed copy would drift.
+npm/CHANGELOG.md

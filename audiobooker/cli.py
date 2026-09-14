@@ -519,11 +519,16 @@ def create_parser() -> argparse.ArgumentParser:
         metavar="NAME",
         help="Set the series name embedded in the output",
     )
-    # FT-CLI-008: watch mode — re-render on source-file change.
+    # FT-CLI-008: watch mode. NOTE the asymmetry with `make --watch`, which
+    # genuinely watches the SOURCE file: this one polls the .audiobooker
+    # PROJECT file, because a render has no source to re-read. The help string
+    # said "source file" for both, so a user editing their .txt in another
+    # terminal watched `render --watch` sit there forever with nothing to
+    # diagnose — it was working exactly as built and not as documented.
     render_parser.add_argument(
         "--watch",
         action="store_true",
-        help="Watch the source file and re-render (resume) whenever it changes",
+        help="Watch the project file and re-render (resume) whenever it changes",
     )
     # FT-ENGINE-001: pluggable TTS engine selection.
     render_parser.add_argument(
