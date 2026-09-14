@@ -23,7 +23,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from audiobooker.cli import create_parser, main
+from audiobooker.cli import main
 from audiobooker.models import Chapter, Utterance, UtteranceType
 from audiobooker.project import AudiobookProject
 from audiobooker.review import SPEAKER_PATTERN, export_for_review, import_reviewed
