@@ -43,6 +43,7 @@ into ``stats['malformed_lines']`` so the CLI can refuse the import.
 
 import logging
 import re
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Optional, TYPE_CHECKING
 
@@ -52,6 +53,31 @@ if TYPE_CHECKING:
     from audiobooker.project import AudiobookProject
 
 logger = logging.getLogger("audiobooker.review")
+
+
+# CLIUX-H-007: the CLI prints its own structured, per-line error for every
+# malformed tag. ``main()`` calls ``logging.basicConfig(level=WARNING)``, so
+# the module logger printed each of those lines a SECOND time to stderr,
+# doubling an already alarming error report. Inside this context the per-line
+# records drop to DEBUG (so ``--debug`` still keeps them) while every other
+# warning in this module is untouched. Library callers are unaffected.
+_CALLER_REPORTS_MALFORMED = False
+
+
+@contextmanager
+def caller_reports_malformed():
+    """Downgrade the per-line malformed-tag warning to DEBUG for this block.
+
+    Use it when the caller renders its own report of ``stats['malformed_lines']``
+    — otherwise the user reads the same line twice in two different formats.
+    """
+    global _CALLER_REPORTS_MALFORMED
+    previous = _CALLER_REPORTS_MALFORMED
+    _CALLER_REPORTS_MALFORMED = True
+    try:
+        yield
+    finally:
+        _CALLER_REPORTS_MALFORMED = previous
 
 
 # Pattern for speaker tag: @SpeakerName or @SpeakerName (emotion)
@@ -77,6 +103,44 @@ CHAPTER_PATTERN = re.compile(r'^===\s*(.+?)\s*===(?:\s*\[id:([^\]]+)\])?$')
 # coincidentally starts with one of these is escaped with a leading backslash
 # on export and unescaped on import so it survives a round-trip.
 _CONTROL_PREFIXES = ("#", "@", "===")
+
+# CLIUX-H-007: an @-line carrying a SECOND parenthesised group — exactly what
+# the file's own instruction ("change @Name (old) to @Name (new)") produces
+# when a user appends instead of replacing. This is the dominant real cause of
+# a malformed tag, and the old blanket hint ("if the line is body text, escape
+# it with a leading backslash") actively makes it worse: escaping the tag makes
+# the renderer SPEAK it. Classify before hinting.
+_MULTI_EMOTION_TAG = re.compile(r"^@[^()]*\([^)]*\)\s*\(")
+
+_MALFORMED_HINTS = {
+    "multi_emotion": (
+        "a tag carries at most one emotion — REPLACE the old one rather than "
+        "appending a second: '@Name (new)', not '@Name (old) (new)'."
+    ),
+    "no_group": (
+        "a speaker tag is '@Name' or '@Name (emotion)'. If this line is body "
+        "text, escape it with a leading backslash: '\\@Name'."
+    ),
+    "unbalanced_group": (
+        "a speaker tag is '@Name' or '@Name (emotion)' with ONE balanced pair "
+        "of parentheses. Check for an unclosed '(' or a stray ')'."
+    ),
+}
+
+
+def _classify_malformed_tag(text: str) -> tuple[str, str]:
+    """Return ``(kind, hint)`` for an @-leading line that is not a valid tag.
+
+    CLIUX-H-007: the hint has to name the actual cause. Three shapes cover
+    what users produce: a second emotion group (appended instead of replaced),
+    a line with no parentheses at all (usually genuine body text that wants
+    escaping), and everything else (an unbalanced or unparseable group).
+    """
+    if _MULTI_EMOTION_TAG.match(text):
+        return "multi_emotion", _MALFORMED_HINTS["multi_emotion"]
+    if "(" not in text and ")" not in text:
+        return "no_group", _MALFORMED_HINTS["no_group"]
+    return "unbalanced_group", _MALFORMED_HINTS["unbalanced_group"]
 
 
 def _escape_body_line(text: str) -> str:
@@ -121,7 +185,16 @@ def export_for_review(project: "AudiobookProject", output_path: Optional[Path] =
         Path to review file
     """
     if output_path is None:
-        output_path = Path(f"{project.title}_review.txt")
+        # CLIUX-H-008: route the default through the SAME sanitizer that
+        # render / from-stdin / make / save already use. Colons are ordinary
+        # in EPUB titles ("Dune: Part One"), and on Windows the raw title
+        # wrote the review text into an NTFS alternate data stream: exists()
+        # said True, the directory showed a single zero-byte file named
+        # "Dune", and the review file was invisible to every GUI. An explicit
+        # output_path is the caller's business and is left untouched.
+        from audiobooker.project import _sanitize_filename
+
+        output_path = Path(f"{_sanitize_filename(project.title)}_review.txt")
     else:
         output_path = Path(output_path)
 
@@ -134,8 +207,22 @@ def export_for_review(project: "AudiobookProject", output_path: Optional[Path] =
     lines.append("#")
     lines.append("# Instructions:")
     lines.append("#   - Edit speaker names by changing @OldName to @NewName")
-    lines.append("#   - Edit emotions by changing @Name (old) to @Name (new)")
-    lines.append("#   - Delete entire speaker blocks to remove them")
+    lines.append("#   - Edit emotions by changing @Name (old) to @Name (new).")
+    # CLIUX-H-007: this instruction is what produces the single most common
+    # malformed tag — a user appends the new emotion instead of replacing the
+    # old one. Say so here, where they are reading it.
+    lines.append("#     REPLACE it, never append - a tag carries at most one emotion,")
+    lines.append("#     and '@Name (old) (new)' is REJECTED on import.")
+    lines.append("#   - Delete entire speaker blocks to remove them - but know the cost:")
+    # CLIUX-H-006: deleting a block changes the block count, and import can
+    # then only re-derive utterance types from a starts-with-a-quote
+    # heuristic. Telling users to delete without telling them that is how
+    # PAUSE / DIRECTION markers ended up narrated aloud.
+    lines.append("#     deleting ANY block makes import re-derive EVERY utterance type in")
+    lines.append("#     that chapter from a text heuristic, so PAUSE / DIRECTION / FOOTNOTE")
+    lines.append("#     markers come back as plain narration and the renderer reads their")
+    lines.append("#     marker text ('[PAUSE]', '[SFX ...]') ALOUD. Edit speakers, emotions")
+    lines.append("#     and text in place wherever you can; delete only when you mean it.")
     lines.append("#   - Add emotions: @narrator -> @narrator (somber)")
     lines.append("#   - Lines starting with # are comments (ignored)")
     lines.append("#   - Do NOT edit the '=== Title === [id:...]' line — the id is")
@@ -286,13 +373,22 @@ def import_reviewed(project: "AudiobookProject", review_path: Path) -> dict:
         # MALFORMED TAG, never body text. Absorbing it made the renderer speak
         # the literal "@Bob, the baker" and dropped the character entirely.
         if line_stripped.startswith("@"):
-            malformed_lines.append({"line": line_no, "text": line_stripped})
-            logger.warning(
+            # CLIUX-H-007: classify before hinting. The remedy for an appended
+            # second emotion group is the OPPOSITE of the remedy for body text.
+            kind, hint = _classify_malformed_tag(line_stripped)
+            malformed_lines.append({
+                "line": line_no,
+                "text": line_stripped,
+                "kind": kind,
+                "hint": hint,
+            })
+            logger.log(
+                logging.DEBUG if _CALLER_REPORTS_MALFORMED else logging.WARNING,
                 "Review file line %d is not a valid speaker tag and was NOT "
-                "imported: %r. Expected '@Name' or '@Name (emotion)'; escape it "
-                "with a leading backslash if it is body text.",
+                "imported: %r. %s",
                 line_no,
                 line_stripped,
+                hint,
             )
             continue
 
@@ -319,6 +415,11 @@ def import_reviewed(project: "AudiobookProject", review_path: Path) -> dict:
         # CLI-1: chapters that HAD utterances and came back with none. Almost
         # always a review-file edit gone wrong, and it silently mutes a chapter.
         "emptied_chapters": [],
+        # CLIUX-H-006: chapters whose block count changed, so EVERY utterance
+        # type in them was re-derived from the starts-with-a-quote heuristic.
+        # PAUSE / DIRECTION / FOOTNOTE cannot survive that — the renderer then
+        # reads their marker text aloud as prose. Named, with the count.
+        "retyped_chapters": [],
     }
 
     for chapter_data in chapters_data:
@@ -394,6 +495,36 @@ def import_reviewed(project: "AudiobookProject", review_path: Path) -> dict:
                 "deleted or mistyped block.",
                 title,
                 len(original_utterances),
+            )
+
+        # CLIUX-H-006: the export file tells users to "delete entire speaker
+        # blocks to remove them", and doing so silently re-derives every type
+        # in the chapter. Report it by name, with the types that provably
+        # could not survive (the heuristic can only ever emit NARRATION or
+        # DIALOGUE). An emptied chapter is already reported above and more
+        # severe, so it is not double-counted here.
+        if original_utterances and new_utterances and not preserve_types:
+            lost = [
+                t for t in (u.utterance_type for u in original_utterances)
+                if t not in (UtteranceType.NARRATION, UtteranceType.DIALOGUE)
+            ]
+            title = matching_chapter.title or f"(chapter {matching_chapter.index})"
+            stats["retyped_chapters"].append({
+                "title": title,
+                "blocks_before": len(original_utterances),
+                "blocks_after": len(new_utterances),
+                "types_lost": len(lost),
+                "lost_types": sorted({t.value for t in lost}),
+            })
+            logger.warning(
+                "Chapter %r changed block count (%d -> %d), so every utterance "
+                "type in it was re-derived from a text heuristic; %d marker "
+                "type(s) were lost (%s).",
+                title,
+                len(original_utterances),
+                len(new_utterances),
+                len(lost),
+                ", ".join(sorted({t.value for t in lost})) or "none",
             )
 
         matching_chapter.utterances = new_utterances
