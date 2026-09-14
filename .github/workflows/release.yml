@@ -99,6 +99,15 @@ jobs:
             exit 1
           fi
 
+      # Shipcheck D5 requires the tarball to carry the CHANGELOG. npm cannot
+      # include a path above the package root, and the launcher deliberately
+      # has no changelog of its own — it ships the product's. Copying it here
+      # keeps one source of truth at the repo root instead of a second file
+      # that drifts. Verified failing before this step existed: the published
+      # 2.1.1 tarball contained README + LICENSE and no CHANGELOG.
+      - name: Stage the changelog into the launcher package
+        run: cp CHANGELOG.md npm/CHANGELOG.md
+
       - name: Publish launcher to npm (OIDC trusted publisher)
         working-directory: npm
         run: npm publish --provenance --access public

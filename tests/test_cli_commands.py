@@ -344,9 +344,13 @@ class TestExitCodes:
         """Diagnose always returns an integer exit code."""
         code = main(["diagnose"])
         assert isinstance(code, int)
-        # cmd_diagnose returns 0 when all hard checks pass (Python>=3.10, ebooklib installed).
-        # voice-soundboard and ffmpeg are 'info' status, not failures.
-        assert code == 0
+        # CLIUX-H-004: 0 when the box can render, 1 when it cannot. The old
+        # assertion here was `code == 0` with a comment claiming ffmpeg and
+        # voice-soundboard are 'info, not failures' -- which is exactly why
+        # `diagnose` used to print "All checks passed." on a machine that
+        # could not synthesize a single second of audio.
+        assert code in (0, 1)
+        assert (code == 0) is ("Ready to render." in capsys.readouterr().out)
 
     def test_no_args_returns_zero(self, capsys):
         """No arguments returns 0 (help shown)."""

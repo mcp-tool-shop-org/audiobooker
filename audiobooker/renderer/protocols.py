@@ -41,12 +41,38 @@ class TTSEngine(Protocol):
             emotions: Whether the engine supports emotion tags.
             ssml: Whether the engine supports SSML input.
             multi_speaker: Whether the engine supports multiple speakers.
+            thread_safe: Whether ``synthesize()`` may be entered by more than
+                one thread at a time on the SAME instance. Defaults to False —
+                see the thread-safety contract below.
+
+        Thread-safety contract (RH-B-003)
+        ---------------------------------
+        ``audiobooker render --jobs N`` renders N chapters at once from a
+        thread pool. It used to call ``synthesize()`` on ONE shared engine
+        instance from all N workers with nothing written down about whether
+        that was allowed. Almost every real TTS backend is stateful — a
+        loaded torch/ONNX model, a session object, a single HTTP connection,
+        a global voice register — so a third-party engine registered through
+        the ``audiobooker.tts_engines`` entry point was entered concurrently
+        by construction. The failure mode is not a clean exception; it is
+        interleaved or cross-voiced audio in some chapters, which passes the
+        size and duration checks and is only found on listen-back.
+
+        So: ``thread_safe`` defaults to **False**, and the renderer serializes
+        ``synthesize()`` behind a lock for any engine that does not explicitly
+        advertise ``{"thread_safe": True}``. An engine opts in only when
+        concurrent ``synthesize()`` calls on one instance are genuinely safe
+        (re-entrant model state, per-call sessions, its own internal locking).
+        Engines that do not implement ``capabilities()`` at all are treated as
+        NOT thread-safe.
         """
         return {
             "streaming": False,
             "emotions": False,
             "ssml": False,
             "multi_speaker": False,
+            # RH-B-003: opt-in, never assumed. See the contract above.
+            "thread_safe": False,
         }
 
     # FT-ENGINE-001: Optional voice discovery. Engines MAY implement this to

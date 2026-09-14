@@ -10,6 +10,8 @@ These are the fundamental units that flow through the system:
 """
 
 import hashlib
+import logging
+import unicodedata
 import uuid
 from dataclasses import dataclass, field, replace
 from enum import Enum
@@ -17,6 +19,60 @@ from pathlib import Path
 from typing import Optional
 
 from audiobooker.errors import ConfigValidationError
+
+logger = logging.getLogger("audiobooker.models")
+
+
+# ---------------------------------------------------------------------------
+# PH-B-007: canonical speaker key.
+#
+# CastingTable.normalize_key was `name.casefold().strip()` and
+# LanguageProfile.normalize_name was the same expression written a second
+# time. Neither applied Unicode normalization, so the NFC and NFD spellings of
+# one name were two different keys: after casting "José" (NFC), get_voice on
+# the NFD spelling fell through to the generic fallback voice. macOS-authored
+# text and several EPUB toolchains emit NFD routinely, so the name in the book
+# and the name the user types differ in encoding while looking identical on
+# screen -- an un-debuggable "I cast this character and it still reads in the
+# narrator voice".
+#
+# `.strip()` also only removed whitespace at the EDGES and nothing at all that
+# is invisible-but-not-whitespace: an interior U+00A0 (common in text pasted
+# out of a PDF or a word processor) made "María José" a different
+# character from "María José", and zero-width joiners / ZWSP / a stray BOM
+# survived into the key entirely.
+#
+# Both call sites now route through this one function.
+
+# Cf = "other, format": ZWSP (U+200B is Cf in recent Unicode), ZWNJ, ZWJ, LRM,
+# RLM, the BOM/ZWNBSP, and friends. All are invisible and none of them ever
+# distinguishes two real names.
+_INVISIBLE_CATEGORIES = frozenset({"Cf"})
+# U+200B is categorized Zs in some older Unicode data tables; name it too so
+# the behaviour does not depend on the host's Unicode version.
+_EXTRA_INVISIBLE = frozenset({"​", "﻿"})
+
+
+def normalize_speaker_key(name: str) -> str:
+    """Canonical lookup key for a speaker or character name (PH-B-007).
+
+    NFC-normalizes, drops invisible format characters, folds every kind of
+    whitespace (including U+00A0) to a single plain space, then casefolds.
+    The final NFC pass re-composes anything ``casefold()`` decomposed, so the
+    function is idempotent: ``f(f(x)) == f(x)`` for every input.
+    """
+    if not name:
+        return ""
+    text = unicodedata.normalize("NFC", name)
+    text = "".join(
+        ch for ch in text
+        if ch not in _EXTRA_INVISIBLE
+        and unicodedata.category(ch) not in _INVISIBLE_CATEGORIES
+    )
+    # str.split() splits on every Unicode whitespace character, U+00A0
+    # included, so this collapses interior runs and strips the edges at once.
+    text = " ".join(text.split())
+    return unicodedata.normalize("NFC", text.casefold())
 
 
 # ---------------------------------------------------------------------------
@@ -452,8 +508,39 @@ class CastingTable:
 
     @staticmethod
     def normalize_key(name: str) -> str:
-        """Canonical key for speaker lookups (casefold for i18n safety)."""
-        return name.casefold().strip()
+        """Canonical key for speaker lookups.
+
+        PH-B-007: Unicode-normalizing (NFC), invisible-character-stripping and
+        whitespace-folding, not just ``casefold().strip()``. See
+        :func:`normalize_speaker_key`.
+        """
+        return normalize_speaker_key(name)
+
+    def protected_names(self) -> set[str]:
+        """Every normalized name that must survive parse-time text rewriting.
+
+        PH-B-005: pronunciation overrides are applied in
+        ``AudiobookProject._preprocess_text``, BEFORE ``compile_chapter``, so
+        they rewrite the very text attribution then runs against -- and the
+        lexicon's primary documented use case is proper nouns. An override of
+        ``{'Siobhan': 'shiv-AWN'}`` turned ``said Siobhan, folding the map``
+        into ``said shiv-AWN, folding the map``, which attributes to nothing.
+
+        Pass this set to
+        :func:`audiobooker.parser.text_cleaners.apply_pronunciation_overrides`
+        so an override that would rewrite a cast member's name is refused
+        loudly instead of silently un-casting them.
+        """
+        names: set[str] = {
+            self.normalize_key(self.default_narrator),
+            self.normalize_key("narrator"),
+        }
+        for char in self.characters.values():
+            names.add(self.normalize_key(char.name))
+            for alias in char.aliases:
+                names.add(self.normalize_key(alias))
+        names.discard("")
+        return names
 
     def cast(
         self,
@@ -649,14 +736,46 @@ class CastingTable:
 
     @classmethod
     def from_dict(cls, data: dict) -> "CastingTable":
-        """Deserialize from dictionary."""
+        """Deserialize from dictionary.
+
+        PH-B-007 migration: keys are re-normalized on load. The key rule
+        changed (NFC + invisible-character stripping + whitespace folding), so
+        a project file written before the fix can hold an NFD or
+        NBSP-contaminated key that no lookup would ever hit again. Re-keying
+        here is what makes the change safe for existing project files.
+
+        A collision means two legacy entries were the same character spelled
+        two ways. The first one wins and the duplicate is reported, because
+        silently picking the last would change which voice a character has.
+        """
         table = cls(
             default_narrator=data.get("default_narrator", "narrator"),
             unknown_character_behavior=data.get("unknown_character_behavior", "narrator"),
             fallback_voice_id=data.get("fallback_voice_id", "af_heart"),
         )
+        migrated = 0
         for key, char_data in data.get("characters", {}).items():
-            table.characters[key] = Character.from_dict(char_data)
+            new_key = cls.normalize_key(key)
+            if new_key != key:
+                migrated += 1
+            if new_key in table.characters:
+                kept = table.characters[new_key]
+                logger.warning(
+                    "Casting entries %r and %r normalize to the same character "
+                    "key %r — keeping the first (voice %r) and discarding the "
+                    "second (voice %r). They are the same name in two Unicode "
+                    "spellings; re-cast the character if the wrong voice was kept.",
+                    kept.name, char_data.get("name", key), new_key,
+                    kept.voice, char_data.get("voice"),
+                )
+                continue
+            table.characters[new_key] = Character.from_dict(char_data)
+        if migrated:
+            logger.info(
+                "Re-keyed %d casting entr%s to the Unicode-normalized form "
+                "(PH-B-007 migration).",
+                migrated, "y" if migrated == 1 else "ies",
+            )
         return table
 
 

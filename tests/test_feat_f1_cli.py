@@ -355,9 +355,28 @@ class TestMasterCheckCommand:
 # ---------------------------------------------------------------------------
 
 
+def _write_rendered_project(tmp_path: Path) -> Path:
+    """A project whose chapters carry real durations.
+
+    CLIUX-H-009: `export-chapters` now refuses a project where every duration
+    is 0, because every chapter marker would land on the same timestamp and
+    the CUE sheet would be silently useless. _write_project() compiles but
+    never renders, so it produces exactly that shape. These tests are about
+    exporter ROUTING, so they need a project that has been rendered.
+    """
+    from audiobooker.project import AudiobookProject
+
+    path = _write_project(tmp_path)
+    project = AudiobookProject.load(path)
+    for i, chapter in enumerate(project.chapters):
+        chapter.duration_seconds = 60.0 * (i + 1)
+    project.save(path)
+    return path
+
+
 class TestExportChaptersCommand:
     def test_export_to_stdout(self, tmp_path, monkeypatch, capsys):
-        proj_path = _write_project(tmp_path)
+        proj_path = _write_rendered_project(tmp_path)
         monkeypatch.chdir(tmp_path)
 
         with patch(
@@ -372,7 +391,7 @@ class TestExportChaptersCommand:
         assert "FFMETADATA1" in capsys.readouterr().out
 
     def test_export_to_file(self, tmp_path, monkeypatch):
-        proj_path = _write_project(tmp_path)
+        proj_path = _write_rendered_project(tmp_path)
         monkeypatch.chdir(tmp_path)
         out = tmp_path / "chapters.cue"
 
@@ -389,7 +408,7 @@ class TestExportChaptersCommand:
         assert "WAVE" in out.read_text(encoding="utf-8")
 
     def test_export_json_passes_chapters(self, tmp_path, monkeypatch):
-        proj_path = _write_project(tmp_path)
+        proj_path = _write_rendered_project(tmp_path)
         monkeypatch.chdir(tmp_path)
 
         with patch(

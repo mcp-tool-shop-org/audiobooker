@@ -654,7 +654,12 @@ def extract_speaker_from_context(
     candidates.sort(key=lambda c: (c[0], c[1], c[2], c[3]))
 
     for tier, distance, side, _rank, raw_name, tag_text in candidates:
-        speaker = raw_name.title()
+        # PH-B-003: fold a spoken honorific back to its written abbreviation
+        # ("Mister Holmes" -> "Mr. Holmes"). TTS normalization runs BEFORE
+        # compile_chapter and normalize_text defaults to True, so without this
+        # the same character is two cast members depending on whether the text
+        # had been normalized yet.
+        speaker = profile.canonicalize_speaker_name(raw_name.title())
         logger.debug(
             "Attribution candidate speaker=%r distance=%d side=%s tier=%d",
             speaker, distance, "after" if side == 0 else "before", tier,
@@ -702,6 +707,42 @@ _SFX_TAG_RE = re.compile(r'\[sfx:([^\]]+)\]')
 # chapter mood); it never overrides a user-set or attribution-derived emotion.
 _SCENE_OPEN_TAG_RE = re.compile(r'\[scene:([^\]]+)\]')
 _SCENE_CLOSE_TAG_RE = re.compile(r'\[/scene\]')
+
+
+# ---------------------------------------------------------------------------
+# PH-B-001 / PH-B-002: attribution-quality thresholds.
+#
+# The >50%-unknown guard divided unknown_count by ALL utterances, narration
+# included. Real prose runs 2-4 narration paragraphs per quote, so a chapter
+# where 100% OF THE DIALOGUE is unattributed measured 0.20-0.33 against a
+# `> 0.5` test and the guard could not fire. Even a contrived 1:1 narration:
+# dialogue ratio lands at exactly 0.50, still below the threshold. Because
+# `unknown_character_behavior` defaults to 'narrator', that book renders as a
+# single-voice reading and the user finds out after paying for the TTS run.
+#
+# The rate is now computed over DIALOGUE utterances only. Narration is always
+# attributed to the narrator by construction, so including it in the
+# denominator measures nothing but the book's prose style.
+#
+# Exported so the CLI does not re-derive its own thresholds: `compile` and
+# `diagnose` should read `compile_report()["quality"]` rather than comparing
+# floats of their own.
+DIALOGUE_UNKNOWN_WARN_RATE = 0.4
+DIALOGUE_UNKNOWN_FAIL_RATE = 0.8
+
+
+def dialogue_quality_verdict(dialogue_unknown_rate: float) -> str:
+    """Classify an unattributed-DIALOGUE rate (PH-B-002).
+
+    Returns ``'ok'``, ``'degraded'`` or ``'failed'``. ``'failed'`` means the
+    book would render as a near-single-voice reading and a caller should halt
+    before spending a TTS run on it.
+    """
+    if dialogue_unknown_rate >= DIALOGUE_UNKNOWN_FAIL_RATE:
+        return "failed"
+    if dialogue_unknown_rate >= DIALOGUE_UNKNOWN_WARN_RATE:
+        return "degraded"
+    return "ok"
 
 
 def compile_chapter(
@@ -1011,12 +1052,15 @@ def compile_chapter(
     dialogue_count = 0
     narration_count = 0
     unknown_count = 0
+    unknown_dialogue_count = 0
 
     for utterance in utterances:
         key = casting.normalize_key(utterance.speaker)
         line_counts[key] = line_counts.get(key, 0) + 1
         if utterance.utterance_type == UtteranceType.DIALOGUE:
             dialogue_count += 1
+            if utterance.speaker == "unknown":
+                unknown_dialogue_count += 1
         else:
             narration_count += 1
         if utterance.speaker == "unknown":
@@ -1054,14 +1098,43 @@ def compile_chapter(
                 chapter.index, len(utterances), has_quote_marker, has_line_initial_dash,
             )
 
-    # Warn when majority of utterances fall to 'unknown' (F-CAST-B-018)
-    if len(utterances) > 0 and unknown_count > len(utterances) * 0.5:
-        logger.warning(
-            "Chapter %d: %d/%d utterances (%.0f%%) attributed to 'unknown' speaker — "
-            "consider adding speaker attribution hints or inline overrides",
-            chapter.index, unknown_count, len(utterances),
-            100.0 * unknown_count / len(utterances),
-        )
+    # Warn when dialogue falls to 'unknown' (F-CAST-B-018, fixed by PH-B-001).
+    #
+    # The denominator is DIALOGUE utterances, not all of them. With the old
+    # all-utterance denominator this branch was unreachable for real prose:
+    # 2-4 narration paragraphs per quote put a 100%-unattributed chapter at
+    # 0.20-0.33 against a `> 0.5` test. The all-utterance figure is kept as a
+    # secondary number in the message because it is what the user will see if
+    # they go counting lines by hand.
+    if dialogue_count > 0:
+        dialogue_unknown_rate = unknown_dialogue_count / dialogue_count
+        all_rate = unknown_count / len(utterances) if utterances else 0.0
+        verdict = dialogue_quality_verdict(dialogue_unknown_rate)
+        if verdict == "failed":
+            # 'Loud' matters: unknown_character_behavior defaults to
+            # 'narrator', so this book renders as a single-voice reading and
+            # nothing downstream will say so. The caller should halt before
+            # paying for the TTS run — compile_report()['quality'] carries the
+            # same verdict in machine-readable form.
+            logger.error(
+                "Chapter %d: %d/%d DIALOGUE lines (%.0f%%) are unattributed — "
+                "at this rate the chapter renders as a single-voice reading, "
+                "because unknown speakers fall back to %r. Do not render until "
+                "this is resolved: check --lang, add inline [character] "
+                "overrides, or cast the missing speakers. "
+                "(%.0f%% of all %d utterances, narration included.)",
+                chapter.index, unknown_dialogue_count, dialogue_count,
+                100.0 * dialogue_unknown_rate, casting.unknown_character_behavior,
+                100.0 * all_rate, len(utterances),
+            )
+        elif verdict == "degraded":
+            logger.warning(
+                "Chapter %d: %d/%d DIALOGUE lines (%.0f%%) are unattributed — "
+                "consider adding speaker attribution hints or inline overrides. "
+                "(%.0f%% of all %d utterances, narration included.)",
+                chapter.index, unknown_dialogue_count, dialogue_count,
+                100.0 * dialogue_unknown_rate, 100.0 * all_rate, len(utterances),
+            )
 
     return utterances
 
@@ -1086,12 +1159,29 @@ def compile_report(
     Returns:
         Dict with keys:
             - speaker_line_counts: {speaker: count}
-            - unknown_rate: float (0.0-1.0)
+            - unknown_rate: float (0.0-1.0) — over ALL utterances. Diluted by
+              narration; kept because it is a published key, but it is the
+              SECONDARY number. Use dialogue_unknown_rate to judge quality.
+            - dialogue_unknown_rate: float (0.0-1.0) — over DIALOGUE only
+              (PH-B-002). This is the real signal.
+            - total_dialogue_unknown: int
+            - quality: 'ok' | 'degraded' | 'failed' (PH-B-002)
             - emotion_distribution: {emotion: count}
             - top_unattributed: list of {text, chapter_index, line_index, context}
             - total_utterances: int
             - total_dialogue: int
             - total_narration: int
+
+    PH-B-002: the report used to carry ``unknown_rate`` and nothing that let a
+    caller tell a healthy book from a collapsed one, so every caller would have
+    had to re-derive a threshold — and ``compile``, the command everyone runs
+    before rendering, never printed the rate at all. ``quality`` exists so the
+    threshold is decided once, here.
+
+    Note for the CLI: surfacing this is ``cli.py``'s job and that file belongs
+    to another agent. This function provides the data; ``compile`` should print
+    ``dialogue_unknown_rate`` and refuse to proceed to render on
+    ``quality == 'failed'``.
     """
     speaker_counts: dict[str, int] = {}
     emotion_counts: dict[str, int] = {}
@@ -1100,6 +1190,7 @@ def compile_report(
     total_dialogue = 0
     total_narration = 0
     unknown_count = 0
+    unknown_dialogue = 0
 
     for chapter in chapters:
         for utt in chapter.utterances:
@@ -1109,6 +1200,8 @@ def compile_report(
 
             if utt.utterance_type == UtteranceType.DIALOGUE:
                 total_dialogue += 1
+                if utt.speaker == "unknown":
+                    unknown_dialogue += 1
             else:
                 total_narration += 1
 
@@ -1132,10 +1225,18 @@ def compile_report(
                     })
 
     unknown_rate = (unknown_count / total) if total > 0 else 0.0
+    dialogue_unknown_rate = (
+        (unknown_dialogue / total_dialogue) if total_dialogue > 0 else 0.0
+    )
 
     return {
         "speaker_line_counts": speaker_counts,
+        # Secondary: diluted by narration. See the docstring.
         "unknown_rate": unknown_rate,
+        # Primary quality signal (PH-B-002).
+        "dialogue_unknown_rate": dialogue_unknown_rate,
+        "total_dialogue_unknown": unknown_dialogue,
+        "quality": dialogue_quality_verdict(dialogue_unknown_rate),
         "emotion_distribution": emotion_counts,
         "top_unattributed": unattributed,
         "total_utterances": total,
