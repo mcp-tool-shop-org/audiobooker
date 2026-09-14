@@ -64,13 +64,21 @@ class ChapterCacheEntry:
         if self.render_params_hash != render_params_hash:
             return False
         wav = Path(self.wav_path)
-        if not wav.exists():
-            return False
-        # Mirror UtteranceCacheEntry.is_valid: a stat() on a cache file can
-        # fail for reasons other than absence (I/O error, a network path that
-        # vanished, a permission change). Treat that as "not reusable".
+        # A stat() on a cache file can fail for reasons other than absence (an
+        # I/O error, a network path that vanished, a permission change). Treat
+        # any of those as "not reusable".
+        #
+        # There is deliberately NO separate exists() call here: Path.exists()
+        # stats too, so a guard placed before the try lets exactly the errors
+        # this block exists to catch escape instead. That is not theoretical —
+        # it passed on Windows/CPython 3.14 and raised OSError(EIO) straight
+        # out of is_valid() on Linux/3.12 in CI. stat() already raises
+        # FileNotFoundError (an OSError) when the file is simply gone, so
+        # absence is covered by the same guard.
         try:
             actual_size = wav.stat().st_size
+        except FileNotFoundError:
+            return False
         except OSError as e:
             logger.warning(f"Cached WAV could not be stat'd ({e}): {self.wav_path}")
             return False
@@ -171,8 +179,9 @@ class UtteranceCacheEntry:
     def is_valid(self) -> bool:
         """Valid when the WAV still exists on disk and is non-empty."""
         wav = Path(self.wav_path)
-        if not wav.exists():
-            return False
+        # No separate exists() call — see ChapterCacheEntry.is_valid above:
+        # exists() stats, so a guard before the try lets the very errors this
+        # block catches escape. stat() covers absence via FileNotFoundError.
         try:
             return wav.stat().st_size > 0
         except OSError:
