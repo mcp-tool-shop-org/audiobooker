@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Optional, Callable, TYPE_CHECKING
 
 from audiobooker.errors import AudiobookerError, ErrorDetail
+from audiobooker import formats as audio_formats
 from audiobooker.renderer.protocols import TTSEngine, SynthesisResult
 
 if TYPE_CHECKING:
@@ -36,12 +37,20 @@ VOICE_SOUNDBOARD_INSTALL_HINT = (
     "(or: pip install audiobooker-ai[render])"
 )
 
-# Output formats that require ffmpeg for assembly. 'wav' chapters are written
-# directly by the TTS engine and need no ffmpeg step.
-_FFMPEG_FORMATS = {"m4b", "m4a", "mp3", "opus", "ogg", "flac"}
+# F-7a3c91e2: both sets are DERIVED from audiobooker.formats, the one table.
+# They were hand-maintained lists that drifted apart from four others.
+#
+# _FFMPEG_FORMATS used to exclude 'wav', with the comment "'wav' chapters are
+# written directly by the TTS engine and need no ffmpeg step." True of a
+# CHAPTER and false of a BOOK: concatenating chapter WAVs into one file is an
+# ffmpeg job like every other format. So `--format wav` skipped the preflight
+# whose entire purpose is to fail before a render rather than after it, then
+# rendered the whole book -- every second of it paid for -- and hit the
+# missing-ffmpeg wall at assembly.
+_FFMPEG_FORMATS = set(audio_formats.FFMPEG_FORMATS)
 
 # FT-RENDER-M-006: all output formats the renderer knows how to assemble.
-VALID_OUTPUT_FORMATS = {"m4b", "m4a", "mp3", "wav", "opus", "ogg", "flac"}
+VALID_OUTPUT_FORMATS = set(audio_formats.ALL_FORMAT_NAMES)
 
 
 # ---------------------------------------------------------------------------
@@ -1336,6 +1345,7 @@ def _render_project_impl(
         assemble_opus as _opus_assembler,
         assemble_flac as _flac_assembler,
         assemble_m4a_split as _m4a_split_assembler,
+        assemble_wav as _wav_assembler,
     )
     from audiobooker.renderer.cache_manifest import (
         CacheManifest, ChapterCacheEntry,
@@ -1365,21 +1375,33 @@ def _render_project_impl(
     # FT-RENDER-003 / FT-RENDER-M-006 / FT-RENDER-M-007: Select assembler by
     # format. 'split' on an AAC format emits per-chapter .m4a files.
     fmt = output_format or project.config.output_format
-    _builtin_assemblers = (
-        _m4b_assembler, _mp3_assembler, _opus_assembler,
-        _flac_assembler, _m4a_split_assembler,
-    )
+    _by_name = {
+        "assemble_m4b": _m4b_assembler,
+        "assemble_mp3": _mp3_assembler,
+        "assemble_opus": _opus_assembler,
+        "assemble_flac": _flac_assembler,
+        "assemble_wav": _wav_assembler,
+        "assemble_m4a_split": _m4a_split_assembler,
+    }
+    _builtin_assemblers = tuple(_by_name.values())
     if assembler is None:
         if split and fmt in ("m4b", "m4a"):
             assembler = _m4a_split_assembler
-        elif fmt == "mp3":
-            assembler = _mp3_assembler
-        elif fmt in ("opus", "ogg"):
-            assembler = _opus_assembler
-        elif fmt == "flac":
-            assembler = _flac_assembler
         else:
-            assembler = _m4b_assembler
+            # F-7a3c91e2: a table lookup, not an if/elif chain ending in
+            # `else: _m4b_assembler`. That fallthrough is what made
+            # `--format wav` write AAC-in-MP4 bytes to a .wav path, and it
+            # would silently do the same for any format added to an allowlist
+            # without a branch here. An unknown format is now an error that
+            # names the format and lists the real ones.
+            try:
+                assembler = _by_name[audio_formats.get(fmt).assembler]
+            except KeyError:
+                raise RenderError(
+                    f"Unknown output format {fmt!r}. Valid formats: "
+                    f"{', '.join(sorted(audio_formats.ALL_FORMAT_NAMES))}.",
+                    code="CONFIG_INVALID_FORMAT",
+                ) from None
 
     # ENGINE-C-001: ffmpeg preflight. When the output format needs ffmpeg for
     # assembly, fail fast BEFORE rendering the whole book — otherwise the user

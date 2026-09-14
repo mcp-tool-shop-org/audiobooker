@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from audiobooker import formats as audio_formats
 from audiobooker.models import (
     BookMetadata,
     Character,
@@ -473,13 +474,41 @@ class TestFileSizeRejection:
 class TestProjectConfigValidation:
     """Parametrized tests for ProjectConfig field validation."""
 
+    # F-7a3c91e2: "opus" and "m4a" used to be listed here as INVALID. Both
+    # have had working assemblers the whole time and "Opus" is advertised on
+    # the first screen of the README -- this test was pinning the gap between
+    # what the renderer could do and what the config validator would accept.
+    # "aac" and "wma" stay: neither has an assembler. "MP3" stays too, since
+    # the validator is deliberately case-sensitive.
     @pytest.mark.parametrize("bad_format", [
-        "aac", "wma", "opus", "m4a", "", "MP3",
-    ], ids=["aac", "wma", "opus", "m4a", "empty", "uppercase-MP3"])
+        "aac", "wma", "", "MP3",
+    ], ids=["aac", "wma", "empty", "uppercase-MP3"])
     def test_invalid_output_format(self, bad_format):
-        """ProjectConfig rejects invalid output_format values."""
+        """ProjectConfig rejects output formats nothing can assemble."""
         with pytest.raises(ValueError, match="output_format"):
             ProjectConfig(output_format=bad_format)
+
+    @pytest.mark.parametrize("fmt", sorted(audio_formats.ALL_FORMAT_NAMES))
+    def test_every_format_in_the_table_is_accepted(self, fmt):
+        """The validator and the format table cannot drift apart.
+
+        Six allowlists disagreed before they were derived from one table;
+        this fails the moment a format is added to the table and the
+        validator is not told, which is the shape the drift took.
+        """
+        assert ProjectConfig(output_format=fmt).output_format == fmt
+
+    def test_every_accepted_format_has_a_real_assembler(self):
+        """Accepting a format the renderer cannot produce is how `--format
+        wav` came to write AAC-in-MP4 bytes to a .wav path."""
+        import audiobooker.renderer.output as output_mod
+
+        for name in sorted(audio_formats.ALL_FORMAT_NAMES):
+            spec = audio_formats.get(name)
+            assert hasattr(output_mod, spec.assembler), (
+                f"{name!r} names assembler {spec.assembler!r}, "
+                f"which does not exist in renderer.output"
+            )
 
     @pytest.mark.parametrize("bad_mode", [
         "yes", "no", "always", "", "ON",

@@ -70,6 +70,8 @@ if TYPE_CHECKING:
 from pathlib import Path
 from typing import Optional
 
+from audiobooker import formats as audio_formats
+
 
 # Canonical install hint for the optional TTS backend. voice-soundboard IS on
 # PyPI, so always point users at the published package, never a local path.
@@ -434,7 +436,7 @@ def create_parser() -> argparse.ArgumentParser:
     # FT-RENDER-003: Output format selection
     render_parser.add_argument(
         "--format",
-        choices=["m4b", "mp3", "wav"],
+        choices=list(audio_formats.BOOK_FORMATS),
         default=None,
         dest="output_format",
         help="Output format (default: from project config, usually m4b)",
@@ -695,7 +697,7 @@ def create_parser() -> argparse.ArgumentParser:
     )
     batch_parser.add_argument(
         "--format",
-        choices=["m4b", "mp3", "wav"],
+        choices=list(audio_formats.BOOK_FORMATS),
         default=None,
         dest="output_format",
         help="Output format (default: m4b)",
@@ -869,7 +871,7 @@ def create_parser() -> argparse.ArgumentParser:
     )
     podcast_parser.add_argument(
         "--format",
-        choices=["m4b", "m4a", "mp3", "wav"],
+        choices=list(audio_formats.PODCAST_FORMATS),
         default=None,
         dest="output_format",
         help="Per-chapter audio format (default: from config, usually m4b)",
@@ -1158,7 +1160,7 @@ def create_parser() -> argparse.ArgumentParser:
     )
     make_parser.add_argument(
         "--format",
-        choices=["m4b", "mp3", "wav"],
+        choices=list(audio_formats.BOOK_FORMATS),
         default=None,
         dest="output_format",
         help="Output format (default: from config, usually m4b)",
@@ -4779,7 +4781,7 @@ def cmd_diagnose(args: argparse.Namespace) -> int:
     # m4b, mp3 and even a multi-chapter WAV — is assembled by ffmpeg
     # (concatenate_audio_files raises without it), so the set is all-or-nothing.
     if voice_engine_ok and ffmpeg_ok:
-        reachable_formats = ["m4b", "mp3", "wav"]
+        reachable_formats = list(audio_formats.BOOK_FORMATS)
     else:
         reachable_formats = []
 
