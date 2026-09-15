@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  Turn <strong>EPUB / TXT / PDF / DOCX</strong> books into professionally narrated, multi-voice audiobooks (<strong>M4B / MP3 / Opus / FLAC</strong>) — from one command.
+  Turn <strong>EPUB / TXT / PDF / DOCX</strong> books into professionally narrated, multi-voice audiobooks (<strong>M4B / MP3 / Opus / FLAC / WAV</strong>) — from one command.
 </p>
 
 Este é o **`npx` wrapper** para [`audiobooker-ai`](https://pypi.org/project/audiobooker-ai/) (Python). Ele configura um ambiente Python privado na primeira execução, instala a versão especificada do PyPI e executa a CLI real — sem configuração manual `pip`, sem alterações no seu Python do sistema.
@@ -60,13 +60,14 @@ A renderização também requer **FFmpeg** no PATH para a montagem de M4B/MP3 (`
 
 ## O que ele faz
 
-- **Seleção de múltiplas vozes** com sugestões de voz explicáveis e classificadas; `audiobooker audition <character>` permite que você faça testes A/B de vozes candidatas antes de decidir.
-- **Detecção de diálogo + atribuição de falante** (co-referência opcional do BookNLP), inferência de emoção e léxicos de pronúncia reutilizáveis.
-- **Revisão antes da renderização**: exporte um script editável por humanos, corrija as atribuições, reimporte — nada é alterado silenciosamente.
-- **Masterização com especificações ACX**: `render --acx` faz a masterização para o alvo de áudio ACX — RMS entre −23 e −18 dBFS, pico em ou abaixo de −3, ruído de fundo em ou abaixo de −60 — e `master-check` relata PASS/FAIL em relação a esses três limites medidos.
-Observe que atender às especificações não é o mesmo que ser aceito: o fluxo de envio padrão da ACX é para narração humana. Consulte o [README principal](https://github.com/mcp-tool-shop-org/audiobooker#where-an-ai-narrated-audiobook-can-actually-go) para os caminhos que aceitam títulos narrados por IA.
-- **Formatos**: M4B (marcadores de capítulo + capa incorporada + metadados da série), MP3, Opus, FLAC; exportação por capítulo; clipes de amostra para varejo.
-- **7 perfis de idioma** (en/fr/de/es/ja/it/pt) e um arquivo de configuração por livro para configurações padrão e permanentes.
+- **Seleção de múltiplas vozes** com sugestões de vozes classificadas e explicáveis; `audiobooker audition <character>` permite testar diferentes vozes candidatas antes de tomar uma decisão.
+- **Detecção de diálogo + atribuição de locutor** (opcional, com co-referência BookNLP), inferência de emoções e léxicos de pronúncia reutilizáveis.
+- **Revisão antes da renderização**: exporte um script editável, corrija as atribuições, reimporte — nada é alterado silenciosamente.
+- **Masterização compatível com ACX**: `render --acx` realiza a masterização para o padrão de áudio ACX — RMS entre −23 e −18 dBFS, pico em ou abaixo de −3, ruído de fundo em ou abaixo de −60 — e `master-check` indica se o resultado está APROVADO/REPROVADO em relação a esses três limites medidos.
+Observe que cumprir o padrão não é o mesmo que ser aceito: o fluxo de envio padrão da ACX é para narrações humanas. Consulte o [arquivo README principal](https://github.com/mcp-tool-shop-org/audiobooker#where-an-ai-narrated-audiobook-can-actually-go) para conhecer os caminhos que aceitam títulos narrados por IA.
+- **Atribuição auditável**: cada linha registra *como* o locutor foi determinado — uma etiqueta de fala, sua própria correção ou uma simples suposição de alternância — e `audiobooker report` conta as suposições separadamente das linhas para as quais não foi possível atribuir um locutor. Uma suposição não pode melhorar a pontuação.
+- **Formatos**: M4B (marcadores de capítulo + capa incorporada + metadados da série), MP3, Opus, FLAC, WAV; exportação por capítulo; clipes de amostra para venda.
+- **7 perfis de idioma** (en/fr/de/es/ja/it/pt) e um arquivo de configuração por livro para definir configurações padrão e esquecer.
 
 ## Variáveis de ambiente
 

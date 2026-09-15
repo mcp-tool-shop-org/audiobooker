@@ -14,10 +14,10 @@
 </p>
 
 <p align="center">
-  Turn <strong>EPUB / TXT / PDF / DOCX</strong> books into professionally narrated, multi-voice audiobooks (<strong>M4B / MP3 / Opus / FLAC</strong>) — from one command.
+  Turn <strong>EPUB / TXT / PDF / DOCX</strong> books into professionally narrated, multi-voice audiobooks (<strong>M4B / MP3 / Opus / FLAC / WAV</strong>) — from one command.
 </p>
 
-This is the **`npx` wrapper** for [`audiobooker-ai`](https://pypi.org/project/audiobooker-ai/) (Python). It bootstraps a private Python environment on first run, installs the pinned version from PyPI, and runs the real CLI — no manual `pip`, no changes to your system Python.
+Este es el **envoltorio `npx`** para [`audiobooker-ai`](https://pypi.org/project/audiobooker-ai/) (Python). Inicializa un entorno Python privado en la primera ejecución, instala la versión especificada desde PyPI y ejecuta la interfaz de línea de comandos real; no requiere configuración manual `pip`, ni cambios en tu sistema Python.
 
 ## Pruébalo
 
@@ -31,7 +31,7 @@ O instálalo globalmente:
 npm install -g @mcptoolshop/audiobooker
 ```
 
-La primera ejecución configura un entorno virtual administrado en el directorio de datos de tu usuario (`~/.local/share/audiobooker` o `%LOCALAPPDATA%\audiobooker` en Windows) e instala `audiobooker-ai`. Cada ejecución posterior se inicia instantáneamente.
+La primera ejecución configura un entorno virtual gestionado en el directorio de datos de tu usuario (`~/.local/share/audiobooker`, o `%LOCALAPPDATA%\audiobooker` en Windows) e instala `audiobooker-ai`. Cada ejecución posterior se inicia instantáneamente.
 
 **Requiere Python 3.10+** en la variable PATH (el envoltorio busca `python3` / `py`). Si falta, el envoltorio te indica exactamente cómo instalarlo para tu sistema operativo.
 
@@ -50,31 +50,32 @@ npx @mcptoolshop/audiobooker render --format m4b
 
 ## Renderizado de audio (síntesis de voz)
 
-El análisis, la asignación de voces, la compilación y el flujo de trabajo de revisión funcionan de inmediato. El **renderizado de audio** requiere el motor TTS, que implica dependencias más pesadas; actívalo cuando estés listo:
+El análisis, la adaptación, la compilación y el flujo de trabajo de revisión funcionan de forma predeterminada. El **renderizado de audio** requiere el motor TTS, que implica dependencias más pesadas; actívalo cuando estés listo:
 
 ```bash
 AUDIOBOOKER_INSTALL_EXTRAS=render npx @mcptoolshop/audiobooker render
 ```
 
-El renderizado también requiere **FFmpeg** en la variable PATH para el ensamblaje de archivos M4B/MP3 (`winget install ffmpeg` / `brew install ffmpeg` / `apt install ffmpeg`). Ejecuta `audiobooker diagnose` para verificar tu configuración.
+El renderizado también requiere **FFmpeg** en la variable PATH para el ensamblaje de M4B/MP3 (`winget install ffmpeg` / `brew install ffmpeg` / `apt install ffmpeg`). Ejecuta `audiobooker diagnose` para verificar tu configuración.
 
 ## Qué hace
 
-- **Asignación de múltiples voces** con sugerencias de voz explicables y clasificadas; `audiobooker audition <character>` te permite probar diferentes voces antes de decidirte.
+- **Adaptación con múltiples voces** con sugerencias de voz clasificadas y explicables; `audiobooker audition <character>` te permite probar diferentes voces antes de decidirte.
 - **Detección de diálogos + atribución de hablantes** (opcional, con co-referencia de BookNLP), inferencia de emociones y léxicos de pronunciación reutilizables.
 - **Revisión antes del renderizado**: exporta un guion editable por humanos, corrige las atribuciones, vuelve a importarlo; nada se cambia silenciosamente.
-- **Masterización según las especificaciones de ACX**: `render --acx` realiza la masterización para cumplir con los requisitos de audio de ACX: RMS entre −23 y −18 dBFS, pico en o por debajo de −3, nivel de ruido en o por debajo de −60; y `master-check` informa si cumple o no con esos tres límites medidos.
-Ten en cuenta que cumplir con las especificaciones no es lo mismo que ser aceptado: el flujo de envío estándar de ACX es para narraciones humanas. Consulta el [README principal](https://github.com/mcp-tool-shop-org/audiobooker#where-an-ai-narrated-audiobook-can-actually-go) para conocer las vías que sí aceptan audiolibros narrados por IA.
-- **Formatos**: M4B (marcadores de capítulo + portada incrustada + metadatos de la serie), MP3, Opus, FLAC; exportación por capítulo; clips de muestra para la venta.
-- **7 perfiles de idioma** (en/fr/de/es/ja/it/pt) y un archivo de configuración por libro para establecer valores predeterminados que se mantendrán.
+- **Masterización según las especificaciones de ACX**: `render --acx` realiza la masterización para cumplir con los requisitos de audio de ACX: RMS entre −23 y −18 dBFS, pico en o por debajo de −3, nivel de ruido en o por debajo de −60; y `master-check` informa si cumple o no con estos tres límites medidos.
+Ten en cuenta que cumplir con las especificaciones no es lo mismo que ser aceptado: el flujo de envío estándar de ACX es para narraciones humanas. Consulta el [README principal](https://github.com/mcp-tool-shop-org/audiobooker#where-an-ai-narrated-audiobook-can-actually-go) para conocer las opciones que sí aceptan audiolibros narrados por IA.
+- **Atribución auditable**: cada línea registra *cómo* se decidió el hablante: una etiqueta de voz, tu propia corrección o una simple suposición de turnos alternos; y `audiobooker report` cuenta las suposiciones por separado de las líneas que no pudo atribuir en absoluto. Una suposición no puede mejorar la puntuación.
+- **Formatos**: M4B (marcadores de capítulo + portada incrustada + metadatos de la serie), MP3, Opus, FLAC, WAV; exportación por capítulo; clips de muestra para la venta.
+- **7 perfiles de idioma** (en/fr/de/es/ja/it/pt) y un archivo de configuración por libro para establecer valores predeterminados y olvidarse de ellos.
 
 ## Variables de entorno
 
 | Variable | Efecto |
 |---|---|
-| `AUDIOBOOKER_INSTALL_EXTRAS=render` | Proporciona el entorno virtual administrado **con** el motor de voz (para el renderizado) |
-| `AUDIOBOOKER_FORCE_REINSTALL=1` | Reconstruye el entorno administrado desde cero |
-| `AUDIOBOOKER_BOOTSTRAP_ROOT=<dir>` | Anula la ubicación del entorno virtual administrado |
+| `AUDIOBOOKER_INSTALL_EXTRAS=render` | Proporciona el entorno virtual gestionado **con** el motor de voz (para el renderizado) |
+| `AUDIOBOOKER_FORCE_REINSTALL=1` | Reconstruye el entorno gestionado desde cero |
+| `AUDIOBOOKER_BOOTSTRAP_ROOT=<dir>` | Anula la ubicación del entorno virtual gestionado |
 
 ## ¿Prefieres pip?
 

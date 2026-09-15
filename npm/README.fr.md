@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  Turn <strong>EPUB / TXT / PDF / DOCX</strong> books into professionally narrated, multi-voice audiobooks (<strong>M4B / MP3 / Opus / FLAC</strong>) — from one command.
+  Turn <strong>EPUB / TXT / PDF / DOCX</strong> books into professionally narrated, multi-voice audiobooks (<strong>M4B / MP3 / Opus / FLAC / WAV</strong>) — from one command.
 </p>
 
 Il s’agit du **`npx` wrapper** pour [`audiobooker-ai`](https://pypi.org/project/audiobooker-ai/) (Python). Il configure un environnement Python privé lors de la première exécution, installe la version spécifiée depuis PyPI et exécute la véritable interface en ligne de commande : aucune configuration manuelle `pip`, aucune modification de votre installation Python.
@@ -60,13 +60,14 @@ Le rendu nécessite également **FFmpeg** dans le PATH pour l’assemblage M4B/M
 
 ## Ce qu’il fait
 
-- **Sélection de plusieurs voix** avec des suggestions de voix classées et explicables ; `audiobooker audition <character>` vous permet de tester différentes voix avant de vous décider.
-- **Détection de dialogues + attribution des locuteurs** (co-référence BookNLP facultative), inférence des émotions et lexiques de prononciation réutilisables.
-- **Révision avant le rendu** : exportez un script modifiable, corrigez les attributions, réimportez : rien n’est modifié silencieusement.
-- **Mastering conforme aux spécifications ACX** : `render --acx` effectue le mastering pour atteindre la cible audio ACX : RMS entre −23 et −18 dBFS, pic à ou en dessous de −3, niveau de bruit à ou en dessous de −60 ; et `master-check` indique si les résultats sont ACCEPTABLES ou NON par rapport à ces trois limites mesurées.
-Notez que le respect des spécifications n’est pas la même chose que l’acceptation : le flux de soumission standard d’ACX concerne les narrations humaines. Consultez le [fichier README principal](https://github.com/mcp-tool-shop-org/audiobooker#where-an-ai-narrated-audiobook-can-actually-go) pour connaître les options qui acceptent les livres audio narrés par une IA.
-- **Formats** : M4B (marqueurs de chapitres + couverture intégrée + métadonnées de série), MP3, Opus, FLAC ; exportation par chapitre ; extraits d’échantillons pour la vente au détail.
-- **7 profils linguistiques** (en/fr/de/es/ja/it/pt) et un fichier de configuration par livre pour des paramètres par défaut faciles à configurer et à oublier.
+- **Attribution vocale multivoice** avec suggestions de voix classées et explicables ; `audiobooker audition <character>` vous permet de tester différentes voix candidates avant de faire votre choix.
+- **Détection des dialogues + attribution des locuteurs** (co-référence optionnelle BookNLP), inférence des émotions et lexiques de prononciation réutilisables.
+- **Relecture avant le rendu** : exportez un script modifiable, corrigez les attributions, réimportez-le ; rien n’est modifié silencieusement.
+- **Mastering conforme aux spécifications ACX** : `render --acx` effectue le mastering pour atteindre les normes audio ACX : RMS entre −23 et −18 dBFS, pic à ou en dessous de −3, niveau de bruit à ou en dessous de −60, et `master-check` indique si les résultats sont ACCEPTABLES/NON ACCEPTABLES par rapport à ces trois limites mesurées.
+Notez que le respect des spécifications n’est pas synonyme d’acceptation : le processus de soumission standard d’ACX concerne les narrations humaines. Consultez le [fichier README principal](https://github.com/mcp-tool-shop-org/audiobooker#where-an-ai-narrated-audiobook-can-actually-go) pour connaître les options disponibles pour les livres audio narrés par une IA.
+- **Attribution vérifiable** : chaque ligne enregistre *comment* le locuteur a été déterminé : une étiquette vocale, votre propre correction ou une simple hypothèse basée sur l’alternance des tours de parole, et `audiobooker report` compte les hypothèses séparément des lignes pour lesquelles il n’a pas pu attribuer de locuteur. Une hypothèse ne peut pas améliorer le score.
+- **Formats** : M4B (marqueurs de chapitres + couverture intégrée + métadonnées de la série), MP3, Opus, FLAC, WAV ; exportation par chapitre ; extraits pour la vente au détail.
+- **7 profils linguistiques** (en/fr/de/es/ja/it/pt) et un fichier de configuration par livre pour définir des paramètres par défaut et les conserver.
 
 ## Variables d’environnement
 
