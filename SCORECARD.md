@@ -28,7 +28,7 @@ previous speaker's voice; the render cache printed "Cached" over audio that
 did not match the request. The gates did not catch any of those, because gates
 check that the claims are true, not that the code is right.
 
-The tests are what moved: **1468 → 1931**.
+The tests are what moved: **1468 → 1947**.
 
 Two of this release's defects were found by *writing the documentation for the
 feature*, not by auditing it — `utterance_cache` removed every pause in the

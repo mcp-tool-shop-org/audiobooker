@@ -1,5 +1,5 @@
 <p align="center">
-  <a href="https://github.com/mcp-tool-shop-org/audiobooker/blob/main/README.ja.md">日本語</a> | <a href="https://github.com/mcp-tool-shop-org/audiobooker/blob/main/README.zh.md">中文</a> | <a href="https://github.com/mcp-tool-shop-org/audiobooker/blob/main/README.es.md">Español</a> | <a href="https://github.com/mcp-tool-shop-org/audiobooker/blob/main/README.fr.md">Français</a> | <a href="https://github.com/mcp-tool-shop-org/audiobooker/blob/main/README.hi.md">हिन्दी</a> | <a href="https://github.com/mcp-tool-shop-org/audiobooker/blob/main/README.it.md">Italiano</a> | <a href="https://github.com/mcp-tool-shop-org/audiobooker/blob/main/README.pt-BR.md">Português (BR)</a>
+  <a href="README.md">English</a> | <a href="README.ja.md">日本語</a> | <a href="README.zh.md">中文</a> | <a href="README.es.md">Español</a> | <a href="README.fr.md">Français</a> | <a href="README.hi.md">हिन्दी</a> | <a href="README.it.md">Italiano</a> | <a href="README.pt-BR.md">Português (BR)</a>
 </p>
 
 <p align="center">
@@ -75,6 +75,31 @@ git clone https://github.com/mcp-tool-shop-org/audiobooker
 cd audiobooker
 pip install -e '.[render]'
 ```
+</details>
+
+<details>
+<summary><strong>Upgrading from 2.x</strong> — five things changed on purpose</summary>
+
+Each of these is a case where 2.x accepted something and did the wrong thing
+quietly. 3.0 refuses instead. Full detail in the [CHANGELOG](CHANGELOG.md).
+
+- **Your first render re-renders every chapter, once.** Three inputs that
+  change the audio — emotion preset, utterance intensity, per-character
+  speed/pitch/emphasis — were missing from the cache key, so switching preset
+  reported "Cached" and returned the old audio. They are in the key now, and a
+  2.x cache entry cannot prove what produced it.
+- **`--format m4a` is no longer a whole-book option.** It always meant one
+  file per chapter; asking for a whole book in `m4a` previously produced a
+  single M4B under an `.m4a` name. It is still valid on `podcast --format`.
+- **`render` refuses a book whose attribution reads `FAILED`** rather than
+  spending a TTS run on it. `--force` overrides. Run `audiobooker report` to
+  see which lines it is objecting to.
+- **`make` refuses when the project file already exists.** It used to
+  overwrite hand-cast voices, pronunciation overrides and edited titles with a
+  fresh auto-cast parse. Pass `--overwrite-project` if that is what you want.
+- **`compile()` raises when every chapter fails** instead of returning `None`
+  the way a clean run does. If you call it from Python, it can now throw.
+
 </details>
 
 ## Quick start

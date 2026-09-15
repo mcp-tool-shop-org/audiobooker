@@ -5,11 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [3.0.0] - 2026-09-14
+
+Major, because five things that used to be accepted now fail instead — the
+`m4a` whole-book format, a `make` over an existing project, a render whose
+attribution is mostly guesswork, a `compile()` where every chapter failed,
+and any cache entry written by 2.x. Each one previously did something quiet
+and wrong. The upgrade notes in the README list them.
 
 A dogfood swarm in two passes — five health waves, then a feature pass of
 four build agents with disjoint file ownership. 200+ findings, tests
-1468 → 1918. Every CRITICAL/HIGH severity was re-rated by a model family that
+1468 → 1947. Every CRITICAL/HIGH severity was re-rated by a model family that
 did not author the finding, and the fixes were written test-first with the
 failure observed before the fix.
 
@@ -117,6 +123,34 @@ rate does not move**, so guessing harder can no longer improve the number.
 rather than inheriting the unknown-rate ones, because a guess is worse for the
 user than an admission — an unknown line is visible in the report and the
 review export, a confident wrong one is not.
+
+### Fixed — output you read
+
+- **`report` printed the narration-diluted rate this release replaced.**
+  `compile` was moved to the dialogue-over-dialogue figure during the health
+  pass; the command actually named `report` was left on the other one, so
+  adding narration to a book still lowered its score without a single speaker
+  being identified. It also said nothing about guesses, though
+  `compile_report` had returned the count, the rate, the verdict, the source
+  distribution and a ready-made list of the worst lines since the feature
+  landed. A book where turn-tracking invented every speaker reported
+  "Unattributed rate: 0.0%" and stopped talking.
+- **`render --dry-run` renumbered the chapters it listed.** `--chapters 1-2,4`
+  hands the renderer a filtered list and the table labelled each row with its
+  position in that subset, so the preview showed `[0] [1] [2]` against
+  chapters titled 1, 2 and 4 — in the one command you run to decide what to
+  pass next.
+- **45 printed strings could not render on a legacy Windows console.** Not
+  cp1252, which encodes an em-dash fine at 0x97 — the OEM codepages a bare
+  `cmd.exe` runs (437 in en-US, 850 in western Europe), which do not have one.
+  Since the output streams degrade rather than crash, this failed silently.
+  A test now checks the source, so the next one cannot.
+- **The review file's own header printed a command that would not run.**
+  `review-export` names the file from the book title, so a book with a space
+  in its name produced `audiobooker review-import My Book_review.txt` —
+  which argparse rejects, answering with all 34 subcommands. The CLI's
+  printed copy had been fixed; the copy inside the file the user actually
+  opens had not.
 
 ### Fixed — real books
 
