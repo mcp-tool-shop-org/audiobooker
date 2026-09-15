@@ -9,6 +9,7 @@ Verifies that compilation handles per-chapter failures gracefully:
 
 from unittest.mock import patch
 
+import pytest
 
 from audiobooker.project import AudiobookProject
 
@@ -127,7 +128,16 @@ class TestCompileErrorHandling:
         assert loaded.title == "Usable After Failure"
 
     def test_all_chapters_fail(self):
-        """When all chapters fail, error_message records all failures."""
+        """When ALL chapters fail, compile() raises (CH-B-002).
+
+        Amended in wave 5. This test used to call ``project.compile()`` bare
+        and assert only that ``progress.error_message`` had been populated —
+        i.e. it pinned the defect: a book that produced zero utterances
+        returned from compile() exactly as a clean book does, and no caller
+        checked error_message (cmd_compile still doesn't), so the run printed
+        "Compiled 0 utterances" and exited 0. Every other assertion the test
+        made is kept below; the call is now wrapped in pytest.raises.
+        """
         project = AudiobookProject.from_string(
             "Chapter 1: Bad\n\nSome text.\n\n"
             "Chapter 2: Also Bad\n\nMore text.",
@@ -136,13 +146,16 @@ class TestCompileErrorHandling:
         project.cast("narrator", "af_heart")
 
         import audiobooker.casting.dialogue as dialogue_mod
+        from audiobooker.project import CompilationFailedError
 
         def always_failing(chapter, casting, **kwargs):
             raise RuntimeError(f"Crash on chapter {chapter.index}")
 
         with patch.object(dialogue_mod, "compile_chapter", side_effect=always_failing):
-            project.compile()
+            with pytest.raises(CompilationFailedError) as exc:
+                project.compile()
 
+        assert exc.value.code == "COMPILE_ALL_CHAPTERS_FAILED"
         assert project.progress.error_message is not None
         assert "2 chapter(s) failed" in project.progress.error_message
         for ch in project.chapters:

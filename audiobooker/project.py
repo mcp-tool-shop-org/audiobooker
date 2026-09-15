@@ -33,6 +33,7 @@ _VALID_PROJECT_KWARGS = {
     "output_path", "metadata",
 }
 
+from audiobooker.errors import AudiobookerError, ErrorDetail
 from audiobooker.models import (
     BookMetadata,
     Chapter,
@@ -41,8 +42,47 @@ from audiobooker.models import (
     CastingTable,
     ProjectConfig,
     UNSET,
-    _validated_path,
+    _looks_absolute,
+    portable_path,
+    resolve_stored_path,
 )
+
+
+class CompilationFailedError(AudiobookerError, RuntimeError):
+    """Every chapter in the book failed to compile (CH-B-002).
+
+    Carries the shipcheck error shape (``code`` / ``message`` / ``hint`` /
+    ``retryable``) like the rest of ``audiobooker.errors``. It subclasses
+    ``RuntimeError`` so that ``except Exception`` call sites -- including
+    ``cli.main()``'s catch-all, which routes it through ``_report_error`` and
+    exits 2 -- keep working untouched.
+
+    It lives here rather than in ``audiobooker/errors.py`` only because that
+    module belongs to another agent this wave; it should move there, and
+    ``cli.USER_ERROR_TYPES`` should learn about it so a failed compile exits 1
+    (a user error) rather than 2 (an unexpected one). Both are noted in the
+    handoff; neither changes the fact that a total failure now stops the run.
+    """
+
+    def __init__(self, summary: str, *, chapter_count: int) -> None:
+        AudiobookerError.__init__(
+            self,
+            ErrorDetail(
+                code="COMPILE_ALL_CHAPTERS_FAILED",
+                message=(
+                    f"All {chapter_count} chapter(s) failed to compile, so the "
+                    f"project has no utterances to render: {summary}"
+                ),
+                hint=(
+                    "The failures above are per chapter — one shared cause is "
+                    "likely. Check that the source text parsed (audiobooker "
+                    "chapters), that --lang matches the book, and re-run with "
+                    "--debug for the full traceback."
+                ),
+                retryable=False,
+            ),
+        )
+        self.chapter_count = chapter_count
 
 
 def _sanitize_filename(name: str) -> str:
@@ -115,8 +155,35 @@ def _csv_aliases(value) -> list[str]:
     return [a.strip() for a in str(value).split(";") if a.strip()]
 
 
-# Project file schema version for forward compatibility
-SCHEMA_VERSION = 1
+# ---------------------------------------------------------------------------
+# Project file schema version.
+#
+# CH-B-001: this sat at 1 through several rounds of added fields, which looked
+# like neglect and isn't. The number gates exactly one thing — load() refuses a
+# file whose schema_version is HIGHER than this constant — so it is a hard stop
+# protecting an OLDER audiobooker from a file it would read WRONGLY. Adding a
+# field never triggers that: every reader takes unknown keys with
+# `data.get(key, default)` and older readers simply ignore what they don't
+# know. Bumping for additive rounds would have made old installs refuse files
+# they could open perfectly, so staying at 1 was the correct call each time.
+#
+# The bump to 2 is the first change that actually earns one. Schema v2 changes
+# what EXISTING path fields MEAN (see portable_path in models.py): "book.epub"
+# used to be resolved against the process CWD and now resolves against the
+# project file's directory, and "~/Music/out.m4b" is new spelling entirely. A
+# v1 reader handed a v2 file does not error — it silently opens the wrong file,
+# or creates a literal directory named "~". That is precisely the failure the
+# guard exists to prevent, so it gets the bump and a real migration in
+# _migrate().
+#
+# Rule for the next person: bump when the meaning of an existing field changes,
+# when a field becomes required, or when a field is removed. Do NOT bump to
+# advertise new optional fields.
+# ---------------------------------------------------------------------------
+SCHEMA_VERSION = 2
+
+# Path-valued keys in the project dict, used by the v1 -> v2 migration.
+_V1_PATH_KEYS = ("source_path", "output_path")
 
 
 @dataclass
@@ -179,8 +246,23 @@ class AudiobookProject:
 
     def __post_init__(self):
         """Initialize output directory and sync config to casting table."""
+        # CH-B-003: pin the in-memory paths to absolute at construction. They
+        # arrive as the user typed them ("book.epub" from `audiobooker new
+        # book.epub`), and _output_dir below is derived from source_path --
+        # so a relative source made every rendered chapter's audio_path
+        # CWD-relative too, and the next command run from a different
+        # directory could not find a single finished chapter. Absolute in
+        # memory, portable on disk (see save()); os.path.abspath rather than
+        # Path.resolve() so symlinks are left exactly as the user gave them.
+        if self.source_path is not None:
+            self.source_path = Path(os.path.abspath(Path(self.source_path)))
+        if self.output_path is not None:
+            self.output_path = Path(os.path.abspath(Path(self.output_path)))
+
         if self._output_dir is None and self.source_path:
-            self._output_dir = Path(self.source_path).parent / f"{Path(self.source_path).stem}_audio"
+            self._output_dir = (
+                self.source_path.parent / f"{self.source_path.stem}_audio"
+            )
         # Keep casting table fallback in sync with project config
         self._sync_fallback_voice()
 
@@ -754,8 +836,20 @@ class AudiobookProject:
         """Migrate a loaded project dict from an older schema version.
 
         Migration seam (FT-CORE): dispatched from load() when a project file's
-        schema_version is below SCHEMA_VERSION. Currently a no-op that just
-        records the upgrade; future schema bumps add their transforms here.
+        schema_version is below SCHEMA_VERSION.
+
+        **v1 -> v2 (CH-B-003).** A v1 relative path meant "relative to
+        whatever directory the command happened to run from"; a v2 relative
+        path means "relative to the project file". There is no transform that
+        can recover the v1 anchor — the CWD of the run that wrote the file is
+        gone — and re-anchoring on the project file is both the fix and the
+        overwhelmingly likely original intent, since the project file is
+        written next to the book. So the migration re-interprets rather than
+        rewrites, and says which paths changed meaning at WARNING, because for
+        the minority of users who ran audiobooker from somewhere else that
+        reinterpretation points at a different file and they need to be told
+        rather than left to debug a mysteriously missing source. Absolute v1
+        paths mean the same thing under both versions and are left alone.
 
         Args:
             data: The raw project dict as loaded from JSON.
@@ -767,9 +861,38 @@ class AudiobookProject:
         logger.info(
             "Upgrading project from schema v%d to v%d", from_version, SCHEMA_VERSION
         )
-        # No transforms needed yet — versions are backward-compatible.
+
+        if from_version < 2:
+            cls._warn_about_reanchored_paths(data)
+
         data["schema_version"] = SCHEMA_VERSION
         return data
+
+    @staticmethod
+    def _warn_about_reanchored_paths(data: dict) -> None:
+        """Report every v1 relative path whose anchor moves in v2."""
+        reanchored: list[str] = []
+        for key in _V1_PATH_KEYS:
+            value = data.get(key)
+            if isinstance(value, str) and value and not _looks_absolute(value):
+                reanchored.append(f"{key}={value!r}")
+        for chapter in data.get("chapters") or []:
+            if not isinstance(chapter, dict):
+                continue
+            value = chapter.get("audio_path")
+            if isinstance(value, str) and value and not _looks_absolute(value):
+                reanchored.append(f"chapter {chapter.get('index')} audio_path={value!r}")
+
+        if reanchored:
+            logger.warning(
+                "Schema v1 -> v2: %d relative path(s) in this project file are "
+                "now resolved against the project file's directory instead of "
+                "the current working directory (%s). If this project was "
+                "always run from the directory holding the project file, "
+                "nothing changes.",
+                len(reanchored),
+                "; ".join(reanchored),
+            )
 
     @classmethod
     def load(cls, path: str | Path) -> "AudiobookProject":
@@ -830,19 +953,24 @@ class AudiobookProject:
         # the top of this file) so Chapter/BookMetadata's own from_dict can
         # use the identical check. Behavior here is unchanged.
 
+        # CH-B-003: every stored path resolves against the PROJECT FILE's
+        # directory, not the process CWD, so `audiobooker render --resume`
+        # finds its already-rendered chapters from wherever it is run.
+        base = Path(os.path.abspath(path)).parent
+
         project = cls(
             title=data.get("title", "Untitled"),
             author=data.get("author", ""),
-            source_path=_validated_path(data.get("source_path")),
+            source_path=resolve_stored_path(data.get("source_path"), base),
             project_path=path,
             created_at=data.get("created_at", datetime.now().isoformat()),
             modified_at=data.get("modified_at", datetime.now().isoformat()),
-            output_path=_validated_path(data.get("output_path")),
+            output_path=resolve_stored_path(data.get("output_path"), base),
         )
 
         # Load chapters
         project.chapters = [
-            Chapter.from_dict(c) for c in data.get("chapters", [])
+            Chapter.from_dict(c, base) for c in data.get("chapters", [])
         ]
 
         # Load casting table
@@ -861,7 +989,7 @@ class AudiobookProject:
 
         # Load metadata
         if "metadata" in data:
-            project.metadata = BookMetadata.from_dict(data["metadata"])
+            project.metadata = BookMetadata.from_dict(data["metadata"], base)
 
         # FT-CORE-013: Restore render state
         if "render_state" in data:
@@ -903,18 +1031,23 @@ class AudiobookProject:
         # corrected on the NEXT load().
         self._sync_fallback_voice()
 
+        # CH-B-003 + COORD-B-001: paths are stored relative to THIS file where
+        # possible, then '~'-relative, then absolute. See portable_path() in
+        # models.py for the precedence and why it is that order.
+        base = Path(os.path.abspath(path)).parent
+
         data = {
             "schema_version": SCHEMA_VERSION,
             "title": self.title,
             "author": self.author,
-            "source_path": str(self.source_path) if self.source_path else None,
+            "source_path": portable_path(self.source_path, base),
             "created_at": self.created_at,
             "modified_at": self.modified_at,
-            "output_path": str(self.output_path) if self.output_path else None,
-            "chapters": [c.to_dict() for c in self.chapters],
+            "output_path": portable_path(self.output_path, base),
+            "chapters": [c.to_dict(base) for c in self.chapters],
             "casting": self.casting.to_dict(),
             "config": self.config.to_dict(),
-            "metadata": self.metadata.to_dict(),
+            "metadata": self.metadata.to_dict(base),
             "render_state": self._get_render_state(),
         }
 
@@ -1237,20 +1370,37 @@ class AudiobookProject:
 
         engine = TTSEngine()
 
-        # Create temp file for output
-        tmp = tempfile.NamedTemporaryFile(
-            suffix=".wav", prefix="audiobooker_preview_", delete=False
-        )
-        tmp.close()
-        output_path = Path(tmp.name)
+        # CH-B-012: the temp file is created BEFORE synthesis and never
+        # cleaned up, so every preview whose backend raised -- a missing TTS
+        # model, an unknown voice id, a dead GPU: the common case while a user
+        # is auditioning voices -- left a 0-byte
+        # audiobooker_preview_*.wav in the system temp directory forever.
+        # (The name itself is fine: mkstemp picks it randomly and creates it
+        # 0600, and closing the handle before handing the path to the engine
+        # is what makes this work on Windows at all, where the file cannot be
+        # reopened while the handle is live.)
+        #
+        # A successful preview still returns an undeleted file: the caller
+        # gets the path in order to play it, so ownership transfers with the
+        # return. Only the failure path is ours to clean up.
+        fd, name = tempfile.mkstemp(suffix=".wav", prefix="audiobooker_preview_")
+        os.close(fd)
+        output_path = Path(name)
 
-        engine.synthesize(
-            text=text,
-            voice=voice,
-            output_path=output_path,
-            speed=speed,
-            emotion=emotion or None,
-        )
+        try:
+            engine.synthesize(
+                text=text,
+                voice=voice,
+                output_path=output_path,
+                speed=speed,
+                emotion=emotion or None,
+            )
+        except BaseException:
+            try:
+                output_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            raise
 
         return output_path
 
@@ -1422,7 +1572,14 @@ class AudiobookProject:
                 f"Got {type(data).__name__} instead."
             )
 
-        imported = 0
+        # CH-B-007: build the merge in a staging dict and apply it only once
+        # every entry has validated. The loop used to write each Character
+        # straight into self.casting.characters as it went, so a file whose
+        # fifth entry was missing 'voice' raised ValueError with entries one
+        # through four already merged -- and the docstring promises callers
+        # this raises, so catching it and carrying on (which the CLI does) was
+        # the documented path to a half-imported cast. All-or-nothing now.
+        staged: dict[str, Character] = {}
         for entry in data:
             if not isinstance(entry, dict):
                 raise ValueError(
@@ -1450,12 +1607,11 @@ class AudiobookProject:
                 aliases=entry.get("aliases", []),
                 description=entry.get("description"),
             )
-            key = self.casting.normalize_key(char.name)
-            self.casting.characters[key] = char
-            imported += 1
+            staged[self.casting.normalize_key(char.name)] = char
 
+        self.casting.characters.update(staged)
         self.modified_at = datetime.now().isoformat()
-        logger.info("Imported %d characters from %s", imported, path)
+        logger.info("Imported %d characters from %s", len(staged), path)
 
     def _import_casting_csv(self, path: Path) -> None:
         """CASTING-DEPTH v2.1: import a CSV cast sheet, merging into the cast.
@@ -1475,7 +1631,7 @@ class AudiobookProject:
         """
         import csv
 
-        imported = 0
+        staged: dict[str, Character] = {}
         with open(path, "r", encoding="utf-8", newline="") as f:
             reader = csv.DictReader(f)
             if reader.fieldnames is None or not {
@@ -1510,12 +1666,15 @@ class AudiobookProject:
                         row.get("default_intensity")
                     ),
                 )
-                key = self.casting.normalize_key(char.name)
-                self.casting.characters[key] = char
-                imported += 1
+                staged[self.casting.normalize_key(char.name)] = char
 
+        # CH-B-007: staged the same way as the JSON branch. This one skips
+        # malformed rows instead of raising, so it had no validation gap --
+        # but csv.Error on a truncated file, or an OSError part-way through a
+        # large sheet, would still have left the cast half-merged.
+        self.casting.characters.update(staged)
         self.modified_at = datetime.now().isoformat()
-        logger.info("Imported %d characters from CSV %s", imported, path)
+        logger.info("Imported %d characters from CSV %s", len(staged), path)
 
     # -------------------------------------------------------------------------
     # Pronunciation Lexicon Import/Export (INPUT v2.1)
@@ -1895,9 +2054,22 @@ class AudiobookProject:
             text = normalize(text)
 
         # FT-CORE-011: Pronunciation overrides
+        #
+        # PH-B-005: protected_names is the whole point of this call. Overrides
+        # run HERE, before compile_chapter, so they rewrite the very text that
+        # speaker attribution then runs against -- and the lexicon's primary
+        # use case is proper nouns. An override of {'Siobhan': 'shiv-AWN'}
+        # turned `said Siobhan, folding the map` into `said shiv-AWN, folding
+        # the map`, which attributes to nobody: the character silently stops
+        # being cast and renders in the narrator voice for the whole book.
+        # apply_pronunciation_overrides grew the guard in wave 4 and it was
+        # unit-tested there, but this call site never passed the argument, so
+        # the mechanism was inert everywhere it actually mattered.
         if self.config.pronunciation_overrides:
             text = apply_pronunciation_overrides(
-                text, self.config.pronunciation_overrides
+                text,
+                self.config.pronunciation_overrides,
+                protected_names=self.casting.protected_names(),
             )
 
         return text
@@ -1986,31 +2158,66 @@ class AudiobookProject:
                     failed_chapters.append((chapter.index, chapter.title, str(e)))
                     continue
 
+        summary = "; ".join(
+            f"ch{idx} '{title}': {err}" for idx, title, err in failed_chapters
+        )
+
+        if not dry_run:
+            # FT-CORE-022: Capture a small compile summary the CLI can surface
+            # (speaker resolution stats + emotions inferred + any NLP errors).
+            # Previously the stats returned by resolve()/apply_to_utterances()
+            # were discarded, so the user got no observability into what
+            # compile actually did. Initialized HERE, before the failure
+            # checks below, so a caller that catches the total-failure error
+            # still finds the per-chapter causes on the project.
+            self.compile_summary = {
+                "speakers_resolved": 0,
+                "low_confidence": 0,
+                "emotions_inferred": 0,
+                "emotions_near_miss": 0,
+                "nlp_errors": [],
+                # CH-B-002: partial failures are survivable but they are not
+                # nothing. Total failure raises; anything short of that is
+                # recorded here, machine-readable, so a caller can report
+                # "38 of 40 chapters compiled" instead of counting utterances
+                # and guessing. progress.error_message carries the same
+                # information as prose for a human.
+                "failed_chapters": [
+                    {"index": idx, "title": title, "error": err}
+                    for idx, title, err in failed_chapters
+                ],
+            }
+
         if failed_chapters and not dry_run:
             self.progress.status = "error"
-            summary = "; ".join(
-                f"ch{idx} '{title}': {err}" for idx, title, err in failed_chapters
-            )
             self.progress.error_message = (
                 f"{len(failed_chapters)} chapter(s) failed to compile: {summary}"
             )
             logger.warning(self.progress.error_message)
 
+        # CH-B-002: a book where EVERY chapter failed is not a compile with
+        # some warnings, it is a failed compile, and it must be impossible to
+        # mistake for success. Per-chapter tolerance (F-CORE-B-008) is right
+        # -- one unparseable chapter should not cost you the other forty --
+        # but it was the ONLY behaviour: every exception went into
+        # failed_chapters, progress.status was set to "error" and then
+        # overwritten with "idle" at the bottom of this method, and compile()
+        # returned None exactly as a clean run does. cmd_compile never read
+        # progress.error_message, so `audiobooker compile` on a book that
+        # produced nothing printed "Compiled 0 utterances" and exited 0.
+        # Counted by distinct chapter, never by list length: the parallel
+        # path can append the same chapter twice (see _compile_parallel), and
+        # "every chapter failed" must mean every chapter, not every entry.
+        failed_indices = {idx for idx, _, _ in failed_chapters}
+        if failed_chapters and len(failed_indices) >= len(active_chapters):
+            self.progress.status = "error"
+            self.progress.error_message = (
+                f"all {len(failed_indices)} chapter(s) failed to compile: {summary}"
+            )
+            raise CompilationFailedError(summary, chapter_count=len(failed_indices))
+
         if dry_run:
             return dry_run_result
-
-        # FT-CORE-022: Capture a small compile summary the CLI can surface
-        # (speaker resolution stats + emotions inferred + any NLP errors).
-        # Previously the stats returned by resolve()/apply_to_utterances()
-        # were discarded, so the user got no observability into what compile
-        # actually did.
-        self.compile_summary = {
-            "speakers_resolved": 0,
-            "low_confidence": 0,
-            "emotions_inferred": 0,
-            "emotions_near_miss": 0,
-            "nlp_errors": [],
-        }
 
         # Optional NLP speaker resolution (BookNLP)
         if self.config.booknlp_mode != "off":
@@ -2074,7 +2281,13 @@ class AudiobookProject:
         # renderer's emphasis-band mapping reflects the character's default.
         self._apply_default_intensities()
 
-        self.progress.status = "idle"
+        # CH-B-002: do not erase a partial failure on the way out. This line
+        # unconditionally overwrote the "error" status set above, so the only
+        # trace a partially-failed compile left behind was
+        # progress.error_message, and it was persisted alongside a status of
+        # "idle".
+        if not failed_chapters:
+            self.progress.status = "idle"
         self.modified_at = datetime.now().isoformat()
         return None
 
@@ -2167,6 +2380,15 @@ class AudiobookProject:
             logger.warning(
                 "ProcessPoolExecutor failed (%s), falling back to sequential compilation", e
             )
+            # CH-B-002 (adjacent): the fallback recompiles EVERY task from
+            # scratch, so anything the dying pool recorded is stale. Without
+            # this clear, a pool that died after three chapters had already
+            # failed left those three in the list even when the sequential
+            # retry compiled all of them -- the project came back fully
+            # compiled and still reported "3 chapter(s) failed", and with
+            # enough duplicates the total-failure check below would fire on a
+            # book that compiled fine.
+            failed_chapters.clear()
             # Fallback: sequential
             for idx, ch in compile_tasks:
                 chapter = self.chapters[idx]
@@ -2252,7 +2474,12 @@ class AudiobookProject:
         else:
             output_path = Path(output_path)
 
-        self.output_path = output_path
+        # CH-B-003: remember WHERE the render went, not a spelling of it that
+        # depends on the caller's CWD at the time. The renderer below is
+        # handed `output_path` exactly as given (a relative path still writes
+        # to the same place it always did); only the copy this project keeps
+        # and persists is pinned.
+        self.output_path = Path(os.path.abspath(output_path))
         self.progress.status = "rendering"
 
         # Validate voices before spending time rendering. Kept HERE (rather
@@ -2339,9 +2566,18 @@ class AudiobookProject:
         return render_chapter(chapter, self.casting, output_path)
 
     def _ensure_output_dir(self) -> Path:
-        """Ensure output directory exists."""
+        """Ensure output directory exists.
+
+        CH-B-003: the title-derived fallback is pinned to an absolute path at
+        the moment it is chosen. Same directory as before (it is still
+        created next to wherever the command ran), but it stops moving with
+        the process, so the chapter audio paths derived from it survive being
+        resumed from elsewhere.
+        """
         if self._output_dir is None:
-            self._output_dir = Path(f"{_sanitize_filename(self.title)}_audio")
+            self._output_dir = Path(
+                os.path.abspath(f"{_sanitize_filename(self.title)}_audio")
+            )
         self._output_dir.mkdir(parents=True, exist_ok=True)
         return self._output_dir
 
@@ -2560,13 +2796,25 @@ class AudiobookProject:
         """
         Get project information summary.
 
+        COORD-B-001: the two path fields are reported in the same portable
+        form they are stored in. ``audiobooker status --json`` gets redirected
+        into files and pasted into issues at least as often as the project
+        file itself is shared, and "~/Music/book.m4b" identifies the location
+        just as well as "C:\\Users\\<account>\\Music\\book.m4b" without
+        carrying the account name.
+
         Returns:
             Dict with project stats
         """
+        base = (
+            Path(os.path.abspath(self.project_path)).parent
+            if self.project_path
+            else None
+        )
         return {
             "title": self.title,
             "author": self.author,
-            "source": str(self.source_path) if self.source_path else None,
+            "source": portable_path(self.source_path, base),
             "chapters": len(self.chapters),
             "total_words": self.total_words,
             "estimated_duration_minutes": round(self.estimated_duration_minutes, 1),
@@ -2574,7 +2822,7 @@ class AudiobookProject:
             "uncast_speakers": list(self.get_uncast_speakers()),
             "compiled": all(c.is_compiled for c in self.chapters),
             "rendered": all(c.is_rendered for c in self.chapters),
-            "output": str(self.output_path) if self.output_path else None,
+            "output": portable_path(self.output_path, base),
         }
 
     def __repr__(self) -> str:
