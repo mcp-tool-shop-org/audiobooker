@@ -83,20 +83,135 @@ def _heading_from_patterns(
     return None
 
 
+# Body children that are structural, not narratable. Counted separately
+# from unknown tags so a normal document does not log "skipped sectPr".
+_IGNORABLE_BODY_TAGS = frozenset({
+    "sectPr",
+    "bookmarkStart", "bookmarkEnd",
+    "commentRangeStart", "commentRangeEnd", "comment",
+    "permStart", "permEnd",
+    "moveFromRangeStart", "moveFromRangeEnd",
+    "moveToRangeStart", "moveToRangeEnd",
+    "del",
+})
+
+
+def _local_tag(tag: str) -> str:
+    return tag.split("}")[-1] if "}" in tag else tag
+
+
+def _iter_child_blocks(element, parent, unknown_counts: dict):
+    """Yield narratable blocks under ``element`` in document order.
+
+    Walks ``w:p`` / ``w:tbl``, then the siblings FEAT-IN-005 left behind:
+    ``w:sdt`` (content controls), nested ``w:sdtContent``, ``w:txbxContent``
+    (text boxes / callouts), and ``w:customXml`` wrappers. ``w:altChunk``
+    is logged and skipped — it is foreign embedded content, not a paragraph.
+    """
+    from docx.oxml.ns import qn
+    from docx.table import Table
+    from docx.text.paragraph import Paragraph
+
+    qn_txbx = qn("w:txbxContent")
+
+    def _top_txbx(node):
+        for txbx in node.iter(qn_txbx):
+            ancestor = txbx.getparent()
+            nested = False
+            while ancestor is not None and ancestor is not node:
+                if ancestor.tag == qn_txbx:
+                    nested = True
+                    break
+                ancestor = ancestor.getparent()
+            if not nested:
+                yield txbx
+
+    for child in element.iterchildren():
+        tag = child.tag
+        local = _local_tag(tag)
+        if tag == qn("w:p"):
+            yield "paragraph", Paragraph(child, parent)
+            # Text boxes live in drawings inside runs; Paragraph.text does
+            # not reach them, so flatten each w:txbxContent as extra blocks.
+            for txbx in _top_txbx(child):
+                yield from _iter_child_blocks(txbx, parent, unknown_counts)
+        elif tag == qn("w:tbl"):
+            yield "table", Table(child, parent)
+        elif tag == qn("w:sdt"):
+            content = child.find(qn("w:sdtContent"))
+            if content is not None:
+                yield from _iter_child_blocks(content, parent, unknown_counts)
+        elif tag == qn("w:txbxContent"):
+            yield from _iter_child_blocks(child, parent, unknown_counts)
+        elif local in {"customXml", "smartTag", "ins"}:
+            yield from _iter_child_blocks(child, parent, unknown_counts)
+        elif local == "altChunk":
+            unknown_counts["altChunk"] = unknown_counts.get("altChunk", 0) + 1
+            logger.info(
+                "Skipping DOCX w:altChunk (embedded foreign content)."
+            )
+        elif local in _IGNORABLE_BODY_TAGS:
+            continue
+        else:
+            unknown_counts[local] = unknown_counts.get(local, 0) + 1
+
+
 def _cell_text(cell) -> str:
-    """Flatten one table cell — including any table nested inside it."""
+    """Flatten one table cell — including nested tables, SDTs, and text boxes."""
     from docx.oxml.ns import qn
     from docx.table import Table
     from docx.text.paragraph import Paragraph
 
     parts: list[str] = []
+    unknown: dict[str, int] = {}
     for child in cell._element.iterchildren():
-        if child.tag == qn("w:p"):
+        tag = child.tag
+        local = _local_tag(tag)
+        if tag == qn("w:p"):
             text = (Paragraph(child, cell).text or "").strip()
             if text:
                 parts.append(text)
-        elif child.tag == qn("w:tbl"):
+            qn_txbx = qn("w:txbxContent")
+            for txbx in child.iter(qn_txbx):
+                ancestor = txbx.getparent()
+                skip = False
+                while ancestor is not None and ancestor is not child:
+                    if ancestor.tag == qn_txbx:
+                        skip = True
+                        break
+                    ancestor = ancestor.getparent()
+                if skip:
+                    continue
+                nested = _container_text(txbx, cell, unknown)
+                if nested:
+                    parts.append(nested)
+        elif tag == qn("w:tbl"):
             nested = _table_to_speakable(Table(child, cell))
+            if nested:
+                parts.append(nested)
+        elif tag == qn("w:sdt"):
+            content = child.find(qn("w:sdtContent"))
+            if content is not None:
+                nested = _container_text(content, cell, unknown)
+                if nested:
+                    parts.append(nested)
+        elif tag == qn("w:txbxContent"):
+            nested = _container_text(child, cell, unknown)
+            if nested:
+                parts.append(nested)
+    return " ".join(parts).strip()
+
+
+def _container_text(element, parent, unknown_counts: dict) -> str:
+    """Speakable text of a nested SDT / text-box container."""
+    parts: list[str] = []
+    for kind, block in _iter_child_blocks(element, parent, unknown_counts):
+        if kind == "paragraph":
+            text = (block.text or "").strip()
+            if text:
+                parts.append(text)
+        elif kind == "table":
+            nested = _table_to_speakable(block)
             if nested:
                 parts.append(nested)
     return " ".join(parts).strip()
@@ -148,10 +263,6 @@ def _iter_body_blocks(document):
     no XML body — a document model without tables loses nothing by it.
     """
     try:
-        from docx.oxml.ns import qn
-        from docx.table import Table
-        from docx.text.paragraph import Paragraph
-
         body = document.element.body
     except (ImportError, AttributeError) as e:
         logger.debug(
@@ -162,11 +273,102 @@ def _iter_body_blocks(document):
             yield "paragraph", para
         return
 
-    for child in body.iterchildren():
-        if child.tag == qn("w:p"):
-            yield "paragraph", Paragraph(child, document)
-        elif child.tag == qn("w:tbl"):
-            yield "table", Table(child, document)
+    unknown: dict[str, int] = {}
+    yield from _iter_child_blocks(body, document, unknown)
+    if unknown:
+        logger.info(
+            "Skipped %d unknown DOCX body tag(s): %s",
+            sum(unknown.values()),
+            ", ".join(f"{k}×{v}" for k, v in sorted(unknown.items())),
+        )
+
+
+def _part_lines(part, parent) -> list[str]:
+    """Flatten a header/footer part to speakable lines (paragraphs + tables)."""
+    try:
+        element = part._element
+    except AttributeError:
+        return [
+            (p.text or "").strip()
+            for p in getattr(part, "paragraphs", [])
+            if (p.text or "").strip()
+        ]
+    unknown: dict[str, int] = {}
+    lines: list[str] = []
+    for kind, block in _iter_child_blocks(element, parent, unknown):
+        if kind == "paragraph":
+            text = (block.text or "").strip()
+            if text:
+                lines.append(text)
+        elif kind == "table":
+            rendered = _table_to_speakable(block)
+            if rendered:
+                lines.append(rendered)
+    return lines
+
+
+def _unique_header_footer_lines(document) -> tuple[list[str], list[str]]:
+    """Keep unique header/footer prose; drop running heads that repeat.
+
+    Policy: a line that appears in more than one header/footer part is a
+    running head and is omitted. A line that appears once (letterhead,
+    a first-page-only dispatch, a unique footer note) is kept and attached
+    to the first / last chapter so the short-section filter cannot drop it.
+    Single-section running heads therefore speak once, not per page.
+    """
+    try:
+        sections = list(document.sections)
+    except Exception as e:
+        logger.debug("DOCX sections unavailable (%s) — skipping headers/footers.", e)
+        return [], []
+
+    def _parts(section, kind: str):
+        try:
+            primary = getattr(section, kind, None)
+        except Exception:
+            primary = None
+        if primary is not None:
+            try:
+                if not getattr(primary, "is_linked_to_previous", False):
+                    yield primary
+            except Exception:
+                yield primary
+        try:
+            different_first = bool(section.different_first_page_header_footer)
+        except Exception:
+            different_first = False
+        if different_first:
+            try:
+                first = getattr(section, f"first_page_{kind}", None)
+            except Exception:
+                first = None
+            if first is not None:
+                yield first
+
+    def _collect(kind: str) -> list[str]:
+        counts: dict[str, int] = {}
+        order: list[str] = []
+        for section in sections:
+            for part in _parts(section, kind):
+                for line in _part_lines(part, document):
+                    if line not in counts:
+                        order.append(line)
+                    counts[line] = counts.get(line, 0) + 1
+        unique = [line for line in order if counts[line] == 1]
+        dropped = [line for line in order if counts[line] > 1]
+        if dropped:
+            logger.info(
+                "Dropping %d repeating DOCX %s running-head line(s).",
+                len(dropped), kind,
+            )
+        if unique:
+            logger.info(
+                "Keeping %d unique DOCX %s paragraph(s).",
+                len(unique), kind,
+            )
+        return unique
+
+    return _collect("header"), _collect("footer")
 
 
 def parse_docx(
@@ -331,6 +533,29 @@ def parse_docx(
 
     # Emit the trailing section.
     _flush()
+
+    # Unique header/footer prose (letterhead, a first-page dispatch) is
+    # attached once so the short-section filter cannot drop a 6-word
+    # letterhead. Repeating running heads were already filtered out.
+    header_lines, footer_lines = _unique_header_footer_lines(document)
+    if not chapters and (header_lines or footer_lines):
+        content = "\n".join(header_lines + footer_lines).strip()
+        if content:
+            chapters.append(Chapter(
+                index=0,
+                title=metadata.get("title") or path.stem,
+                raw_text=content,
+                source_file=str(path),
+            ))
+    elif chapters:
+        if header_lines:
+            chapters[0].raw_text = "\n".join(
+                header_lines + [chapters[0].raw_text]
+            ).strip()
+        if footer_lines:
+            chapters[-1].raw_text = "\n".join(
+                [chapters[-1].raw_text] + footer_lines
+            ).strip()
 
     # If style headings drove the split, pattern matches inside body text may
     # have spuriously created extra chapters — but in practice styled docs do
