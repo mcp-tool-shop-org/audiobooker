@@ -245,8 +245,17 @@ class TestTheMetricIsHonest:
         assert report["dialogue_unverified_rate"] == pytest.approx(6 / 8)
         # The two verdicts diverge, which is the entire point: the published
         # one still says the chapter is fine.
+        #
+        # attribution_quality reads "failed", not "degraded": the coordinator
+        # gave it its own thresholds (UNVERIFIED_WARN_RATE 0.30 /
+        # UNVERIFIED_FAIL_RATE 0.60) rather than inheriting the unknown-rate
+        # ones. A guess is worse for the user than an admission — an unknown
+        # line is visible in the report and the review export, a guess is
+        # not — so unverified has to fail earlier than unknown. Three
+        # quarters guesswork is not degraded, it is unusable, and this
+        # passage measured 52% hand-scored speaker accuracy.
         assert report["quality"] == "ok"
-        assert report["attribution_quality"] == "degraded"
+        assert report["attribution_quality"] == "failed"
 
     def test_a_genuinely_well_attributed_chapter_still_reads_clean(self):
         text = (

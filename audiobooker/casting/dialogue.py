@@ -1132,6 +1132,43 @@ DIALOGUE_UNKNOWN_WARN_RATE = 0.4
 DIALOGUE_UNKNOWN_FAIL_RATE = 0.8
 
 
+# FEAT-CAST-001, coordinator call. `attribution_quality` gets its OWN
+# thresholds rather than reusing the unknown-rate ones, because it measures a
+# different and more dangerous quantity.
+#
+# An `unknown` line is the tool being honest: the user sees it in the report,
+# sees it in the review export, and can fix it. An UNVERIFIED line is a guess
+# the tool presented as an answer — invisible in every surface that existed
+# before this wave, and wrong often enough to matter (the passage that drove
+# this measured 52% hand-scored speaker accuracy while reporting quality ok).
+#
+# So a guess is worse for the user than an admission, and unverified must
+# fail EARLIER than unknown, not at the same 0.80. At 0.80 the 6-of-8-guessed
+# passage read `degraded` — a book that is three-quarters guesswork is not
+# degraded, it is unusable, and the user should be stopped before paying for
+# a TTS run of it.
+#
+# These are new keys with no published history, so they are set on their own
+# merits. `--force` remains the override, which is what makes erring toward
+# halting the right side to err on for an irreversible spend.
+UNVERIFIED_WARN_RATE = 0.30
+UNVERIFIED_FAIL_RATE = 0.60
+
+
+def attribution_quality_verdict(dialogue_unverified_rate: float) -> str:
+    """Classify the share of dialogue whose speaker was GUESSED.
+
+    Distinct from :func:`dialogue_quality_verdict`, which classifies the
+    share the tool admits it could not attribute. See the threshold comment
+    above for why this one is stricter.
+    """
+    if dialogue_unverified_rate >= UNVERIFIED_FAIL_RATE:
+        return "failed"
+    if dialogue_unverified_rate >= UNVERIFIED_WARN_RATE:
+        return "degraded"
+    return "ok"
+
+
 def dialogue_quality_verdict(dialogue_unknown_rate: float) -> str:
     """Classify an unattributed-DIALOGUE rate (PH-B-002).
 
@@ -1795,7 +1832,7 @@ def compile_report(
         "total_low_confidence": low_confidence_dialogue,
         "dialogue_low_confidence_rate": dialogue_low_confidence_rate,
         "dialogue_unverified_rate": dialogue_unverified_rate,
-        "attribution_quality": dialogue_quality_verdict(dialogue_unverified_rate),
+        "attribution_quality": attribution_quality_verdict(dialogue_unverified_rate),
         "attribution_source_distribution": source_counts,
     }
 

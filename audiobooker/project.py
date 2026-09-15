@@ -407,8 +407,13 @@ class AudiobookProject:
             book_metadata.year = metadata["year"]
 
         project = cls(
-            title=metadata.get("title", path.stem),
-            author=metadata.get("author", ""),
+            # FEAT-PROD-008: kwargs.pop, not a bare default. A caller
+            # passing title=/author= — which every from_* docstring
+            # advertises — otherwise collides with these and raises
+            # TypeError before the project is ever built. from_folder was
+            # the only constructor that got this right.
+            title=kwargs.pop("title", metadata.get("title", path.stem)),
+            author=kwargs.pop("author", metadata.get("author", "")),
             source_path=path,
             chapters=chapters,
             config=config,
@@ -490,8 +495,13 @@ class AudiobookProject:
                 )
 
         project = cls(
-            title=metadata.get("title", path.stem),
-            author=metadata.get("author", ""),
+            # FEAT-PROD-008: kwargs.pop, not a bare default. A caller
+            # passing title=/author= — which every from_* docstring
+            # advertises — otherwise collides with these and raises
+            # TypeError before the project is ever built. from_folder was
+            # the only constructor that got this right.
+            title=kwargs.pop("title", metadata.get("title", path.stem)),
+            author=kwargs.pop("author", metadata.get("author", "")),
             source_path=path,
             chapters=chapters,
             config=config,
@@ -564,8 +574,13 @@ class AudiobookProject:
             book_metadata.year = metadata["year"]
 
         project = cls(
-            title=metadata.get("title", path.stem),
-            author=metadata.get("author", ""),
+            # FEAT-PROD-008: kwargs.pop, not a bare default. A caller
+            # passing title=/author= — which every from_* docstring
+            # advertises — otherwise collides with these and raises
+            # TypeError before the project is ever built. from_folder was
+            # the only constructor that got this right.
+            title=kwargs.pop("title", metadata.get("title", path.stem)),
+            author=kwargs.pop("author", metadata.get("author", "")),
             source_path=path,
             chapters=chapters,
             config=config,
@@ -681,8 +696,13 @@ class AudiobookProject:
         )
 
         project = cls(
-            title=metadata.get("title", path.stem),
-            author=metadata.get("author", ""),
+            # FEAT-PROD-008: kwargs.pop, not a bare default. A caller
+            # passing title=/author= — which every from_* docstring
+            # advertises — otherwise collides with these and raises
+            # TypeError before the project is ever built. from_folder was
+            # the only constructor that got this right.
+            title=kwargs.pop("title", metadata.get("title", path.stem)),
+            author=kwargs.pop("author", metadata.get("author", "")),
             source_path=path,
             chapters=chapters,
             config=config,

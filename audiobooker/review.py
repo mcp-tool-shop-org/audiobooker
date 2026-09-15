@@ -473,6 +473,31 @@ def import_reviewed(project: "AudiobookProject", review_path: Path) -> dict:
                     if utt_data["text"].startswith('"')
                     else UtteranceType.NARRATION
                 )
+            # FEAT-CAST-001 provenance. Rebuilding the utterance used to drop
+            # attribution_source and confidence, so importing a review erased
+            # the provenance from every line in the book — including the ones
+            # the human had just corrected by hand. Backwards twice over: a
+            # human decision is the HIGHEST-confidence attribution there is,
+            # and ATTRIBUTION_SOURCES has carried an unused `user` member for
+            # exactly this since the feature landed.
+            #
+            # A line whose speaker the reviewer changed becomes `user` at 1.0.
+            # A line they left alone keeps whatever the compiler worked out,
+            # so importing a review does not relabel the whole book as
+            # human-verified — which would be the same lie in the other
+            # direction.
+            prior = (original_utterances[i]
+                     if i < len(original_utterances) else None)
+            speaker_changed = (
+                prior is not None and prior.speaker != utt_data["speaker"]
+            )
+            if speaker_changed:
+                source, confidence = "user", 1.0
+            elif prior is not None:
+                source, confidence = prior.attribution_source, prior.confidence
+            else:
+                source, confidence = None, None
+
             utterance = Utterance(
                 speaker=utt_data["speaker"],
                 text=utt_data["text"],
@@ -480,6 +505,8 @@ def import_reviewed(project: "AudiobookProject", review_path: Path) -> dict:
                 emotion=utt_data["emotion"],
                 chapter_index=matching_chapter.index,
                 line_index=i,
+                attribution_source=source,
+                confidence=confidence,
             )
             new_utterances.append(utterance)
             stats["speakers_found"].add(utt_data["speaker"])
