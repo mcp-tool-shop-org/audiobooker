@@ -41,6 +41,33 @@ uvx audiobooker --help                 # zero-install trial
 pip install "audiobooker-ai[render]"   # with the TTS voice engine
 ```
 
+**Docker** — ffmpeg already inside, published to GHCR on every release:
+```bash
+docker run --rm -v "$(pwd):/data" ghcr.io/mcp-tool-shop-org/audiobooker \
+  make /data/mybook.epub --acx
+```
+That one mount is enough, and `--rm` is safe: the render cache lives beside
+the project file, not in a home directory, so a re-run **resumes** instead of
+re-synthesizing the book.
+
+<details>
+<summary>Container details — tags, the cache, and file ownership</summary>
+
+- Tagged `latest`, `2`, `2.1` and the exact version, pushed to GHCR on every
+  release.
+- The entrypoint **is** `audiobooker`, so pass the subcommand straight after
+  the image name — don't repeat the program name.
+- The cache lands at `<book-dir>/.audiobooker/cache`. That is why one bind
+  mount covers persistence; losing it means paying for the whole TTS run
+  again, not just re-muxing.
+- `/ext` is an optional second mount, only for supplying your own TTS wheel.
+- The container runs as a non-root UID 1000. On Linux, if the mounted
+  directory isn't writable by that UID the cache can't be written — add
+  `--user "$(id -u):$(id -g)"` or `chown` the directory. Docker Desktop on
+  macOS and Windows handles this for you.
+
+</details>
+
 **Rendering audio** needs the [`voice-soundboard`](https://pypi.org/project/voice-soundboard/) TTS engine (the `[render]` extra) and **FFmpeg** on PATH (`winget install ffmpeg` · `brew install ffmpeg` · `apt install ffmpeg`). Everything up to render — parse, cast, compile, review — works without them. Run `audiobooker diagnose` to check your setup.
 
 <details>

@@ -25,7 +25,7 @@
 npx @mcptoolshop/audiobooker make mybook.epub --acx
 ```
 
-Audiobooker rileva i dialoghi, assegna una voce distinta a ciascun personaggio, deduce le emozioni, consente di rivedere e correggere tutto prima che venga prodotto anche solo un secondo di audio, quindi ottimizza il risultato in base alle specifiche audio di ACX, in modo che l'output sia un audiolibro *completo*, e non solo un file audio generato.
+Audiobooker rileva i dialoghi, assegna una voce distinta a ciascun personaggio, deduce le emozioni, consente di rivedere e correggere tutto prima che venga prodotto anche solo un secondo di audio, quindi ottimizza il risultato in base alle specifiche: in questo modo, l'output è un audiolibro *pronto per essere inviato*, e non solo un semplice file audio generato.
 
 ## Installazione
 
@@ -41,7 +41,25 @@ uvx audiobooker --help                 # zero-install trial
 pip install "audiobooker-ai[render]"   # with the TTS voice engine
 ```
 
-Per il **rendering dell'audio** è necessario il motore TTS [`voice-soundboard`](https://pypi.org/project/voice-soundboard/) (l'extra `[render]`) e **FFmpeg** nel PATH (`winget install ffmpeg` · `brew install ffmpeg` · `apt install ffmpeg`). Tutto ciò che precede il rendering (analisi, assegnazione delle voci, compilazione, revisione) funziona anche senza questi componenti. Esegui `audiobooker diagnose` per verificare la configurazione.
+**Docker**: ffmpeg è già incluso, e viene pubblicato su GHCR ad ogni rilascio:
+```bash
+docker run --rm -v "$(pwd):/data" ghcr.io/mcp-tool-shop-org/audiobooker \
+  make /data/mybook.epub --acx
+```
+Questo singolo punto di mount è sufficiente e `--rm` è sicuro: la cache di rendering si trova accanto al file di progetto, non in una directory utente, quindi un'esecuzione ripetuta **riprende** invece di risintetizzare l'intero libro.
+
+<details>
+<summary>Container details — tags, the cache, and file ownership</summary>
+
+- Tag `latest`, `2`, `2.1` e la versione esatta, pubblicati su GHCR ad ogni rilascio.
+- Il punto di ingresso **è** `audiobooker`, quindi passa il sottocomando immediatamente dopo il nome dell'immagine; non ripetere il nome del programma.
+- La cache viene salvata in `<book-dir>/.audiobooker/cache`. Ecco perché un singolo punto di mount garantisce la persistenza; perderlo significa dover pagare di nuovo per l'intera esecuzione TTS, e non solo per il re-muxing.
+- `/ext` è un secondo punto di mount opzionale, utilizzato solo per fornire la propria libreria TTS.
+- Il container viene eseguito con un UID non root, 1000. Su Linux, se la directory montata non è scrivibile da quell'UID, la cache non può essere scritta; aggiungi `--user "$(id -u):$(id -g)"` o `chown` alla directory. Docker Desktop su macOS e Windows gestisce questo aspetto automaticamente.
+
+</details>
+
+Per **generare l'audio** è necessario il motore TTS [`voice-soundboard`](https://pypi.org/project/voice-soundboard/) (l'extra `[render]`) e **FFmpeg** nel PATH (`winget install ffmpeg` · `brew install ffmpeg` · `apt install ffmpeg`). Tutto ciò che precede la generazione (analisi, assegnazione delle voci, compilazione, revisione) funziona anche senza questi componenti. Eseguire `audiobooker diagnose` per verificare la configurazione.
 
 <details>
 <summary>From source</summary>
@@ -74,9 +92,9 @@ audiobooker master-check mybook.m4b    # PASS/FAIL vs ACX loudness/peak/noise-fl
 ## Funzionalità
 
 ### Input e struttura
-- **EPUB, TXT, Markdown, PDF, DOCX** o una **cartella di file per capitolo** (Scrivener/Obsidian/romanzi a puntate).
-- **Suddivisione di EPUB basata sul sommario:** i capitoli e i titoli vengono estratti dal sommario del libro.
-- **DOCX:** suddivisione in base agli stili Word `Heading 1/2`/`Title`; **PDF:** rilevamento dei titoli (con una protezione per i PDF scansionati); personalizzazione `--chapter-delimiter`.
+- **EPUB, TXT, Markdown, PDF, DOCX** o una **cartella contenente i file per ogni capitolo** (Scrivener/Obsidian/romanzi a puntate).
+- **Suddivisione di EPUB basata sul sommario**: i confini e i titoli dei capitoli vengono estratti dal sommario del libro.
+- **DOCX** suddivide in base agli stili Word `Heading 1/2`/`Title`; **PDF** rileva le intestazioni (con una protezione per i PDF scansionati); personalizzazione `--chapter-delimiter`.
 - Pulizia intelligente del testo, rimozione di elementi in Markdown, gestione delle note a piè di pagina e un **lessico di pronuncia riutilizzabile** (`pronunciation import/export`, CSV/JSON, con possibilità di passare i fonemi).
 
 ### Assegnazione delle voci e attribuzione
@@ -84,26 +102,26 @@ audiobooker master-check mybook.m4b    # PASS/FAIL vs ACX loudness/peak/noise-fl
 - **Assegnazione interattiva delle voci**, **assegnazione di massa `cast-fill`** in base al genere/ruolo, **preset di voci nominati** riutilizzabili in un'intera serie e **fogli di calcolo CSV** per i collaboratori.
 - **Rilevamento dei dialoghi + attribuzione del parlante** (opzionale **BookNLP** per la coreferenza), **individuazione automatica degli alias** e **deduzione delle emozioni** con intensità regolabile, **tono a livello di scena** e pacchetti di preset per genere.
 
-### Rendering e output
+### Generazione e output
 - **M4B** (marcatori di capitolo + copertina incorporata + metadati della serie), **MP3**, **Opus**, **FLAC**, **WAV**; esportazione per capitolo; esportazione di **podcast/RSS**.
-Il formato WAV non ha un atomo di capitolo, quindi il rendering WAV lo indica esplicitamente invece di segnalare un errore nel mux del capitolo: è consigliabile utilizzarlo quando l'audio deve essere elaborato in un editor.
-- **Mastering conforme alle specifiche ACX** (`--acx`) + un controllo **`master-check`** che segnala PASS/FAIL per il volume RMS, il picco e il livello di rumore; clip di **`sample`** per la vendita al dettaglio.
-- Rendering parallelo, una **cache di rendering persistente** con ripresa, avanzamento dinamico + tempo stimato e report di errore strutturati.
+WAV non ha un atomo di capitolo, quindi la generazione di un file WAV lo indica esplicitamente anziché segnalare un errore nella creazione del capitolo: è consigliabile utilizzare questo formato quando l'audio deve essere elaborato in un editor.
+- **Mastering conforme alle specifiche ACX** (`--acx`) + un controllo **`master-check`** che segnala PASS/FAIL per il volume RMS, il picco e il livello di rumore; clip di anteprima **`sample`** per la vendita al dettaglio.
+- Generazione parallela, una **cache di generazione persistente** con ripresa, avanzamento dinamico + tempo stimato di completamento e report di errore strutturati.
 
 ### Flusso di lavoro ed ecosistema
-- **`make`** pipeline a esecuzione singola · **file di configurazione** (`.audiobookerrc` / `[tool.audiobooker]`) · **modalità `--watch`** · **elaborazione batch basata sul manifest** · completamento della shell.
-- **7 profili linguistici** (en/fr/de/es/ja/it/pt) · **motori TTS plug-in** (`--engine`, punti di ingresso: è possibile utilizzare Piper/Coqui/ElevenLabs) · script `--json` sulla maggior parte dei comandi · codici di uscita strutturati.
+- **`make`** pipeline a esecuzione singola · **file di configurazione** (`.audiobookerrc` / `[tool.audiobooker]`) · **modalità `--watch`** · **elaborazione in batch basata sul manifest** · completamento automatico della shell.
+- **7 profili linguistici** (en/fr/de/es/ja/it/pt) · **motori TTS plug-in** (`--engine`, punti di ingresso: è possibile utilizzare Piper/Coqui/ElevenLabs) · script `--json` per la maggior parte dei comandi · codici di uscita strutturati.
 
-## Mastering conforme alle specifiche audio di ACX
+## Mastering in base alle specifiche audio ACX
 
-ACX pubblica un obiettivo audio preciso e misurabile. È l'elemento più simile a uno standard di mastering che esiste nel mondo degli audiolibri e vale la pena raggiungerlo, qualunque cosa si faccia con il file in seguito.
+ACX pubblica un obiettivo audio preciso e misurabile. È l'elemento più simile a uno standard di mastering nel mondo degli audiolibri e vale la pena raggiungerlo, qualunque cosa si faccia con il file in seguito.
 
 | Requisito | Specifiche ACX | Cosa fa `--acx` |
 |---|---|---|
 | Volume | RMS tra **−23 e −18 dBFS** | two-pass `loudnorm` at −20 LUFS, which lands inside that window for speech |
 | Picco | uguale o inferiore a **−3 dBFS** | applicato nello stesso passaggio |
 | Livello di rumore | uguale o inferiore a **−60 dBFS** | misurato e segnalato: non viene mai "corretto" silenziosamente |
-| Formato | **44,1 kHz, 192 kbps CBR MP3** | imposta la frequenza di campionamento; aggiungi `--format mp3 --bitrate 192k` per il codec |
+| Formato | **44,1 kHz, 192 kbps CBR MP3** | imposta la frequenza di campionamento; aggiungere `--format mp3 --bitrate 192k` per il codec |
 
 ```bash
 audiobooker render --acx --format mp3 --bitrate 192k
@@ -113,37 +131,37 @@ audiobooker sample --duration 180      # a mastered retail sample clip
 
 Ecco due aspetti importanti relativi ai numeri sopra indicati:
 
-**`master-check` misura l'RMS non ponderato, non i LUFS.** Si tratta di quantità diverse e ACX applica i criteri in base alla prima. Il valore di −20 LUFS indica come il passaggio di mastering *ottiene* tale valore: è l'obiettivo che `ffmpeg loudnorm` può raggiungere, e non ciò che viene controllato in seguito.
+**`master-check` misura l'RMS non ponderato, non i LUFS.** Si tratta di quantità diverse e ACX si basa su quest'ultima. Il valore di −20 LUFS indica come il passaggio di mastering *ottiene* tale valore: è l'obiettivo che `ffmpeg loudnorm` può raggiungere, e non ciò che viene controllato in seguito.
 
-**Il livello di rumore viene misurato, non corretto.** È il requisito che più spesso non viene soddisfatto e deriva dall'audio di origine. Uno strumento che lo attenuasse silenziosamente nasconderebbe il numero che è necessario visualizzare.
+**Il livello di rumore viene misurato, non corretto.** È il requisito che più spesso non viene soddisfatto e deriva dall'audio di origine. Uno strumento che lo attenuasse silenziosamente nasconderebbe il dato più importante che è necessario visualizzare.
 
 ### Dove un audiolibro narrato dall'IA può effettivamente arrivare
 
-Rispettare le specifiche non è la stessa cosa di essere accettati, ed è importante essere chiari su questo: **il flusso di invio standard di ACX è per la narrazione umana.** I suoi requisiti dell'aprile 2026 elencano la sintesi vocale non autorizzata e le registrazioni AI tra gli elementi che non accetta, quindi un titolo narrato dall'IA richiede un'autorizzazione preventiva da parte di ACX anziché un invio ordinario.
+Rispettare le specifiche non è la stessa cosa di essere accettati, ed è importante essere chiari su questo: **il flusso di invio standard di ACX è per la narrazione umana.** I suoi requisiti del 2026 elencano la sintesi vocale e le registrazioni AI non autorizzate tra gli elementi che non accetta, quindi un titolo narrato dall'IA richiede un'autorizzazione preventiva da parte di ACX anziché un invio ordinario.
 
-I canali che accettano la narrazione AI, generalmente con una dichiarazione, includono l'opzione **Virtual Voice** di Amazon tramite KDP (distribuzione solo su Amazon) e gli aggregatori come **Spotify Audiobooks for Authors**, **Author's Republic** e **Kobo Writing Life**. Le politiche dei rivenditori in questo settore cambiano rapidamente: controlla i termini correnti da solo anziché fidarti di questo paragrafo.
+I canali che accettano la narrazione AI, generalmente con una dichiarazione, includono **Virtual Voice** di Amazon tramite KDP (distribuzione solo su Amazon) e aggregatori come **Spotify Audiobooks for Authors**, **Author's Republic** e **Kobo Writing Life**. Le politiche dei rivenditori in questo settore cambiano rapidamente: è consigliabile verificare personalmente i termini correnti anziché fidarsi di questo paragrafo.
 
-Quindi: `--acx` riguarda l'audio. Se un rivenditore accetta un titolo narrato dall'IA è una sua decisione, e non una proprietà del file che hai appena prodotto.
+Quindi: `--acx` riguarda l'audio. Se un rivenditore accetta un titolo narrato dall'IA è una sua decisione, e non una proprietà del file che si è appena prodotto.
 
 ## Comandi CLI
 
 | Comando | Descrizione |
 |---------|-------------|
-| `make <file>` | Esecuzione singola: nuovo → compilazione → assegnazione automatica delle voci → rendering |
+| `make <file>` | Esecuzione singola: nuovo → compilazione → assegnazione automatica delle voci → generazione |
 | `new <file\ | cartella>` | Crea un progetto da EPUB/TXT/MD/PDF/DOCX o da una cartella |
 | `from-stdin` | Crea un progetto da testo inserito tramite pipe |
 | `cast <char> <voice>` · `cast-interactive` | Assegna le voci (o esegui l'assegnazione guidata delle voci per ogni personaggio; vedi anche `cast -i`) |
 | `cast-suggest` · `cast-apply --auto` · `cast-fill` | Suggerisci / applica automaticamente / assegna in blocco le voci |
-| `cast-preset save\ | list\ | apply\ | delete` | Preset di voci riutilizzabili tra i libri |
-| `cast-export` · `cast-import <file>` | Esporta e importa il cast in formato JSON/CSV: modifica manualmente o riutilizza tra le diverse edizioni. |
-| `audition <char>` | Classifica le voci dei candidati per un singolo personaggio (`--render`). |
+| `cast-preset save\ | list\ | apply\ | delete` | Preset di voci riutilizzabili in diversi libri |
+| `cast-export` · `cast-import <file>` | Esporta e importa il cast in formato JSON/CSV: modifica manualmente o riutilizza tra le diverse versioni. |
+| `audition <char>` | Valuta e classifica le voci dei candidati per un singolo personaggio (`--render`). |
 | `compile` | Rileva i dialoghi, attribuisci i parlanti, inferisci le emozioni. |
 | `report` | Qualità della compilazione: tasso sconosciuto, righe principali non attribuite, mix di emozioni. |
 | `review-export` · `review-import <file>` | Ciclo di revisione modificabile manualmente. |
-| `render` | Renderizza l'audiolibro (`--acx`, `--format`, `--split`, `--bitrate`, `--engine`, `--watch`, `--cover`, `-j N`). |
+| `render` | Genera l'audiolibro (`--acx`, `--format`, `--split`, `--bitrate`, `--engine`, `--watch`, `--cover`, `-j N`). |
 | `sample` · `master-check <file>` | Esempio di prodotto finale: verifica rispetto alle specifiche audio di ACX. |
 | `export-chapters` · `podcast` | Foglio di riferimento dei capitoli (ffmetadata/cue/json) · feed RSS del podcast. |
-| `preview` · `batch` · `diagnose` | Clip di controllo della qualità della voce · batch/`--manifest` · verifica dell'ambiente (restituisce un codice di errore diverso da zero se il rendering non è possibile). |
+| `preview` · `batch` · `diagnose` | Clip di controllo della qualità della voce · batch/`--manifest` · verifica dell'ambiente (restituisce un codice di errore diverso da zero se il sistema non riesce a generare l'output). |
 | `load <file>` | Apri un progetto `.audiobooker` esistente. |
 | `voices` · `chapters` · `speakers` · `info` · `status` · `cache` · `emotions` · `pronunciation` · `completion` | Ispeziona e gestisci. |
 
@@ -151,7 +169,7 @@ Ogni comando supporta `-h/--help`. Flag globali: `--silent`, `--debug`. **Codici
 
 ## Configurazione
 
-Imposta i valori predefiniti una sola volta invece di passare ripetutamente i flag: `.audiobookerrc` (TOML) accanto al libro o `[tool.audiobooker]` in `pyproject.toml`. La precedenza è la seguente: **flag CLI > configurazione del progetto > configurazione utente (`~/.audiobookerrc`) > valori predefiniti integrati**.
+Imposta i valori predefiniti una sola volta invece di passare ripetutamente i flag: `.audiobookerrc` (TOML) accanto al libro, oppure `[tool.audiobooker]` in `pyproject.toml`. La precedenza è la seguente: **flag CLI > configurazione del progetto > configurazione utente (`~/.audiobookerrc`) > valori predefiniti integrati**.
 
 ```toml
 # .audiobookerrc
@@ -207,7 +225,7 @@ Casting -> Review/Edit -> TTS (pluggable) -> cached audio -> FFmpeg master -> M4
 ## Sicurezza e ambito dei dati
 
 - **Rete:** nessuna: nessun telemetria, nessun archivio dati, nessuna credenziale. Legge i file del libro, scrive l'audio e la cache nelle directory di output.
-- **Autorizzazioni:** accesso in lettura agli input, accesso in scrittura agli output; FFmpeg e un motore TTS opzionali nel PATH.
+- **Autorizzazioni:** accesso in lettura agli input, accesso in scrittura agli output; FFmpeg opzionale e un motore TTS installato nel PATH.
 - Consulta [SECURITY.md](SECURITY.md).
 
 ## Valutazione
@@ -226,4 +244,4 @@ Casting -> Review/Edit -> TTS (pluggable) -> cached audio -> FFmpeg master -> M4
 
 ---
 
-Creato da <a href="https://mcp-tool-shop.github.io/">MCP Tool Shop</a>.
+Realizzato da <a href="https://mcp-tool-shop.github.io/">MCP Tool Shop</a>.

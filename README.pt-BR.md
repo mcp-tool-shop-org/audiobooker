@@ -41,6 +41,24 @@ uvx audiobooker --help                 # zero-install trial
 pip install "audiobooker-ai[render]"   # with the TTS voice engine
 ```
 
+**Docker** — já inclui o ffmpeg e é publicado no GHCR em cada lançamento:
+```bash
+docker run --rm -v "$(pwd):/data" ghcr.io/mcp-tool-shop-org/audiobooker \
+  make /data/mybook.epub --acx
+```
+Esse único ponto de montagem é suficiente e `--rm` é seguro: o cache de renderização fica ao lado do arquivo do projeto, e não em um diretório pessoal, portanto, uma nova execução **retoma** o processo em vez de ressíntetizar o livro.
+
+<details>
+<summary>Container details — tags, the cache, and file ownership</summary>
+
+- Marcado com `latest`, `2`, `2.1` e a versão exata, e enviado para o GHCR em cada lançamento.
+- O ponto de entrada **é** `audiobooker`, portanto, passe o subcomando imediatamente após o nome da imagem — não repita o nome do programa.
+- O cache é armazenado em `<book-dir>/.audiobooker/cache`. É por isso que um único ponto de montagem garante a persistência; perdê-lo significa ter que pagar novamente por toda a execução do TTS, e não apenas pela nova multiplexação.
+- `/ext` é um segundo ponto de montagem opcional, apenas para fornecer seu próprio pacote TTS.
+- O contêiner é executado como um UID não raiz, 1000. No Linux, se o diretório montado não for gravável por esse UID, o cache não poderá ser gravado — adicione `--user "$(id -u):$(id -g)"` ou `chown` ao diretório. O Docker Desktop no macOS e no Windows lida com isso automaticamente.
+
+</details>
+
 A **renderização de áudio** requer o motor TTS [`voice-soundboard`](https://pypi.org/project/voice-soundboard/) (o extra `[render]`) e o **FFmpeg** no PATH (`winget install ffmpeg` · `brew install ffmpeg` · `apt install ffmpeg`). Tudo até a renderização — análise, atribuição de vozes, compilação, revisão — funciona sem eles. Execute `audiobooker diagnose` para verificar sua configuração.
 
 <details>
@@ -75,8 +93,8 @@ audiobooker master-check mybook.m4b    # PASS/FAIL vs ACX loudness/peak/noise-fl
 
 ### Entrada e estrutura
 - **EPUB, TXT, Markdown, PDF, DOCX** ou uma **pasta de arquivos por capítulo** (Scrivener/Obsidian/ficção serializada).
-- **Divisão de EPUB baseada no TOC** — limites e títulos de capítulos da própria tabela de conteúdos do livro.
-- **DOCX** divide-se com base nos estilos Word `Heading 1/2`/`Title`; **PDF** detecta títulos (com uma proteção para PDFs digitalizados); personalização `--chapter-delimiter`.
+- **Divisão de EPUB baseada em TOC** — limites e títulos de capítulos da própria tabela de conteúdos do livro.
+- **DOCX** divide-se em estilos Word `Heading 1/2`/`Title`; **PDF** detecta títulos (com uma proteção para PDFs digitalizados); personalização `--chapter-delimiter`.
 - Limpeza inteligente de texto, remoção com reconhecimento de Markdown, tratamento de notas de rodapé e um **lexicão de pronúncia reutilizável** (`pronunciation import/export`, CSV/JSON, com passagem de fonemas).
 
 ### Atribuição de vozes
@@ -96,7 +114,7 @@ O WAV não tem átomo de capítulo, portanto, a renderização em WAV indica iss
 
 ## Masterização para as especificações de áudio da ACX
 
-A ACX publica um alvo de áudio preciso e mensurável. É o mais próximo que o mundo dos audiolivros tem de um padrão de masterização, e vale a pena atingir, independentemente do que você faça com o arquivo depois.
+A ACX publica um alvo de áudio preciso e mensurável. É o mais próximo que o mundo dos audiolivros tem de um padrão de masterização, e vale a pena atingir, independentemente do que você fizer com o arquivo depois.
 
 | Requisito | Especificação da ACX | O que `--acx` faz |
 |---|---|---|
@@ -125,7 +143,7 @@ Os caminhos que aceitam narração de IA, geralmente com divulgação, incluem o
 
 Portanto: `--acx` é sobre o áudio. Se um varejista aceita ou não um título narrado por IA é a decisão dele, e não uma propriedade do arquivo que você acabou de produzir.
 
-## Comandos da CLI
+## Comandos CLI
 
 | Comando | Descrição |
 |---------|-------------|
@@ -135,19 +153,19 @@ Portanto: `--acx` é sobre o áudio. Se um varejista aceita ou não um título n
 | `cast <char> <voice>` · `cast-interactive` | Atribua vozes (ou atribuição de vozes guiada por falante; também `cast -i`) |
 | `cast-suggest` · `cast-apply --auto` · `cast-fill` | Sugira / aplique automaticamente / atribua em massa vozes |
 | `cast-preset save\ | list\ | apply\ | delete` | Predefinições de elenco reutilizáveis em livros |
-| `cast-export` · `cast-import <file>` | Faça a conversão completa dos dados no formato JSON/CSV — edite manualmente ou reutilize em diferentes versões. |
-| `audition <char>` | Classifique as vozes dos candidatos em uma escala A/B para um único personagem (`--render`). |
-| `compile` | Detecte os diálogos, atribua os falantes e infira as emoções. |
+| `cast-export` · `cast-import <file>` | Converta o elenco para JSON/CSV e faça edições manuais ou reutilize em diferentes versões. |
+| `audition <char>` | Classifique as vozes dos candidatos para um personagem (`--render`). |
+| `compile` | Detecte o diálogo, atribua os falantes e infira a emoção. |
 | `report` | Qualidade da compilação: taxa desconhecida, principais linhas não atribuídas, mistura de emoções. |
 | `review-export` · `review-import <file>` | Ciclo de revisão editável por humanos. |
 | `render` | Renderize o audiolivro (`--acx`, `--format`, `--split`, `--bitrate`, `--engine`, `--watch`, `--cover`, `-j N`). |
 | `sample` · `master-check <file>` | Amostra de varejo finalizada · verifique em relação às especificações de áudio do ACX. |
 | `export-chapters` · `podcast` | Folha de marcação de capítulos (ffmetadata/cue/json) · feed RSS do podcast. |
-| `preview` · `batch` · `diagnose` | Clipe de teste de qualidade de voz · lote/`--manifest` · verificação do ambiente (retorna um código diferente de zero quando o sistema não consegue renderizar). |
+| `preview` · `batch` · `diagnose` | Clipe de teste de qualidade de voz · lote/`--manifest` · verificação do ambiente (retorna um código diferente de zero quando a renderização não é possível). |
 | `load <file>` | Abra um projeto `.audiobooker` existente. |
 | `voices` · `chapters` · `speakers` · `info` · `status` · `cache` · `emotions` · `pronunciation` · `completion` | Inspecione e gerencie. |
 
-Cada comando suporta `-h/--help`. Flags globais: `--silent`, `--debug`. **Códigos de saída:** `0` ok · `1` erro do usuário (incluindo um livro que não pode ser compilado ou uma renderização recusada porque a atribuição falhou) · `2` erro de execução · `3` parcial (lote).
+Cada comando suporta `-h/--help`. Flags globais: `--silent`, `--debug`. **Códigos de saída:** `0` ok · `1` erro do usuário (incluindo um livro que não pode ser compilado ou uma renderização recusada porque a atribuição falhou) · `2` erro de tempo de execução · `3` parcial (lote).
 
 ## Configuração
 
@@ -162,15 +180,15 @@ jobs = 4
 booknlp_mode = "auto"
 ```
 
-## Mecanismos TTS (Text-to-Speech) plugáveis
+## Motores TTS (Text-to-Speech) plugáveis
 
-O mecanismo padrão é `voice-soundboard`, mas o backend de síntese pode ser alterado por meio de entry-points do setuptools (`audiobooker.tts_engines`).
+O motor padrão é `voice-soundboard`, mas o backend de síntese pode ser alterado por meio de entry-points do setuptools (`audiobooker.tts_engines`):
 
 ```bash
 audiobooker render --engine piper      # or set AUDIOBOOKER_ENGINE=piper
 ```
 
-Um plugin (`pip install audiobooker-piper`) se registra automaticamente; não é necessário criar um fork.
+Um plugin (`pip install audiobooker-piper`) se registra; não é necessário fazer um fork.
 
 ## API Python
 
@@ -206,24 +224,24 @@ Casting -> Review/Edit -> TTS (pluggable) -> cached audio -> FFmpeg master -> M4
 
 ## Segurança e escopo de dados
 
-- **Rede:** nenhuma — sem telemetria, sem armazenamento de dados, sem credenciais. Lê os arquivos do seu livro, grava áudio + cache nos seus diretórios de saída.
-- **Permissões:** acesso de leitura às entradas, acesso de gravação às saídas; FFmpeg opcional + um mecanismo TTS no PATH.
+- **Rede:** nenhuma — sem telemetria, sem armazenamento de dados, sem credenciais. Lê seus arquivos de livro, grava áudio + cache em seus diretórios de saída.
+- **Permissões:** acesso de leitura às entradas, acesso de gravação às saídas; FFmpeg opcional + um motor TTS no PATH.
 - Consulte [SECURITY.md](SECURITY.md).
 
 ## Avaliação
 
-| Barreira. | Status. |
+| Barreira | Status |
 |------|--------|
-| A. Linha de base de segurança. | APROVADO. |
-| B. Tratamento de erros. | APROVADO. |
-| C. Documentação do operador. | APROVADO. |
-| D. Higiene de lançamento. | APROVADO. |
-| E. Identidade. | APROVADO. |
+| A. Linha de base de segurança | APROVADO |
+| B. Tratamento de erros | APROVADO |
+| C. Documentação do operador | APROVADO |
+| D. Higiene de lançamento | APROVADO |
+| E. Identidade | APROVADO |
 
 ## Licença
 
-[MIT](LICENSE).
+[MIT](LICENSE)
 
 ---
 
-Criado por <a href="https://mcp-tool-shop.github.io/">MCP Tool Shop</a>.
+Criado por <a href="https://mcp-tool-shop.github.io/">MCP Tool Shop</a>
