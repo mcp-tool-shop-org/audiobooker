@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import ast
 import pathlib
+import sys
 import tokenize
 
 CLI = pathlib.Path(__file__).resolve().parent.parent / "audiobooker" / "cli.py"
@@ -61,6 +62,19 @@ def _docstring_spans(tree: ast.AST) -> list[tuple[tuple[int, int],
     return spans
 
 
+# Python 3.12 split f-strings into FSTRING_START / FSTRING_MIDDLE /
+# FSTRING_END; 3.10 and 3.11 emit one STRING token for the whole f-string.
+# Either way the literal text is covered — but the NAME only exists from
+# 3.12, and this repo's CI runs 3.10 through 3.12. (Written and verified on
+# 3.14, where it exists; caught by CI, which is the point of the matrix.)
+_STRING_TOKENS = tuple(
+    t for t in (
+        tokenize.STRING,
+        getattr(tokenize, "FSTRING_MIDDLE", None),
+    ) if t is not None
+)
+
+
 def _offending_string_literals() -> list[tuple[int, str, str]]:
     src = CLI.read_text(encoding="utf-8")
     spans = _docstring_spans(ast.parse(src))
@@ -71,7 +85,7 @@ def _offending_string_literals() -> list[tuple[int, str, str]]:
     out: list[tuple[int, str, str]] = []
     readline = iter(src.splitlines(True)).__next__
     for tok in tokenize.generate_tokens(readline):
-        if tok.type not in (tokenize.STRING, tokenize.FSTRING_MIDDLE):
+        if tok.type not in _STRING_TOKENS:
             continue
         if is_docstring(tok.start, tok.end):
             continue
@@ -126,6 +140,47 @@ class TestPrintedStringsSurviveCp1252:
         # of the above, which is why picking cp1252 as the bar would
         # have made this test vacuous.
         assert "—".encode("cp1252") == b"\x97"
+
+    def test_the_detector_sees_inside_an_f_string_on_this_interpreter(
+        self, tmp_path
+    ):
+        """The tokenizer changed shape in 3.12, and this suite runs on
+        3.10 through 3.14.
+
+        Before 3.12 an f-string is one STRING token; from 3.12 it is
+        FSTRING_START / FSTRING_MIDDLE / FSTRING_END, and the literal text
+        lives in the MIDDLE. A detector that knows only about STRING sees
+        nothing inside an f-string on 3.12+. Rather than reason about
+        which branch each interpreter takes, make every interpreter
+        demonstrate it catches one.
+        """
+        assert _STRING_TOKENS, "no string token types to scan"
+
+        probe = tmp_path / "probe.py"
+        probe.write_text(
+            '"""Module docstring with an em-dash — exempt."""\n'
+            'name = "x"\n'
+            'msg = f"  Guessed: {name} — by alternating turns"\n',
+            encoding="utf-8",
+        )
+
+        src = probe.read_text(encoding="utf-8")
+        spans = _docstring_spans(ast.parse(src))
+        found = []
+        readline = iter(src.splitlines(True)).__next__
+        for tok in tokenize.generate_tokens(readline):
+            if tok.type not in _STRING_TOKENS:
+                continue
+            if any(s <= tok.start and tok.end <= e for s, e in spans):
+                continue
+            if any(not _encodable(ch) for ch in tok.string):
+                found.append(tok.string)
+
+        assert found, (
+            "the em-dash inside the f-string was not detected on "
+            f"Python {'.'.join(map(str, sys.version_info[:2]))} — the "
+            "token types this build emits are not covered"
+        )
 
     def test_docstrings_are_deliberately_exempt(self):
         """cli.py keeps em-dashes in its prose. If this ever reaches zero,
