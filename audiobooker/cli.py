@@ -2745,6 +2745,50 @@ def _check_single_chapter_flags(args, project) -> Optional[int]:
     return None
 
 
+def _compile_chapters_in_memory(project, chapters) -> None:
+    """Compile chapters for a dry-run preview. Never saves."""
+    for chapter in chapters:
+        if getattr(chapter, "skip", False):
+            continue
+        if getattr(chapter, "is_compiled", False):
+            continue
+        try:
+            project.compile_chapter(chapter.index)
+        except Exception as exc:  # pragma: no cover - preview must not fail
+            _logging_mod.getLogger(__name__).debug(
+                "Dry-run could not compile chapter %s (%s); "
+                "gate preview may be incomplete.",
+                getattr(chapter, "index", "?"),
+                exc,
+            )
+
+
+def _dry_run_gate_preview(args, project, chapters) -> dict:
+    """The two pre-spend gates as a dry-run preview (no TTS spend).
+
+    Shared by full-book and single-chapter ``--dry-run --json`` so
+    ``would_refuse`` cannot drift: live ``render`` / ``render -c N`` compile
+    then run ``_pre_spend_gates``. ``--force`` is the same override.
+    """
+    _compile_chapters_in_memory(project, chapters)
+    from audiobooker.casting import compile_report
+
+    report = compile_report(list(chapters), project.casting)
+    offenders = _uncast_dialogue_speakers(project, chapters)
+    attribution_quality = report.get("attribution_quality") or "ok"
+    force = bool(getattr(args, "force", False))
+    would_refuse = (not force) and (
+        bool(offenders) or attribution_quality == "failed"
+    )
+    return {
+        "uncast_dialogue_speakers": dict(
+            sorted(offenders.items(), key=lambda kv: (-kv[1], kv[0]))
+        ),
+        "attribution_quality": attribution_quality,
+        "would_refuse": would_refuse,
+    }
+
+
 def _dry_run_single_chapter(args, project) -> int:
     """CLI-3: describe exactly what `render -c N` WOULD do, synthesize nothing.
 
@@ -2762,6 +2806,7 @@ def _dry_run_single_chapter(args, project) -> int:
         or getattr(getattr(project, "config", None), "tts_engine", None)
         or "voice-soundboard"
     )
+    preview = _dry_run_gate_preview(args, project, [chapter])
     utterances = len(getattr(chapter, "utterances", []) or [])
     utterance_note = (
         f"{utterances} utterance(s)" if utterances
@@ -2782,6 +2827,9 @@ def _dry_run_single_chapter(args, project) -> int:
             "output": str(Path(output)),
             "engine": engine_name,
             "cast": dict(sorted(project.casting.get_voice_mapping().items())),
+            "uncast_dialogue_speakers": preview["uncast_dialogue_speakers"],
+            "attribution_quality": preview["attribution_quality"],
+            "would_refuse": preview["would_refuse"],
         })
         return 0
 
@@ -2790,6 +2838,18 @@ def _dry_run_single_chapter(args, project) -> int:
     _out(f"  Output:     {Path(output)}")
     _out(f"  Utterances: {utterance_note}")
     _out(f"  Engine:     {engine_name}")
+    if preview["would_refuse"]:
+        bits = []
+        n_uncast = len(preview["uncast_dialogue_speakers"])
+        if n_uncast:
+            bits.append(f"{n_uncast} uncast dialogue speaker(s)")
+        if preview["attribution_quality"] == "failed":
+            bits.append("attribution_quality=failed")
+        _err(
+            f"you asked to preview chapter {chapter.index}; a live render "
+            f"would refuse because {'; '.join(bits)}. Pass --force to override.",
+            args=args,
+        )
     _out("\nRe-run without --dry-run to render this chapter.")
     return 0
 
@@ -2816,18 +2876,10 @@ def _dry_run_full_book(
     json_output = getattr(args, "json_output", False)
 
     # The cast report needs utterances. dry_run_render never compiled, and a
-    # preview must not write, so compile in memory and do not save.
-    for index, chapter in enumerate(project.chapters):
-        if not chapter.is_compiled and not chapter.skip:
-            try:
-                project.compile_chapter(chapter.index)
-            except Exception as exc:  # pragma: no cover - preview must not fail
-                _logging_mod.getLogger(__name__).debug(
-                    "Dry-run could not compile chapter %d (%s); "
-                    "cast preview may be incomplete.", index, exc,
-                )
-
-    offenders = _uncast_dialogue_speakers(project, project.chapters)
+    # preview must not write, so compile in memory and do not save. Shared
+    # with `_dry_run_single_chapter` so would_refuse cannot drift.
+    preview = _dry_run_gate_preview(args, project, project.chapters)
+    offenders = preview["uncast_dialogue_speakers"]
     mapping = project.casting.get_voice_mapping()
 
     if json_output:
@@ -2850,10 +2902,9 @@ def _dry_run_full_book(
                 for chapter in project.chapters
             ],
             "cast": dict(sorted(mapping.items())),
-            "uncast_dialogue_speakers": dict(
-                sorted(offenders.items(), key=lambda kv: (-kv[1], kv[0]))
-            ),
-            "would_refuse": bool(offenders) and not getattr(args, "force", False),
+            "uncast_dialogue_speakers": offenders,
+            "attribution_quality": preview["attribution_quality"],
+            "would_refuse": preview["would_refuse"],
         })
         return 0
 
@@ -2895,6 +2946,12 @@ def _dry_run_full_book(
         )
         for speaker, lines in sorted(offenders.items(), key=lambda kv: (-kv[1], kv[0])):
             _err(f"  {speaker}: {lines} dialogue line(s)", args=args)
+    if preview["attribution_quality"] == "failed" and not getattr(args, "force", False):
+        _err(
+            "you asked for a dry-run; a live render would refuse because "
+            "attribution_quality=failed. Pass --force to override.",
+            args=args,
+        )
 
     return 0
 
@@ -3994,8 +4051,21 @@ def cmd_voices(args) -> int:
                 # Older no-arg signature — resolves the built-in engine.
                 engine_obj = engine_mod.get_default_engine()
         except Exception as e:
-            _err(f"Error: could not load TTS engine {engine_name!r}: {e}", args=args)
-            return 1
+            if callable(getattr(e, "structured", None)):
+                _report_error(e, args)
+                return 1
+            return _refuse(
+                args,
+                code="ENGINE_NOT_FOUND",
+                message=(
+                    f"you asked to list voices for engine {engine_name!r}; "
+                    f"I could not load it ({e})."
+                ),
+                hint=(
+                    "pass a registered --engine name, or omit --engine for "
+                    "the built-in catalog."
+                ),
+            )
 
     offline = ""
     try:
@@ -4024,9 +4094,15 @@ def cmd_voices(args) -> int:
             else "missing"
         )
         if not voices:  # pragma: no cover - the curated list is never empty
-            _err("Error: voice-soundboard not installed", args=args)
-            _err(VOICE_SOUNDBOARD_INSTALL_HINT, args=args)
-            return 1
+            return _refuse(
+                args,
+                code="VOICE_BACKEND_MISSING",
+                message=(
+                    "you asked to list voices; I have no catalog "
+                    "(voice-soundboard is not installed)."
+                ),
+                hint=VOICE_SOUNDBOARD_INSTALL_HINT,
+            )
 
     # Normalize whatever get_available_voices returns (a set of ids, or a list
     # of richer voice descriptors) into (voice_id, description) pairs.
@@ -5708,13 +5784,37 @@ def cmd_report(args) -> int:
         return 1
 
 
+def _import_optional(module_name: str, *, quiet: bool = False) -> bool:
+    """True if ``module_name`` imports. ``quiet`` swallows stdout/warnings.
+
+    ``diagnose --json`` must own stdout: ``import fitz`` on current pymupdf
+    prints a deprecation line before we can dump the payload.
+    """
+    import contextlib
+    import io
+    import warnings
+
+    try:
+        if quiet:
+            sink = io.StringIO()
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                with contextlib.redirect_stdout(sink):
+                    __import__(module_name)
+        else:
+            __import__(module_name)
+        return True
+    except ImportError:
+        return False
+
+
 def cmd_diagnose(args: argparse.Namespace) -> int:
     """Check environment: dependencies, voice engine, ffmpeg."""
-    import json as json_mod
     import shutil
 
     from audiobooker import __version__
 
+    json_output = getattr(args, "json_output", False)
     checks: list[dict[str, str | None]] = []
     all_ok = True
     # CLIUX-H-004: a component the machine CANNOT RENDER without. The voice
@@ -5743,9 +5843,7 @@ def cmd_diagnose(args: argparse.Namespace) -> int:
         missing_required.append("Python 3.10+")
 
     # Core dependency: ebooklib
-    try:
-        import ebooklib  # noqa: F401
-
+    if _import_optional("ebooklib", quiet=json_output):
         checks.append(
             {
                 "check": "dep.ebooklib",
@@ -5754,7 +5852,7 @@ def cmd_diagnose(args: argparse.Namespace) -> int:
                 "hint": None,
             }
         )
-    except ImportError:
+    else:
         checks.append(
             {
                 "check": "dep.ebooklib",
@@ -5766,10 +5864,12 @@ def cmd_diagnose(args: argparse.Namespace) -> int:
         all_ok = False
         missing_required.append("ebooklib")
 
-    # Optional: pymupdf (PDF sources)
-    try:
-        import fitz  # noqa: F401  (pymupdf)
-
+    # Optional: pymupdf (PDF sources). Prefer `pymupdf` over the deprecated
+    # `fitz` alias so a deprecation print cannot prefix --json.
+    if (
+        _import_optional("pymupdf", quiet=True)
+        or _import_optional("fitz", quiet=True)
+    ):
         checks.append(
             {
                 "check": "dep.pymupdf",
@@ -5778,7 +5878,7 @@ def cmd_diagnose(args: argparse.Namespace) -> int:
                 "hint": None,
             }
         )
-    except ImportError:
+    else:
         checks.append(
             {
                 "check": "dep.pymupdf",
@@ -5789,9 +5889,7 @@ def cmd_diagnose(args: argparse.Namespace) -> int:
         )
 
     # Optional: python-docx (DOCX sources)
-    try:
-        import docx  # noqa: F401  (python-docx)
-
+    if _import_optional("docx", quiet=json_output):
         checks.append(
             {
                 "check": "dep.python-docx",
@@ -5800,7 +5898,7 @@ def cmd_diagnose(args: argparse.Namespace) -> int:
                 "hint": None,
             }
         )
-    except ImportError:
+    else:
         checks.append(
             {
                 "check": "dep.python-docx",
@@ -5816,9 +5914,19 @@ def cmd_diagnose(args: argparse.Namespace) -> int:
     # error (broken install, model load failure) should report the ACTUAL
     # error rather than masquerading as "not installed".
     try:
-        from audiobooker.casting.voice_registry import get_available_voices
+        import contextlib
+        import io
 
-        voices = get_available_voices()
+        _voice_sink = io.StringIO()
+        _voice_ctx = (
+            contextlib.redirect_stdout(_voice_sink)
+            if json_output
+            else contextlib.nullcontext()
+        )
+        with _voice_ctx:
+            from audiobooker.casting.voice_registry import get_available_voices
+
+            voices = get_available_voices()
         checks.append(
             {
                 "check": "voice_engine",
@@ -5914,17 +6022,14 @@ def cmd_diagnose(args: argparse.Namespace) -> int:
 
     ready = not missing_required
 
-    if getattr(args, "json_output", False):
-        print(json_mod.dumps(
-            {
-                "ok": all_ok,
-                "ready": ready,
-                "missing_required": missing_required,
-                "reachable_formats": reachable_formats,
-                "checks": checks,
-            },
-            indent=2,
-        ))
+    if json_output:
+        _emit_json({
+            "ok": all_ok,
+            "ready": ready,
+            "missing_required": missing_required,
+            "reachable_formats": reachable_formats,
+            "checks": checks,
+        })
     else:
         print(f"audiobooker v{__version__} - environment diagnostics\n")
         for c in checks:
@@ -6582,14 +6687,28 @@ def cmd_batch(args) -> int:
         for f in source_files:
             book_specs.append((f, {}))
 
+    json_output = getattr(args, "json_output", False)
+
     if not book_specs:
         if manifest_file:
-            print("Manifest contained no usable book entries.")
-        else:
-            print("No supported source files found (EPUB/DOCX/TXT/MD/PDF or a chapter folder).")
-        return 1
-
-    json_output = getattr(args, "json_output", False)
+            return _refuse(
+                args,
+                code="BATCH_NO_SOURCES",
+                message=(
+                    "you asked to batch-process a manifest; "
+                    "I found no usable book entries."
+                ),
+                hint="each manifest entry needs a 'source' path that exists.",
+            )
+        return _refuse(
+            args,
+            code="BATCH_NO_SOURCES",
+            message=(
+                "you asked to batch-process source files; I found no "
+                "supported EPUB/DOCX/TXT/MD/PDF or chapter folder."
+            ),
+            hint="pass existing source files or a glob that matches them.",
+        )
 
     # --dry-run: show what would be processed without rendering
     dry_run = getattr(args, "dry_run", False)
@@ -7116,8 +7235,15 @@ def cmd_master_check(args) -> int:
     try:
         file_path = Path(args.file)
         if not file_path.exists():
-            _err(f"Error: Audio file not found: {file_path}", args=args)
-            return 1
+            return _refuse(
+                args,
+                code="FILE_NOT_FOUND",
+                message=(
+                    f"you asked to master-check {file_path}; "
+                    "that audio file was not found."
+                ),
+                hint="pass a path to an existing WAV/M4B/MP3.",
+            )
 
         result = master_check(file_path)
 
@@ -7290,25 +7416,39 @@ def cmd_podcast(args) -> int:
             project.save()
 
         # Build per-chapter feed items from rendered chapter audio.
+        # Drop chapters with no audio_path: an empty filename becomes an
+        # <enclosure url=base_url> with no file, while "Episodes: N" used
+        # to count occupancy of filenames — a 10-chapter --no-render with
+        # one WAV wrote a 10-item feed, claimed 1 episode, and exited 0.
         items = []
+        skipped_no_audio: list[str] = []
         for ch in project.chapters:
             if getattr(ch, "skip", False):
                 continue
             audio = getattr(ch, "audio_path", None)
-            filename = Path(audio).name if audio else ""
+            if not audio:
+                skipped_no_audio.append(ch.title or f"chapter {ch.index}")
+                continue
             items.append({
                 "index": ch.index,
                 "title": ch.title,
-                "filename": filename,
+                "filename": Path(audio).name,
                 "duration_seconds": ch.duration_seconds,
             })
 
-        if not any(item["filename"] for item in items):
-            print(
-                "Error: no rendered chapter audio found. Run the podcast command "
-                "without --no-render, or render the chapters first."
+        if not items:
+            return _refuse(
+                args,
+                code="PODCAST_NO_AUDIO",
+                message=(
+                    "you asked for a podcast feed; I found no rendered "
+                    "chapter audio, so I wrote nothing."
+                ),
+                hint=(
+                    "run the podcast command without --no-render, or "
+                    "render the chapters first."
+                ),
             )
-            return 1
 
         # output.export_podcast_rss is a pure string builder (renderer-owned).
         rss = export_podcast_rss(project, items, base_url=base_url)
@@ -7316,9 +7456,16 @@ def cmd_podcast(args) -> int:
         out_path = Path(getattr(args, "output", None) or "podcast.xml")
         out_path.write_text(rss, encoding="utf-8")
 
-        episode_count = sum(1 for item in items if item["filename"])
+        episode_count = len(items)
         _out(f"\nPodcast feed written: {out_path}")
         _out(f"  Episodes: {episode_count}")
+        if skipped_no_audio:
+            _err(
+                f"you asked for a {episode_count + len(skipped_no_audio)}-chapter "
+                f"feed; I wrote {episode_count} episode(s) because "
+                f"{len(skipped_no_audio)} chapter(s) have no rendered audio.",
+                args=args,
+            )
         if base_url:
             _out(f"  Base URL: {base_url}")
         return 0
