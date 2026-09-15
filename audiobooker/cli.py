@@ -74,6 +74,7 @@ from pathlib import Path
 from typing import Optional
 
 from audiobooker import formats as audio_formats
+from audiobooker.labels import chapter_label
 from audiobooker.shell_quote import quote_arg
 from audiobooker.errors import CompilationFailedError
 
@@ -3963,21 +3964,11 @@ def cmd_voices(args) -> int:
     return 0
 
 
-def _chapter_label(index: int) -> str:
-    """FEAT-UX-007: name a chapter in BOTH numbering schemes, everywhere.
-
-    This CLI carries four: ``-c N`` is 0-based, ``--chapters`` /
-    ``--exclude-chapters`` take 1-based ranges, the ``chapters`` listing was
-    1-based, and ``render --dry-run`` printed indices relative to the
-    SELECTION (so ``--chapters 1-3`` printed ``[0] Chapter 1 / [1] Chapter 2 /
-    [2] Chapter 4``). Nothing on screen said which scheme it was using.
-
-    The flags themselves are documented and stay as they are — silently
-    changing what ``-c 3`` means would be worse than the ambiguity. Instead
-    every printed reference carries both numbers, so no reader has to know
-    which command they came from.
-    """
-    return f"[idx {index}] ch.{index + 1}"
+# Moved to audiobooker/labels.py. `renderer.engine`'s dry-run table prints
+# chapter references too and `cli` imports `engine`, so the rule could not
+# stay here without engine importing cli back. Re-exported under the old
+# private name because the call sites and tests use it.
+_chapter_label = chapter_label
 
 
 def cmd_chapters(args) -> int:

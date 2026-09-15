@@ -25,6 +25,7 @@ from typing import Optional, Callable, TYPE_CHECKING
 
 from audiobooker.errors import AudiobookerError, ErrorDetail
 from audiobooker import formats as audio_formats
+from audiobooker.labels import chapter_label
 from audiobooker.renderer.protocols import TTSEngine, SynthesisResult
 
 if TYPE_CHECKING:
@@ -3090,28 +3091,46 @@ def dry_run_render(
 
     for i, chapter in enumerate(project.chapters):
         if from_chapter is not None and i < from_chapter:
-            skipped.append((i, chapter.title, chapter.word_count))
+            skipped.append((chapter.index, chapter.title, chapter.word_count))
             continue
 
         current_text_hash = chapter_text_hash(chapter)
 
         if resume and manifest:
+            # FEAT-UX-007: `i`, NOT chapter.index, and the difference is
+            # load-bearing. `--chapters 1-2,4` hands this function a
+            # FILTERED project.chapters, and the real render keys the
+            # manifest (and the chapter WAV filename) off the same
+            # enumerate position over that same filtered list. A preview
+            # that looked up chapter.index here would consult a different
+            # entry than the render it is predicting and report cache
+            # state that never materialises — the exact failure RH-B-004
+            # records above. Predict faithfully; label truthfully.
             existing = manifest.get_entry(i)
             if existing and existing.is_valid(
                 current_text_hash,
                 casting_hash(project.casting, chapter=chapter),
                 current_params_hash,
             ):
-                cached.append((i, chapter.title, chapter.word_count))
+                cached.append(
+                    (chapter.index, chapter.title, chapter.word_count)
+                )
                 continue
 
-        to_render.append((i, chapter.title, chapter.word_count))
+        # chapter.index is the chapter's own place in the BOOK. Under a
+        # selection the enumerate position is its place in the subset, so
+        # printing `i` renumbered the survivors 0,1,2 and put "ch.3" beside
+        # a chapter titled "Chapter 4".
+        to_render.append((chapter.index, chapter.title, chapter.word_count))
 
     total_words_render = sum(wc for _, _, wc in to_render)
     wpm = project.config.estimated_wpm or 150
 
     print(f"\n{'='*60}")
-    print(f"DRY RUN — {project.title}")
+    # ASCII: printed text, and a legacy Windows console (cp437/cp850,
+    # what a bare cmd.exe runs) has no em-dash. See
+    # tests/test_cli_output_is_console_safe.py.
+    print(f"DRY RUN - {project.title}")
     print(f"{'='*60}")
     print(f"Total chapters: {len(project.chapters)}")
     print(f"  To render:  {len(to_render)}")
@@ -3123,7 +3142,11 @@ def dry_run_render(
     if to_render:
         print("Chapters to render:")
         for idx, title, wc in to_render:
-            print(f"  [{idx}] {title} ({wc:,} words)")
+            # FEAT-UX-007: both numbering schemes. This table is the command
+            # you run in order to decide what to pass NEXT, so a bare "[3]"
+            # is the worst place in the CLI to leave the reader guessing
+            # whether the follow-up is `-c 3` or `-c 4`.
+            print(f"  {chapter_label(idx)} {title} ({wc:,} words)")
         print()
 
     est_minutes = total_words_render / wpm
