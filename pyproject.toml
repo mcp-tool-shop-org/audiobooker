@@ -44,28 +44,83 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# CH-B-011 (wave 5 amend): this section was inconsistent -- nlp had an upper
+# bound, pdf/docx/rich/render did not, with no stated reason either way. The
+# inconsistency itself was the finding; each line below is capped or left
+# open for a specific, stated reason instead of a blanket "cap everything"
+# reflex. The shared thread for render/pdf/docx: none of these three extras
+# is installed by CI (ci.yml only ever installs the `dev` extra), so a
+# breaking major version is caught nowhere before it reaches an end user at
+# runtime -- and for pdf/docx specifically, audiobooker/parser/pdf.py and
+# parser/docx.py both wrap the only call into these libraries
+# (fitz.open()/docx.Document()) in a broad `except Exception` that reframes
+# ANY failure as "the file may be corrupted, password-protected, or not a
+# valid PDF/.docx" -- so a library-incompatibility bug from an unbounded
+# major bump would not just crash, it would actively mislead the user about
+# a perfectly valid file. dev is different in kind: it is CI-only, reinstalled
+# fresh on every run (`pip install -e ".[dev]"`), so a breaking change there
+# fails loudly and immediately in CI, not silently in a shipped product.
 render = [
-    "voice-soundboard",
+    # Was completely unconstrained (not even a floor) despite being the
+    # single most important runtime dependency on the `render` path and,
+    # per the Dockerfile's own comment, pulling "heavy ML deps" -- the
+    # profile this finding calls out as real risk. No version was ever
+    # pinned before, so there is no in-repo evidence of a tested minimum;
+    # floor is the version verified current on PyPI on 2026-09-14 (the same
+    # day the Dockerfile's base-image digest below was re-resolved), ceiling
+    # caps the next major.
+    "voice-soundboard>=2.5.2,<3.0",
 ]
 nlp = [
     "booknlp>=1.0,<2.0",
 ]
 pdf = [
-    "pymupdf>=1.23",
+    # PyMuPDF is a compiled C-extension wrapper (not pure-python, not ML)
+    # with a documented history of a breaking API rename across a major
+    # version (the 2021 getText()->get_text() rename). Usage here is a
+    # single call, fitz.open() -- see the untested-in-CI + misleading-error
+    # rationale above. Verified still 1.x (1.28.2) on PyPI on 2026-09-14, so
+    # this cap does not regress the current resolution.
+    "pymupdf>=1.23,<2.0",
 ]
 docx = [
-    "python-docx>=1.1",
+    # python-docx has an unusually stable API/release history (no v2 as of
+    # this writing) and usage here is a single call, docx.Document() -- lower
+    # inherent risk than pymupdf. Capped anyway for symmetry with the
+    # reasoning above: untested by CI, and a break would hit the same
+    # misleading "corrupted file" reframing in parser/docx.py. Verified still
+    # 1.x (1.2.0) on PyPI on 2026-09-14.
+    "python-docx>=1.1,<2.0",
 ]
 rich = [
+    # Deliberately left unbounded, unlike pdf/docx above: rich is used only
+    # for a CLI progress bar (audiobooker/cli.py, the `render` command's
+    # rich.progress.Progress import), a cosmetic/UI path with no bearing on
+    # audiobook output correctness. That import is already wrapped in
+    # `except ImportError: progress_bar = None`, which catches a renamed or
+    # removed symbol; the only residual risk is a Progress() constructor
+    # signature change, and Console/Progress are among rich's most
+    # widely-depended-upon and stable APIs. A break here would also fail
+    # loudly (a visible traceback from the render command) rather than
+    # silently mis-parsing a book, unlike the pdf/docx case.
     "rich>=13.0",
 ]
 dev = [
+    # Left unbounded (pytest/pytest-asyncio/pytest-cov/pip-audit): CI-only,
+    # reinstalled fresh every run via `pip install -e ".[dev]"` (ci.yml), so
+    # a breaking major fails loudly in CI the same day it lands -- not
+    # silently in a shipped product. That is a materially different risk
+    # profile from the runtime extras above, so it is not capped just for
+    # the sake of a uniform policy.
     "pytest>=7.0",
     "pytest-asyncio>=0.21",
     "pytest-cov>=4.0",
     # PINNED. `ruff>=0.3` made every ruff release a live dependency of CI going
     # green: 0.16.6 enabled hundreds of rules this repo never opted into and the
     # lint step went from clean to 369 errors with no commit in between.
+    # CH-B-009 (wave 5 amend): .pre-commit-config.yaml's ruff-pre-commit hook
+    # rev is now pinned to match this exact version (v0.16.6) -- see that
+    # file. Bump both together, deliberately, never independently.
     "ruff==0.16.6",
     "pip-audit>=2.7.0",
 ]
@@ -98,6 +153,21 @@ select = ["E4", "E7", "E9", "F"]
 ignore = ["E402"]
 
 [tool.pyright]
+# CH-B-010 (wave 5 amend): verified this config and reality agree, not just
+# assumed it. .github/workflows/ci.yml's `typecheck` job (owned by another
+# agent this wave; not edited here) installs pyright ad hoc and runs
+# `pyright audiobooker/` -- pyright auto-discovers this [tool.pyright] table
+# from pyproject.toml (no rival pyrightconfig.json exists in this repo), so
+# this table IS the config governing that CI job, not dead config. `include`
+# here is redundant with the explicit `audiobooker/` CLI argument in that
+# workflow (both name the same directory) but not contradictory.
+# pythonVersion = "3.10" is deliberate, not stale: it matches this project's
+# `requires-python = ">=3.10"` floor above, so pyright checks against the
+# MINIMUM supported interpreter rather than whatever Python the CI runner
+# happens to use to launch pyright itself (3.12) -- those are independent
+# knobs. typeCheckingMode = "basic" matches the typecheck job's
+# `continue-on-error: true`, commented there as "non-blocking until type
+# coverage improves" -- a deliberate, currently-non-blocking gate.
 include = ["audiobooker"]
 pythonVersion = "3.10"
 typeCheckingMode = "basic"

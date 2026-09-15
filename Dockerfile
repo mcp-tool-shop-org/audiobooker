@@ -29,13 +29,40 @@ COPY --from=builder /opt/venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
 
+HEALTHCHECK CMD audiobooker --help || exit 1
+
+USER audiobooker
+
+# CH-B-004 (wave 5 amend): VOLUME must come AFTER USER, not before. VOLUME
+# creates the mount-point directory at build time if it doesn't already
+# exist (Dockerfile reference: "The VOLUME instruction creates a mount point
+# ... and marks it as holding externally mounted volumes"), and that create
+# happens as whichever user is active at that point in the build -- the same
+# rule as a plain `RUN mkdir`. With VOLUME declared before `USER
+# audiobooker`, /data and /ext were created while still root, baking
+# root:root, mode-755 directories into the image layer: root can write,
+# audiobooker (group "other" under that mode) can only read/traverse.
+#
+# That ownership then matters for exactly the case Docker documents:
+# "The docker run command initializes the newly created volume with any
+# data that exists at the specified location within the base image" --
+# i.e. a fresh named volume, or the anonymous volume Docker creates for a
+# VOLUME-declared path with no explicit -v/--mount, is seeded by copying the
+# image's own directory at that path, ownership included. So any `docker
+# run` of this image that does NOT bind-mount /data (no `-v host:/data`) got
+# a /data the non-root audiobooker process cannot write to -- a real break,
+# since /data is documented two lines below as "working directory for input
+# books and OUTPUT audiobooks". The documented, recommended usage pattern
+# (an operator bind-mounts and chowns a host directory to this image's fixed
+# UID 1000, per the comment above USER) is unaffected either way -- a bind
+# mount's host-side permissions fully shadow the image's own directory --
+# but the image should not be silently broken for the un-mounted/named-volume
+# case, and shouldn't bake root-owned paths under a non-root image regardless.
+#
 # /data — working directory for input books and output audiobooks.
 # /ext — optional mount point for extra packages (e.g. voice-soundboard wheel).
 VOLUME /data
 VOLUME /ext
 
-HEALTHCHECK CMD audiobooker --help || exit 1
-
-USER audiobooker
 ENTRYPOINT ["audiobooker"]
 CMD ["--help"]

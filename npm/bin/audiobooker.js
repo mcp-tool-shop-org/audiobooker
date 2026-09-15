@@ -22,7 +22,17 @@ const os = require("os");
 
 const TOOL = "audiobooker";          // CLI entry name inside the venv
 const PKG = "audiobooker-ai";        // PyPI distribution name
-const VERSION = "2.1.1";             // pinned PyPI version (kept in lockstep with the package)
+// CH-B-005 (wave 5 amend): VERSION used to be a second hand-maintained
+// literal here (independent of npm/package.json's own "version" field) --
+// one of FOUR hand-maintained copies of the same fact across this repo, and
+// they have already drifted from each other in this repo's history. Derive
+// it from package.json instead so there is only one place to bump on this
+// (npm) side of the release. package.json sits one directory up from this
+// file both in the source tree (npm/package.json vs npm/bin/audiobooker.js)
+// and in the published tarball (package.json is always included; "files"
+// in package.json need not list it), so this resolves the same way in dev
+// and once installed via npm/npx.
+const VERSION = require(path.join(__dirname, "..", "package.json")).version;
 const IS_WIN = process.platform === "win32";
 
 // XDG / LOCALAPPDATA-compliant install root, overridable for testing.
