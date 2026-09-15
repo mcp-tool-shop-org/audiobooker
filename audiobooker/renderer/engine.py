@@ -2030,9 +2030,37 @@ def _render_project_impl(
 
     try:
         # ---- Phase 1: Identify chapters to render vs skip ----
-        chapters_to_render = []  # (index, chapter)
+        # FEAT-PROD-012: two different numbers, and they are only equal
+        # when the whole book is being rendered.
+        #
+        #   i             -- position in THIS run. `--chapters 1-2,4` hands
+        #                    us a filtered project.chapters, so i runs
+        #                    0,1,2 over three chapters of a four-chapter
+        #                    book. It belongs to the progress bar and the
+        #                    "[n/total]" display, which are about the run.
+        #   chapter.index -- which chapter this IS, in the book. It belongs
+        #                    to anything that identifies the chapter across
+        #                    runs: the manifest key, the cache WAV
+        #                    filename, the cache entry, the failure report,
+        #                    and any log line that names a chapter.
+        #
+        # Using the position for identity meant `--chapters 4` wrote
+        # chapter 4's audio to chapter_0000.wav -- chapter 1's cached file
+        # -- and recorded it at manifest key 0. The hash check in
+        # is_valid() kept that from ever being served AS chapter 1, so it
+        # was never wrong audio; it destroyed the cache and re-charged the
+        # user for TTS instead, on exactly the long books where anyone
+        # reaches for a selection.
+        #
+        # The utterance-level cache in this same module already keyed off
+        # chapter.index (get_utterance_wav_dir), so the two caches
+        # disagreed with each other under a selection.
+        chapters_to_render = []  # (position, chapter, hashes)
         for i, chapter in enumerate(project.chapters):
-            if from_chapter is not None and i < from_chapter:
+            # --from-chapter N is documented as a chapter number, so it is
+            # compared against the chapter, not against our position in a
+            # possibly-filtered list.
+            if from_chapter is not None and chapter.index < from_chapter:
                 if progress_callback:
                     progress_callback(i + 1, len(project.chapters), f"Skipping: {chapter.title}")
                 continue
@@ -2042,12 +2070,15 @@ def _render_project_impl(
 
             # Check cache
             if resume:
-                existing = manifest.get_entry(i)
+                existing = manifest.get_entry(chapter.index)
                 if existing and existing.is_valid(current_text_hash, chapter_casting_hash, current_params_hash):
                     chapter.audio_path = Path(existing.wav_path)
                     chapter.duration_seconds = existing.duration_s
                     tracker.mark_cached(i, chapter.title, existing.duration_s)
-                    logger.info(f"RENDER_CACHE_HIT: chapter={i} title={chapter.title!r}")
+                    logger.info(
+                        f"RENDER_CACHE_HIT: chapter={chapter.index} "
+                        f"title={chapter.title!r}"
+                    )
                     summary.skipped_cached += 1
 
                     if progress_callback:
@@ -2076,7 +2107,8 @@ def _render_project_impl(
                 status = tracker.format_chapter_status(i, f"Rendering: {chapter.title}")
                 progress_callback(done_count, len(project.chapters), status)
 
-            target_path = get_chapter_wav_path(cache_root, i)
+            # Identity, not position -- see the note in phase 1.
+            target_path = get_chapter_wav_path(cache_root, chapter.index)
             tmp_path = _chapter_tmp_path(target_path)
 
             start = time.time()
@@ -2096,7 +2128,7 @@ def _render_project_impl(
                         emotion_preset=emotion_preset,
                     )
                     logger.info(
-                        f"RENDER_UTTERANCE_CACHE: chapter={i} "
+                        f"RENDER_UTTERANCE_CACHE: chapter={chapter.index} "
                         f"synthesized={inc.utterances_synthesized} "
                         f"reused={inc.utterances_reused}/{inc.utterances_total}"
                     )
@@ -2115,8 +2147,9 @@ def _render_project_impl(
                 if file_size < 1024:
                     target_path.unlink(missing_ok=True)
                     raise RenderError(
-                        f"Chapter {i} audio file is empty ({file_size} bytes) "
-                        f"— TTS may have failed or disk may be full"
+                        f"Chapter {chapter.index} audio file is empty "
+                        f"({file_size} bytes) - TTS may have failed or the "
+                        "disk may be full"
                     )
 
                 chapter.audio_path = target_path
@@ -2125,7 +2158,7 @@ def _render_project_impl(
                 tracker.finish_chapter(i, render_elapsed_s=elapsed)
 
                 entry = ChapterCacheEntry(
-                    chapter_index=i,
+                    chapter_index=chapter.index,
                     text_hash=text_hash,
                     casting_hash=chapter_casting_hash,
                     render_params_hash=current_params_hash,
@@ -2155,18 +2188,21 @@ def _render_project_impl(
                     progress_callback(done_count, len(project.chapters), status)
 
                 logger.info(
-                    f"RENDER_OK: chapter={i} title={chapter.title!r} "
+                    f"RENDER_OK: chapter={chapter.index} title={chapter.title!r} "
                     f"elapsed={elapsed:.1f}s duration={chapter.duration_seconds:.1f}s"
                 )
 
             except OSError as e:
                 if e.errno in (28, 39, 112):
-                    logger.error(f"RENDER_DISK_FULL: chapter={i} — {e}")
+                    logger.error(
+                        f"RENDER_DISK_FULL: chapter={chapter.index} - {e}"
+                    )
                     # ENGINE-A-007: don't leave the partial .wav.tmp behind on a
                     # disk-full abort — it wastes the little space that remains.
                     tmp_path.unlink(missing_ok=True)
                     raise RenderError(
-                        f"Disk full while rendering chapter {i} ({chapter.title!r}). "
+                        f"Disk full while rendering chapter {chapter.index} "
+                        f"({chapter.title!r}). "
                         f"Free up space and re-run with: audiobooker render",
                         summary=summary,
                     ) from e
@@ -2240,12 +2276,18 @@ def _render_project_impl(
                 ok_paths.append((chapter.audio_path, chapter.title, chapter.duration_seconds))
             elif not allow_partial:
                 raise RenderError(
-                    f"Chapter {i} ({chapter.title!r}) has no audio — "
-                    f"cannot assemble. Use --allow-partial or fix and --resume.",
+                    f"Chapter {chapter.index} ({chapter.title!r}) has no "
+                    "audio - cannot assemble. Use --allow-partial or fix "
+                    "and --resume.",
                     summary=summary,
                 )
             else:
-                missing_indices.append(i)
+                # FEAT-PROD-012: chapter.index, not the loop position. The
+                # CLI prints this list back to the user as the chapters
+                # that are missing from their audiobook, so under
+                # `--chapters` a position would name chapters that are
+                # fine and stay silent about the ones that are not.
+                missing_indices.append(chapter.index)
 
         if not ok_paths:
             raise RenderError("No chapters rendered successfully.", summary=summary)
@@ -2782,7 +2824,15 @@ def _handle_chapter_failure(
     current_params_hash: str,
     allow_partial: bool,
 ) -> None:
-    """Handle a chapter render failure (shared between sequential and parallel paths)."""
+    """Handle a chapter render failure (shared between sequential and parallel paths).
+
+    FEAT-PROD-012: ``i`` is this run's position and is only the tracker's
+    display slot. Everything that says WHICH chapter failed -- the cache
+    entry, the failure report, the summary list the CLI prints, the log
+    line and the raised error -- uses ``chapter.index``, because under
+    ``--chapters`` the two differ and a report naming the wrong chapter
+    sends someone to debug one that rendered fine.
+    """
     from audiobooker.renderer.cache_manifest import ChapterCacheEntry
 
     if tmp_path.exists():
@@ -2791,7 +2841,7 @@ def _handle_chapter_failure(
     tracker.mark_failed(i, chapter.title)
 
     entry = ChapterCacheEntry(
-        chapter_index=i,
+        chapter_index=chapter.index,
         text_hash=text_hash,
         casting_hash=current_casting_hash,
         render_params_hash=current_params_hash,
@@ -2809,19 +2859,21 @@ def _handle_chapter_failure(
         save_manifest(manifest, manifest_path)
 
         failure_report.add_failure(
-            chapter_index=i,
+            chapter_index=chapter.index,
             chapter_title=chapter.title,
             error=error,
         )
 
         summary.failed += 1
         summary.failed_chapters.append({
-            "index": i,
+            "index": chapter.index,
             "title": chapter.title,
             "error": str(error),
         })
 
-    logger.error(f"RENDER_CHAPTER_FAIL: chapter={i} error={error}")
+    logger.error(
+        f"RENDER_CHAPTER_FAIL: chapter={chapter.index} error={error}"
+    )
 
     if not allow_partial:
         failure_report.rendered_ok = summary.rendered
@@ -2829,7 +2881,7 @@ def _handle_chapter_failure(
         failure_report.save()
 
         raise RenderError(
-            f"Chapter {i} ({chapter.title!r}) failed: {error}",
+            f"Chapter {chapter.index} ({chapter.title!r}) failed: {error}",
             summary=summary,
         ) from error
 
@@ -3090,23 +3142,24 @@ def dry_run_render(
     skipped = []
 
     for i, chapter in enumerate(project.chapters):
-        if from_chapter is not None and i < from_chapter:
+        if from_chapter is not None and chapter.index < from_chapter:
             skipped.append((chapter.index, chapter.title, chapter.word_count))
             continue
 
         current_text_hash = chapter_text_hash(chapter)
 
         if resume and manifest:
-            # FEAT-UX-007: `i`, NOT chapter.index, and the difference is
-            # load-bearing. `--chapters 1-2,4` hands this function a
-            # FILTERED project.chapters, and the real render keys the
-            # manifest (and the chapter WAV filename) off the same
-            # enumerate position over that same filtered list. A preview
-            # that looked up chapter.index here would consult a different
-            # entry than the render it is predicting and report cache
-            # state that never materialises — the exact failure RH-B-004
-            # records above. Predict faithfully; label truthfully.
-            existing = manifest.get_entry(i)
+            # FEAT-PROD-012: chapter.index, matching the real render.
+            #
+            # This line said `i` for one commit, with a comment arguing
+            # that a preview must predict what the render actually does
+            # even when that is wrong. The argument was sound and the
+            # premise is now gone: the real render keys the manifest off
+            # chapter.index, so this does too. They move together or the
+            # preview lies — RH-B-004 above is the previous time these
+            # two drifted, and it made `--acx --dry-run` report a fully
+            # cached book that then re-rendered from scratch.
+            existing = manifest.get_entry(chapter.index)
             if existing and existing.is_valid(
                 current_text_hash,
                 casting_hash(project.casting, chapter=chapter),

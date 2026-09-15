@@ -15,7 +15,7 @@ and wrong. The upgrade notes in the README list them.
 
 A dogfood swarm in two passes — five health waves, then a feature pass of
 four build agents with disjoint file ownership. 200+ findings, tests
-1468 → 1947. Every CRITICAL/HIGH severity was re-rated by a model family that
+1468 → 1955. Every CRITICAL/HIGH severity was re-rated by a model family that
 did not author the finding, and the fixes were written test-first with the
 failure observed before the fix.
 
@@ -91,6 +91,26 @@ caller at all — which turned out never to have been runnable.
   baking it into a neighbour's cached WAV would make one utterance's bytes
   depend on the utterance before it, which is the coupling a per-utterance
   cache exists to avoid.
+- **`render --chapters N` destroyed the other chapters' cached audio.** A
+  chapter selection is implemented by replacing the chapter list with the
+  filtered subset, and the renderer then used each chapter's position in that
+  subset as its identity — for the manifest key, the cache WAV filename and
+  the cache entry alike. So on a four-chapter book `--chapters 4` wrote
+  chapter 4's audio to `chapter_0000.wav`, the file holding chapter 1's, and
+  recorded it under chapter 1's key. The hash check meant it was never served
+  *as* chapter 1; it silently threw away work already paid for and charged
+  for the TTS again, on exactly the long books where anyone reaches for a
+  selection. The utterance-level cache had always keyed off the chapter's own
+  index, so the two caches disagreed with each other. Position and identity
+  are now separate throughout: the progress bar counts the run, everything
+  that names a chapter uses the chapter. That also fixes the failure report
+  and the "chapters missing from the output" list, which under a selection
+  named chapters that had rendered fine.
+- **`render --dry-run` predicted a different render than the one that ran.**
+  The preview's cache key omitted the TTS engine and the output profile —
+  the parameters were added to the preview function when this was last
+  fixed, and the CLI was never updated to pass them — so `--acx --dry-run`
+  reported a fully-cached book as needing a complete re-render.
 - **Nothing checked the output destination before synthesis.** An unwritable
   path cost all six chapters of a six-chapter book in TTS time and then
   raised a bare `OSError`. It now fails at zero chapters with a structured

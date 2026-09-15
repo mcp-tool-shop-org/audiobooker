@@ -2777,7 +2777,27 @@ def _dry_run_full_book(
         return 0
 
     from audiobooker.renderer.engine import dry_run_render
-    dry_run_render(project, resume=resume, from_chapter=from_chapter)
+    # RH-B-004, second half. dry_run_render GREW `engine` and
+    # output_profile parameters when that bug was fixed — because both are
+    # part of the render-params cache key — and this call site was never
+    # updated to pass them. So the preview hashed engine=None and
+    # output_profile='podcast' while `render --acx` hashes the real engine
+    # and 'acx', and every chapter came back "to render" on a book that
+    # was fully cached. The same drift the docstring warns about, in the
+    # opposite direction: RH-B-004 under-reported, this over-reported.
+    #
+    # render_params_hash accepts an engine NAME, so this costs nothing —
+    # no TTS engine is instantiated for a preview.
+    dry_run_render(
+        project,
+        resume=resume,
+        from_chapter=from_chapter,
+        engine=engine_name,
+        output_profile=(
+            "acx" if getattr(args, "acx", False)
+            else project.config.output_profile
+        ),
+    )
 
     _out(f"Cast ({len(mapping)} speaker(s)):")
     if mapping:
