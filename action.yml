@@ -1,5 +1,9 @@
 name: 'Audiobooker'
-description: 'Generate a narrated, multi-voice audiobook from a book file (EPUB/PDF/DOCX/TXT/MD)'
+description: >-
+  Generate a narrated, multi-voice audiobook from a book file
+  (EPUB/PDF/DOCX/TXT/MD). Caller must use runs-on: ubuntu-latest — this
+  composite installs ffmpeg via apt-get and will not work on
+  windows-latest or macos-latest.
 author: 'mcp-tool-shop'
 branding:
   icon: 'book-open'
@@ -49,26 +53,57 @@ runs:
 
     - name: Install FFmpeg
       shell: bash
+      # Composite actions have no runs-on. Callers must use ubuntu-latest
+      # (or another Debian/Ubuntu image with apt-get). sudo apt-get will
+      # not work on windows-latest / macos-latest.
       run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
 
     - name: Install audiobooker
       shell: bash
-      # Note: the [render] extra pulls the voice-soundboard TTS engine, which
-      # downloads model weights on first run — expect a multi-minute, multi-GB
-      # step. Cache ~/.cache where possible in the calling workflow.
-      run: pip install "audiobooker-ai[render]"
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+      # Install THIS checkout (uses: org/repo@<tag> already fetched that
+      # tag's tree). pip install "audiobooker-ai[render]" unpinned would
+      # pull PyPI latest, so @v2.1.1 silently served 3.0.0 after publish.
+      # The [render] extra still pulls voice-soundboard from PyPI (capped
+      # by this tree's pyproject) and downloads model weights on first
+      # run — expect a multi-minute, multi-GB step. Cache ~/.cache where
+      # possible in the calling workflow.
+      run: |
+        VERSION="$(python3 "$ACTION_PATH/tools/read_project_version.py" "$ACTION_PATH/pyproject.toml")"
+        if [ -z "$VERSION" ]; then
+          echo "::error::Could not read [project].version from pyproject.toml"
+          exit 1
+        fi
+        python3 -m pip install --no-cache-dir "${ACTION_PATH}[render]"
+        INSTALLED="$(python3 -c "from importlib.metadata import version; print(version('audiobooker-ai'))")"
+        if [ "$INSTALLED" != "$VERSION" ]; then
+          echo "::error::Installed audiobooker-ai==${INSTALLED} != action pyproject ${VERSION}"
+          exit 1
+        fi
 
     - name: Render audiobook
       id: render
       shell: bash
+      env:
+        SOURCE: ${{ inputs.source }}
+        OUTPUT: ${{ inputs.output }}
+        FORMAT: ${{ inputs.format }}
+        ACX: ${{ inputs.acx }}
+        LANG: ${{ inputs.lang }}
+        COVER: ${{ inputs.cover }}
       run: |
-        ACX_FLAG=""
-        [ "${{ inputs.acx }}" = "true" ] && ACX_FLAG="--acx"
-        COVER_FLAG=""
-        [ -n "${{ inputs.cover }}" ] && COVER_FLAG="--cover ${{ inputs.cover }}"
-        audiobooker make "${{ inputs.source }}" \
-          --lang "${{ inputs.lang }}" \
-          --format "${{ inputs.format }}" \
-          $ACX_FLAG $COVER_FLAG \
-          -o "${{ inputs.output }}"
-        echo "audiobook=${{ inputs.output }}" >> "$GITHUB_OUTPUT"
+        args=(make "$SOURCE" --lang "$LANG" --format "$FORMAT" -o "$OUTPUT")
+        if [ "$ACX" = "true" ]; then
+          args+=(--acx)
+        fi
+        if [ -n "$COVER" ]; then
+          args+=(--cover "$COVER")
+        fi
+        audiobooker "${args[@]}"
+        _delim="$(openssl rand -hex 16)"
+        {
+          printf 'audiobook<<%s\n' "$_delim"
+          printf '%s\n' "$OUTPUT"
+          printf '%s\n' "$_delim"
+        } >> "$GITHUB_OUTPUT"

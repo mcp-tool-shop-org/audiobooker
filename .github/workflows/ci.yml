@@ -23,6 +23,10 @@
 # than one long one. This number is measured, never estimated; re-measure
 # after any change from a clean all-success run:
 #   gh api repos/mcp-tool-shop-org/audiobooker/actions/runs/<id>/jobs
+# Wave-2 ci-tooling amend (action injection / docker dispatch / typecheck
+# ratchet / release preflight) added no CI job and did not expand the Python
+# matrix. typecheck still ~30s (wrapper is milliseconds); still 5 jobs /
+# 7 billable min per push. release.yml preflight is release-only.
 # ---------------------------------------------------------------------------
 name: CI
 
@@ -176,14 +180,26 @@ jobs:
           # release.yml to npm@12.0.2. This was the one hole.
           # A new pyright minor routinely tightens inference, so bump this
           # deliberately, with the [tool.pyright] block in pyproject.toml in
-          # view. The step is continue-on-error today, so a float would not
-          # break the build — it would quietly change what "typecheck passed"
-          # meant, which is worse.
+          # view. The job is a required check; a float would quietly change
+          # what "typecheck passed" meant (and can raise the residual cap).
           pip install pyright==1.1.414
 
+      - name: CI policy assertions
+        # Planted-RED for the five ci-tooling amend gates. Restore a closed
+        # defect (input interpolation, unpinned action install, docker
+        # push: true, typecheck continue-on-error, stale pypa pin / missing
+        # preflight) and this step fails. Same typecheck job, not a new
+        # billable minute (GitHub rounds the job up from ~30s either way).
+        run: python tools/check_ci_policy.py
+
       - name: Pyright type-check
-        continue-on-error: true  # Non-blocking until type coverage improves
-        run: pyright audiobooker/
+        # Required check. continue-on-error made it vacuous (82 residuals)
+        # still greened typecheck). The wrapper fails closed on NEW errors
+        # and caps known residuals at tools/check_pyright_gate.py
+        # MAX_ERRORS. Pay down types by lowering the cap; do not restore
+        # continue-on-error. No second pytest leg. Per-push minutes
+        # unchanged: still 5 jobs / 7 billable min (run 34922950012).
+        run: python tools/check_pyright_gate.py audiobooker/
 
   dep-audit:
     runs-on: ubuntu-latest
