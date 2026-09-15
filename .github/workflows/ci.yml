@@ -158,7 +158,19 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
-          pip install pyright
+          # PINNED 2026-09-14 (latest at the time). This was a bare
+          # `pip install pyright`, which made every pyright release a live
+          # input to this job — the same shape that took the lint step from
+          # clean to 369 errors when ruff floated, and the reason
+          # pyproject.toml pins ruff==0.16.6 with its own note. Every other
+          # tool here is pinned: Actions by SHA, the Dockerfile by digest,
+          # release.yml to npm@12.0.2. This was the one hole.
+          # A new pyright minor routinely tightens inference, so bump this
+          # deliberately, with the [tool.pyright] block in pyproject.toml in
+          # view. The step is continue-on-error today, so a float would not
+          # break the build — it would quietly change what "typecheck passed"
+          # meant, which is worse.
+          pip install pyright==1.1.414
 
       - name: Pyright type-check
         continue-on-error: true  # Non-blocking until type coverage improves
