@@ -1228,6 +1228,7 @@ class ProjectConfig:
         phoneme_overrides: Phoneme-typed pronunciation entries, kept distinct
             from plain spelling replacements (pronunciation_overrides). Filled
             by import_lexicon from lexicon entries marked type=phoneme.
+            Stored for round-trip; no engine consumes them yet (inert).
         tts_engine: Pluggable TTS engine entry-point name (ECOSYSTEM v2.1).
             The renderer resolves it through engine.get_default_engine(name).
             "voice-soundboard" (default) is the built-in engine and preserves
@@ -1251,6 +1252,10 @@ class ProjectConfig:
     booknlp_mode: str = "auto"
     emotion_mode: str = "rule"
     emotion_confidence_threshold: float = 0.75
+    # Book-wide TTS speed multiplier (0.5–2.0). Applied at render by
+    # AudiobookProject._global_speed_applied (scales Character.speed for the
+    # call). Do not also key this in render_params_hash — casting_hash already
+    # sees the scaled Character.speed.
     global_speed: float = 1.0
     pronunciation_overrides: dict[str, str] = field(default_factory=dict)
     clean_text: bool = True
@@ -1371,6 +1376,22 @@ class ProjectConfig:
 
         _check_optional_str(self.aac_bitrate, "aac_bitrate")
         _check_optional_str(self.mp3_bitrate, "mp3_bitrate")
+
+    def effective_speed(self, character_speed: float = 1.0) -> float:
+        """Book-wide ``global_speed`` as a multiplier on a per-character speed.
+
+        The product is clamped to the same 0.5–2.0 range as each input.
+        ``AudiobookProject`` applies this at render time by scaling
+        ``Character.speed`` so ``utterances_to_script`` / ``casting_hash``
+        see the effective value. ``render_params_hash`` must not also key
+        ``global_speed`` while this is the apply site (that would double-miss
+        the cache for identical audio).
+        """
+        try:
+            product = float(character_speed) * float(self.global_speed)
+        except (TypeError, ValueError):
+            product = float(self.global_speed) if self.global_speed else 1.0
+        return max(0.5, min(2.0, product))
 
     def to_dict(self) -> dict:
         """Serialize to dictionary."""
