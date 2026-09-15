@@ -7,13 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-A five-wave dogfood swarm. 160+ findings, tests 1468 → 1708. Every
-CRITICAL/HIGH severity was re-rated by a model family that did not author the
-finding, and the fixes were written test-first with the failure observed
-before the fix.
+A dogfood swarm in two passes — five health waves, then a feature pass of
+four build agents with disjoint file ownership. 200+ findings, tests
+1468 → 1918. Every CRITICAL/HIGH severity was re-rated by a model family that
+did not author the finding, and the fixes were written test-first with the
+failure observed before the fix.
 
-The through-line is worth stating, because it shaped what got found: **three
-separate defects were each hiding behind something that reported success.**
+The through-line is worth stating, because it shaped what got found: **defect
+after defect was hiding behind something that reported success.** A quality
+metric that improved as quality degraded. A cache that printed "Cached" over
+audio that did not match the request. A gate that fired only after the money
+was spent. And a feature listed under *Added* in a previous release with no
+caller at all — which turned out never to have been runnable.
 
 ### Fixed — data loss and silent wrong output
 
@@ -56,6 +61,34 @@ separate defects were each hiding behind something that reported success.**
   shared or attached to a bug report no longer carries the author's account
   name. Paths are stored relative to the project file, or `~`-relative when
   the target lives outside it, and projects are now portable between machines.
+- **The cache said "Cached" and handed back audio that did not match the
+  request.** Utterance `intensity` and `emotion_preset` both change the
+  emitted SSML and neither was hashed, so switching to the `literary` preset
+  and re-rendering reported every chapter cached and returned the `neutral`
+  audio. A pronunciation override added after compile was likewise never
+  spoken and re-rendering did not apply it — the single most likely reason
+  anyone re-renders a book was the one edit the pipeline dropped.
+- **Importing a review erased attribution provenance from the whole book**,
+  including the lines the human had just corrected. A hand-edited line is now
+  recorded as `user` at full confidence; untouched lines keep what the
+  compiler worked out.
+- **`utterance_cache = true` removed every pause in the book.** The
+  inter-speaker break is emitted only when the SSML builder can see a
+  *previous* speaker, and the incremental path hands it one utterance at a
+  time — so the break was never emitted, and the stitch concatenates with
+  `-c copy`, which inserts nothing. Every speaker change across the whole
+  book lost its 750 ms of air and the dialogue ran together. Nothing warned:
+  the durations looked plausible and the cache reported a hit rate it had
+  genuinely earned, on audio that was not the audio the chapter path
+  produces. Found while writing this release's documentation for the
+  feature. The silence is now spliced in at assembly, where it belongs —
+  baking it into a neighbour's cached WAV would make one utterance's bytes
+  depend on the utterance before it, which is the coupling a per-utterance
+  cache exists to avoid.
+- **Nothing checked the output destination before synthesis.** An unwritable
+  path cost all six chapters of a six-chapter book in TTS time and then
+  raised a bare `OSError`. It now fails at zero chapters with a structured
+  error that names the warm cache, so the retry is free.
 
 ### Fixed — the quality signal
 
@@ -64,6 +97,49 @@ The unattributed-dialogue rate, the tool's only attribution-quality number,
 three separate defects each converted a would-be `unknown` into an *accepted
 wrong speaker*, deflating the numerator. All four are fixed, the rate now
 divides dialogue by dialogue, and `compile` prints it.
+
+That fixed the arithmetic but not the blind spot underneath it. Turn-tracking
+fills a gap by alternating the last two speakers and recorded every guess as a
+**successful** attribution — so a guess *lowered* the unknown rate. `report`
+returned quality `ok` on passages measured at 52% and 69% hand-scored speaker
+accuracy.
+
+Utterances now carry `attribution_source` (`tag` · `turn` · `nlp` · `inline` ·
+`user`) and a confidence, threaded from the candidate tier the resolver was
+already computing and discarding: a directly attached speech tag scores high,
+an alternation guess is `turn` at 0.25. `compile_report` gains
+`dialogue_unverified_rate`, `attribution_quality` and a source distribution.
+
+The same passage now reads quality `ok` beside attribution_quality `failed`.
+**A guess moves a line from `unknown` to low-confidence and the unverified
+rate does not move**, so guessing harder can no longer improve the number.
+`attribution_quality` carries its own thresholds (0.30 warn / 0.60 fail)
+rather than inheriting the unknown-rate ones, because a guess is worse for the
+user than an admission — an unknown line is visible in the report and the
+review export, a confident wrong one is not.
+
+### Fixed — real books
+
+The parsers were tested against clean fixtures. These are what a book off the
+shelf actually does.
+
+- **EPUB TOC splitting silently DELETED spine documents the TOC did not
+  reference**, and played what remained in TOC order rather than reading
+  order. Orphaned documents are recovered at their spine position and
+  chapters emit in spine order — the spine is normative, the TOC is
+  navigation.
+- **DOCX tables were dropped entirely.** `document.paragraphs` excludes cell
+  content, so anything laid out in a table simply was not in the audiobook.
+- **PDF nested outlines were discarded** — taking `min(level)` kept only the
+  shallowest entries, so an ordinary Part → Chapter tree collapsed and fell
+  back to text heuristics.
+- **Chapter titles were mangled.** `Chapter 1` produced the title `1`;
+  `CHAPTER TWENTY-ONE` produced `Chapter TWENTY: ONE`; localized headings
+  were re-worded into English. Bare Roman or Arabic section headings were not
+  detected as headings at all.
+- **Project Gutenberg boilerplate was narrated**, with the licence fused onto
+  the end of the last real chapter where `chapters exclude` could not reach
+  it.
 
 ### Added
 
@@ -80,6 +156,24 @@ divides dialogue by dialogue, and `compile` prints it.
 - `--jobs` serialises a TTS engine that has not declared itself thread-safe,
   instead of entering one engine from N threads and producing interleaved
   audio that passes every size and duration check.
+- **The per-utterance incremental cache is now reachable** (`utterance_cache`
+  — opt-in, off by default). It shipped complete, tested and namespaced in
+  2.1.0 with zero callers; wiring it revealed it had never been runnable, as
+  the stitch step passed no `-f` to ffmpeg while the render path hands it a
+  `.wav.tmp` scratch name. Its tests passed because the fakes never reached
+  that call. Wiring it as-written would also have *changed the audio*:
+  `render_chapter` built its script without the casting table while the
+  incremental path built it with, so per-character speed, pitch and emphasis
+  reached synthesis only on the path nobody could take. Both ends are fixed.
+  Measured: editing one line of a 50-utterance chapter re-synthesises 2,160
+  characters with the cache off and 40 with it on.
+- `casting_hash` is scoped per chapter, so recasting one character no longer
+  re-renders the whole book.
+- `make --review`, phase-by-phase narration from `make`, and a
+  nearest-valid-key suggestion when a config file carries an unknown key.
+- `--json` now covers the **error** path — structured `code` / `message` /
+  `hint` / `retryable` — and five more commands. `errors.structured()`
+  existed and had never been called.
 
 ### Changed
 
@@ -88,6 +182,22 @@ divides dialogue by dialogue, and `compile` prints it.
 - `--format m4a` is no longer a whole-book option — it always meant one file
   per chapter, and previously produced a single M4B under an `.m4a` name. It
   remains available on `podcast --format`, whose accepted set was widened.
+- **`render` refuses a book whose attribution is mostly guesswork**, before
+  spending a TTS run rather than after. The gate `--force` advertised did
+  exist, but it fired only above 30% of *all* utterances and from inside
+  `render_project` — after the progress bar had started — so a typo'd
+  secondary character sailed through at 28.6%. The gate now reads
+  `attribution_quality`, which can see a guess, rather than the unattributed
+  rate, which a guess makes look better.
+- **Render cache manifest v3.** Three audio-affecting inputs joined the cache
+  keys: utterance intensity, `emotion_preset`, and `utterance_cache`; the
+  casting key gained per-character speed/pitch/emphasis and per-chapter
+  speaker scoping. A v2 entry was written without them and cannot prove its
+  WAV matches the render about to run, **so the first render after upgrading
+  re-renders every chapter once.** That cost is deliberate — the alternative
+  is what shipped before the bump, where switching emotion preset reported
+  "Cached" on every chapter and returned the old audio.
+- Every printed chapter reference now carries both numbering schemes.
 - The README no longer claims ACX/Audible submittability. It documents the ACX
   **audio spec** as a mastering target, states the RMS/peak/noise-floor
   numbers that `master-check` actually measures, and says plainly that ACX's
@@ -105,6 +215,13 @@ divides dialogue by dialogue, and `compile` prints it.
 - `make audit` audited nothing: `--strict --skip-editable` turned the skip of
   the repo's own editable install into a collection failure, exiting 1 after
   one line and taking `make verify` with it.
+- Four documented `from_*` constructors raised `TypeError` on the
+  `title`/`author` keyword arguments their own docstrings advertise. Only the
+  documented Python API hit it, which is the worst place for it to be.
+- A non-ASCII book title crashed the CLI's own success message on a stock
+  Windows console — project saved fine, exit code 2. Third instance of a bug
+  fixed twice before; fixed once at the output primitive this time.
+- `find_config_files()` got its first caller.
 
 ## [2.1.1] - 2026-06-21
 

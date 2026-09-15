@@ -15,6 +15,7 @@ import shutil
 import threading
 import time
 import uuid
+import wave
 from xml.sax.saxutils import escape as _xml_escape
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, asdict, field, replace
@@ -127,6 +128,12 @@ _INTENSITY_MID_BAND = 0.67
 _NARRATOR_RATE = "medium"
 _DIALOGUE_RATE = "105%"
 
+# FEAT-PROD-011: the air between two speakers. This used to be a literal
+# inside preprocess_ssml, which is why the incremental path could lose it
+# without anything noticing -- there was nothing to share. Both paths now
+# read this, so the pause cannot differ by which cache mode you chose.
+SPEAKER_CHANGE_BREAK_MS = 750
+
 
 def _emphasis_for(
     emotion: str,
@@ -201,7 +208,7 @@ def preprocess_ssml(
     for utt in utterances:
         # Insert paragraph break between speaker changes
         if prev_speaker is not None and utt.speaker != prev_speaker:
-            parts.append('<break time="750ms"/>')
+            parts.append(f'<break time="{SPEAKER_CHANGE_BREAK_MS}ms"/>')
 
         # Determine prosody rate: narrator = medium, dialogue = slightly faster
         is_narrator = utt.speaker.lower() in ("narrator", "narration")
@@ -875,8 +882,27 @@ def render_chapter_incremental(
     reused = 0
     total_duration = 0.0
     ordered_wavs: list[Path] = []
+    # FEAT-PROD-011: gap_before[i] is the silence, in ms, that belongs
+    # between utterance i-1 and utterance i. preprocess_ssml emits its
+    # <break> only when it can see a PREVIOUS speaker, and this path hands
+    # it one utterance at a time -- so prev_speaker is None on the only
+    # iteration, every time, and the break was never emitted. Opting into
+    # the cache silently removed every pause in the book.
+    #
+    # The pause is inserted at stitch time rather than prepended to a
+    # neighbour's script: baking it into utterance i's WAV would make those
+    # bytes depend on utterance i-1, so editing one line would invalidate
+    # the line after it too. That coupling is the thing a per-utterance
+    # cache exists to avoid.
+    gap_before: list[int] = []
 
     for idx, utt in enumerate(chapter.utterances):
+        prev = chapter.utterances[idx - 1] if idx else None
+        gap_before.append(
+            SPEAKER_CHANGE_BREAK_MS
+            if prev is not None and prev.speaker != utt.speaker
+            else 0
+        )
         voice, _emotion = casting.get_voice(utt.speaker)
         uhash = _utterance_hash(utt, voice, render_params_hash)
         # COORD-B-002 (wave 5): the ON-DISK filename only needs enough of the
@@ -995,8 +1021,15 @@ def render_chapter_incremental(
         if progress_callback:
             progress_callback(idx + 1, total)
 
-    # Stitch the per-utterance WAVs into the chapter WAV (cheap concat copy).
-    _stitch_utterance_wavs(ordered_wavs, output_path, runner=runner)
+    # Stitch the per-utterance WAVs into the chapter WAV (cheap concat copy),
+    # with the speaker-change silences spliced back in between them.
+    _stitch_utterance_wavs(
+        ordered_wavs, output_path, gap_before_ms=gap_before, runner=runner
+    )
+    # FEAT-PROD-011: the gaps are real audio in the file, so the reported
+    # duration has to include them -- chapter marks are placed from these
+    # numbers, and an under-report walks every later mark forward.
+    total_duration += sum(gap_before) / 1000.0
 
     chapter.audio_path = output_path
     chapter.duration_seconds = total_duration
@@ -1016,22 +1049,79 @@ def render_chapter_incremental(
     )
 
 
+def _write_silence_wav(path: Path, duration_ms: int, like: Path) -> Path:
+    """Write ``duration_ms`` of silence matching ``like``'s WAV format.
+
+    FEAT-PROD-011. The concat step runs ``-c copy``, which refuses to splice
+    streams whose parameters differ — so the silence has to match the
+    engine's own output exactly, not merely be a plausible WAV. Copying the
+    channel count, sample width and frame rate off a real neighbour is the
+    only way to guarantee that without knowing which engine produced it.
+
+    stdlib ``wave`` rather than an ``anullsrc`` ffmpeg call: it cannot
+    disagree with the source about a parameter it read from the source, and
+    it costs no subprocess.
+    """
+    with wave.open(str(like), "rb") as src:
+        nchannels = src.getnchannels()
+        sampwidth = src.getsampwidth()
+        framerate = src.getframerate()
+
+    nframes = int(round(framerate * duration_ms / 1000.0))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with wave.open(str(path), "wb") as dst:
+        dst.setnchannels(nchannels)
+        dst.setsampwidth(sampwidth)
+        dst.setframerate(framerate)
+        dst.writeframes(b"\x00" * (nframes * nchannels * sampwidth))
+    return path
+
+
 def _stitch_utterance_wavs(
     wavs: list[Path],
     output_path: Path,
     *,
+    gap_before_ms: Optional[list[int]] = None,
     runner: Optional[Callable] = None,
 ) -> Path:
     """Concatenate per-utterance WAVs into one chapter WAV via ffmpeg concat.
 
     Uses ``-c copy`` (no re-encode) — the utterance WAVs share the engine's
-    sample format, so this is a cheap remux. A single WAV is just copied.
+    sample format, so this is a cheap remux.
+
+    ``gap_before_ms[i]`` is silence to splice in *before* ``wavs[i]``; the
+    first entry is ignored (nothing precedes it). Omitting the argument
+    concatenates the WAVs back to back, which is the historical behaviour.
     """
     if not wavs:
         raise RenderError(
             "Cannot stitch an empty utterance list into a chapter WAV.",
             code="RUNTIME_RENDER",
         )
+
+    if gap_before_ms is None:
+        gap_before_ms = [0] * len(wavs)
+    elif len(gap_before_ms) != len(wavs):
+        raise RenderError(
+            f"gap_before_ms has {len(gap_before_ms)} entries for "
+            f"{len(wavs)} utterance WAVs.",
+            code="RUNTIME_RENDER",
+        )
+
+    # Interleave the silences. Written before the single-WAV shortcut below
+    # so that shortcut stays correct: one WAV can have no gaps by
+    # construction, and a lone segment needs no concat at all.
+    segments: list[Path] = []
+    gap_dir = output_path.parent / "_gaps"
+    for i, wav in enumerate(wavs):
+        if i and gap_before_ms[i] > 0:
+            segments.append(_write_silence_wav(
+                gap_dir / f"gap_{i:04d}_{gap_before_ms[i]}ms.wav",
+                gap_before_ms[i],
+                like=wav,
+            ))
+        segments.append(wav)
+    wavs = segments
 
     if runner is None:
         from audiobooker.renderer.ffmpeg_runner import RealFFmpegRunner

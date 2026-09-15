@@ -60,7 +60,30 @@ Every command supports `-h`/`--help`. Global flags (before or after the subcomma
 ## Engines & configuration
 
 - **`--engine NAME`** (render/batch/preview/make/voices) selects a TTS backend resolved from `--engine` > `AUDIOBOOKER_ENGINE` > config > the built-in `voice-soundboard`. Plugins register via the `audiobooker.tts_engines` entry-point group.
-- **Config file** — `.audiobookerrc` (TOML) or `[tool.audiobooker]` in `pyproject.toml`, merged under explicit CLI flags. Common keys: `output_format`, `output_profile`, `lang`, `jobs`, `booknlp_mode`, `emotion_mode`, `chapter_pause_ms`.
+- **Config file** — `.audiobookerrc` (TOML) or `[tool.audiobooker]` in `pyproject.toml`, merged under explicit CLI flags. Common keys: `output_format`, `output_profile`, `lang`, `jobs`, `booknlp_mode`, `emotion_mode`, `chapter_pause_ms`. An unrecognised key is reported with the nearest valid one rather than silently ignored.
+
+## The render cache
+
+Rendering is the expensive step, so results are cached and `render` re-synthesises only what changed. `cache info` shows what is stored, `cache clean` clears it.
+
+The cache key covers everything that changes the audio: the chapter text, the casting table (scoped per chapter, so recasting one character does not re-render the book), the voices, the TTS engine and its version, the output profile, the emotion preset and per-utterance intensity, and the per-character speed, pitch and emphasis. If a change would alter a single sample, it misses.
+
+**Upgrading to 3.0 re-renders every chapter once.** Three audio-affecting inputs joined the key in this release, and a cache entry written by 2.x was stored without them — so it cannot prove its audio matches the render you are asking for. Paying that once is the point of the change: before it, switching `emotion_preset` to `literary` reported "Cached" on every chapter and handed back the `neutral` audio.
+
+### `utterance_cache` — opt-in, off by default
+
+```toml
+[tool.audiobooker]
+utterance_cache = true
+```
+
+By default the cache works a chapter at a time: change one line and the whole chapter is re-synthesised. With `utterance_cache = true` each utterance is cached individually, so an edit costs only the lines you touched. Measured on a 50-utterance chapter: editing one line re-synthesises 2,160 characters with it off, 40 with it on.
+
+It is off by default for one reason, worth stating plainly: **the two paths do not produce byte-identical audio.** Per-utterance synthesis hands the engine one utterance at a time where chapter-level synthesis hands it the whole chapter, and a TTS engine's output depends on the span it is given. The pauses are the same either way — the speaker-change silence is spliced back in at assembly — but the speech itself is re-synthesised on different boundaries, so the result is equivalent rather than identical.
+
+Flipping the setting is part of the cache key, so turning it on or off invalidates the cache rather than mixing audio from the two paths within one book.
+
+Turn it on while you are iterating; turn it off for the final master if you need the bytes to be reproducible against an earlier render.
 
 ## Python API
 
