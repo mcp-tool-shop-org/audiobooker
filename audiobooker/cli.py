@@ -18,6 +18,7 @@ Usage:
     audiobooker cast-preset save mycast    # Save current cast as a preset
     audiobooker cast-preset apply mycast   # Apply a saved casting preset
     audiobooker speakers --suggest-aliases # Propose aliases per character
+    audiobooker speakers merge "Dr. Merrin" Merrin  # Fold duplicate cast slots
     audiobooker emotions presets           # List emotion preset packs + vocab
     audiobooker emotions mood-span 0 0 500 tense  # Mark a chapter span's mood
     audiobooker compile --emotion-preset dramatic # Compile with a preset pack
@@ -817,6 +818,19 @@ def create_parser() -> argparse.ArgumentParser:
         help="With --suggest-aliases: apply the proposed aliases to the cast",
     )
     speakers_parser.add_argument(
+        "--json", dest="json_output", action="store_true", help="Output as JSON"
+    )
+    speakers_sub = speakers_parser.add_subparsers(
+        dest="speakers_command", help="Speaker management sub-commands"
+    )
+    sp_merge_parser = speakers_sub.add_parser(
+        "merge",
+        help="Fold source speaker into target (duplicate names / alias proposals)",
+    )
+    sp_merge_parser.add_argument("source", help="Cast slot to remove")
+    sp_merge_parser.add_argument("target", help="Cast slot that keeps the voice")
+    sp_merge_parser.add_argument("-p", "--project", help="Project file")
+    sp_merge_parser.add_argument(
         "--json", dest="json_output", action="store_true", help="Output as JSON"
     )
 
@@ -4352,6 +4366,9 @@ def cmd_speakers(args) -> int:
 
     json_output = getattr(args, "json_output", False)
 
+    if getattr(args, "speakers_command", None) == "merge":
+        return _speakers_merge(args)
+
     try:
         project_path = find_project_file(args.project)
         project = AudiobookProject.load(project_path)
@@ -4408,6 +4425,50 @@ def cmd_speakers(args) -> int:
 
         return 0
 
+    except USER_ERROR_TYPES as e:
+        _report_error(e, args)
+        return 1
+
+
+def _speakers_merge(args) -> int:
+    """FEAT-CAST-003: apply CastingTable.merge_speaker from the CLI."""
+    from audiobooker import AudiobookProject
+
+    json_output = getattr(args, "json_output", False)
+    source = args.source
+    target = args.target
+
+    try:
+        project_path = find_project_file(args.project)
+        project = AudiobookProject.load(project_path)
+
+        if not any(c.is_compiled for c in project.chapters):
+            if not json_output:
+                _out("Compiling to detect speakers...")
+            project.compile()
+            project.save()
+
+        merged = project.casting.merge_speaker(source, target)
+        project.compile()
+        project.save()
+
+        payload = {
+            "source": source,
+            "target": merged.name,
+            "aliases": list(merged.aliases),
+            "lines": merged.line_count,
+            "voice": merged.voice,
+        }
+        if json_output:
+            _emit_json(payload)
+            return 0
+
+        _out(
+            f"you asked to fold {source!r} into {target!r}; "
+            f"I kept {merged.name!r} ({merged.line_count} lines, "
+            f"aliases: {', '.join(merged.aliases) or '(none)'})."
+        )
+        return 0
     except USER_ERROR_TYPES as e:
         _report_error(e, args)
         return 1

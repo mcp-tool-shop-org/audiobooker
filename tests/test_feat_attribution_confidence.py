@@ -461,6 +461,85 @@ class TestTheMergeCanActuallyBeApplied:
         assert again.normalize_key("Dr. Merrin") not in again.characters
 
 
+class TestSpeakersMergeCLI:
+    """F-74c6492b / F-f59d195b: argparse `speakers merge` must apply the fold."""
+
+    def test_speakers_merge_folds_the_source_slot(self, tmp_path, capsys):
+        from audiobooker.cli import main
+        from audiobooker.project import AudiobookProject
+
+        project = AudiobookProject.from_string(
+            '"Stay," said Dr. Merrin.\n"Go," said Merrin.\n',
+            title="Merge Book",
+        )
+        project.compile()
+        project.cast("Dr. Merrin", "af_bella")
+        project.cast("Merrin", "af_sky")
+        path = tmp_path / "book.audiobooker"
+        project.save(path)
+
+        code = main(["speakers", "merge", "Dr. Merrin", "Merrin", "-p", str(path)])
+        assert code == 0
+        out = capsys.readouterr().out
+        assert "fold" in out.lower()
+        assert "Dr. Merrin" in out
+
+        again = AudiobookProject.load(path)
+        assert again.casting.normalize_key("Dr. Merrin") not in again.casting.characters
+        assert again.casting.resolve_alias("Dr. Merrin") is not None
+
+    def test_speakers_merge_json_is_one_object(self, tmp_path, capsys):
+        import json
+
+        from audiobooker.cli import main
+        from audiobooker.project import AudiobookProject
+
+        project = AudiobookProject.from_string(
+            '"Stay," said Dr. Merrin.\n"Go," said Merrin.\n',
+            title="Merge JSON",
+        )
+        project.compile()
+        project.cast("Dr. Merrin", "af_bella")
+        project.cast("Merrin", "af_sky")
+        path = tmp_path / "book.audiobooker"
+        project.save(path)
+
+        code = main([
+            "speakers", "merge", "Dr. Merrin", "Merrin",
+            "-p", str(path), "--json",
+        ])
+        assert code == 0
+        captured = capsys.readouterr()
+        assert captured.out.strip()
+        payload = json.loads(captured.out)
+        assert payload["source"] == "Dr. Merrin"
+        assert payload["target"] == "Merrin"
+
+    def test_speakers_merge_unknown_slot_is_json_error(self, tmp_path, capsys):
+        import json
+
+        from audiobooker.cli import main
+        from audiobooker.project import AudiobookProject
+
+        project = AudiobookProject.from_string(
+            '"Stay," said Merrin.\n',
+            title="Merge Miss",
+        )
+        project.compile()
+        project.cast("Merrin", "af_sky")
+        path = tmp_path / "book.audiobooker"
+        project.save(path)
+
+        code = main([
+            "speakers", "merge", "Halloway", "Merrin",
+            "-p", str(path), "--json",
+        ])
+        assert code == 1
+        payload = json.loads(capsys.readouterr().err)
+        assert payload["code"]
+        assert "Halloway" in payload["message"]
+
+
 # ---------------------------------------------------------------------------
 # FEAT-CAST-006 — Spanish/Portuguese raya DETECTION mid-paragraph
 # ---------------------------------------------------------------------------
