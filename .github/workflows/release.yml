@@ -7,13 +7,26 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # false: a second tag must not abort an in-flight OIDC upload. npm
+  # versions are immutable; cancelling mid-publish can ship one side.
+  cancel-in-progress: false
 
 jobs:
-  # Cheap python -m build + twine check on the release SHA. publish and
-  # publish-npm stay independent of each other, but both need this job so a
-  # Metadata-Version reject cannot let npm go live (the v2.1.0 split-brain).
-  # Not a second pytest suite; release-only, not per-push.
+  # workflow_dispatch is kept so the button exists, but it must not look
+  # like a successful publish. Every real publish job is if: release.
+  # A skipped-all-jobs run would be Success (GitHub skipped-required-check).
+  dispatch-notice:
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch does not publish
+        run: |
+          echo "::error::This workflow publishes only from a GitHub Release (on: release published). workflow_dispatch does not upload to PyPI or npm. Create a published GitHub Release to ship."
+          exit 1
+
+  # Cheap python -m build + twine check on the release SHA. The wheel that
+  # passes twine is the wheel that publish uploads (artifact, not a second
+  # build). Not a second pytest suite; release-only, not per-push.
   preflight:
     if: ${{ github.event_name == 'release' }}
     runs-on: ubuntu-latest
@@ -48,15 +61,23 @@ jobs:
           # rather than PEP 517 isolation re-fetching setuptools>=61.0 unbounded.
           python -m build --no-isolation
           python -m twine check dist/*
+          echo "preflight dist identity:"
+          ls -l dist
+          sha256sum dist/*
+
+      - name: Upload preflight dist for publish
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: pypi-dist
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
 
   publish:
     # Only on a real release — workflow_dispatch has no release tag to check
     # against pyproject.toml, and dispatching this job from an arbitrary ref
-    # must not be able to reach PyPI. Mirrors the guard on publish-npm below.
-    # (The `pypi` environment itself currently has no required reviewers or
-    # branch/tag policy, unlike `github-pages` in docker.yml/pages.yml which
-    # is restricted to the `main` branch. Tightening that is a repo-settings
-    # change outside this file — tracked as a coordinator follow-up.)
+    # must not be able to reach PyPI. Consumes the preflight artifact (the
+    # bytes twine checked), not a second independent build.
     needs: preflight
     if: ${{ github.event_name == 'release' }}
     runs-on: ubuntu-latest
@@ -65,45 +86,38 @@ jobs:
     permissions:
       id-token: write  # OIDC trusted publishing
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Set up Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - name: Fetch preflight dist
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          python-version: '3.12'
+          name: pypi-dist
+          path: dist
 
-      - name: Verify tag matches pyproject.toml version
+      - name: Confirm preflight dist
         run: |
-          PKG_VERSION=$(python3 tools/read_project_version.py pyproject.toml)
-          TAG_VERSION="${GITHUB_REF_NAME#v}"
-          echo "tag=${TAG_VERSION} pkg=${PKG_VERSION}"
-          if [ "${PKG_VERSION}" != "${TAG_VERSION}" ]; then
-            echo "::error::Tag ${TAG_VERSION} does not match pyproject.toml ${PKG_VERSION}"
+          if ! ls dist/*.whl dist/*.tar.gz >/dev/null 2>&1; then
+            echo "::error::preflight dist/ artifact is empty; refusing to publish"
             exit 1
           fi
-
-      - name: Build sdist and wheel
-        run: |
-          python -m pip install --upgrade \
-            pip==26.2.1 \
-            build==1.5.0 \
-            setuptools==84.0.0 \
-            wheel==0.48.0
-          python -m build --no-isolation
+          echo "PyPI publishing the preflight dist/ (not a second build):"
+          ls -l dist
+          sha256sum dist/*
 
       - name: Publish to PyPI (trusted publishing / OIDC)
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
         with:
           print-hash: true
+          packages-dir: dist
 
   # npm launcher (@mcptoolshop/audiobooker). Publishes via the Trusted Publisher
   # configured on npmjs.com (GitHub Actions, this repo, workflow release.yml).
-  # The tag-vs-package.json check below guards against version drift.
+  # needs publish so a live pypa/OIDC reject cannot ship npm 3.0.0 against a
+  # PyPI version that is not there (the npx launcher would then pip-install
+  # a missing audiobooker-ai==VERSION).
   publish-npm:
     name: Publish npm launcher
     # Only on a real release — npm rejects republishing an existing version, and
     # the tag-vs-package.json check needs a vX.Y.Z ref (not a workflow_dispatch).
-    needs: preflight
+    needs: [preflight, publish]
     if: ${{ github.event_name == 'release' }}
     runs-on: ubuntu-latest
     permissions:
@@ -143,6 +157,7 @@ jobs:
             echo "::error::Tag ${TAG_VERSION} does not match npm/package.json ${PKG_VERSION}"
             exit 1
           fi
+          echo "::notice::npm @mcptoolshop/audiobooker@${PKG_VERSION} publishes only after PyPI job publish succeeded for the same tag (preflight dist/, not a second build)."
 
       # Shipcheck D5 requires the tarball to carry the CHANGELOG. npm cannot
       # include a path above the package root, and the launcher deliberately
