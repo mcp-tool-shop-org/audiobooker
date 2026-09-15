@@ -88,6 +88,17 @@ def _hand_tuned_project(source):
 
 def _saved_compiled_project(tmp_path, title: str = "Test Book", name: str = "p.audiobooker"):
     project = AudiobookProject.from_string(SAMPLE_TEXT, title=title, author="Author")
+    # FEAT-UX-002 (cli-surface wave, out-of-grant declared edit): `render`
+    # now refuses when a NAMED speaker owns dialogue and has no voice — that
+    # is what a typo'd speaker in an imported review file looks like, and it
+    # used to ship in the fallback voice for the price of a full TTS run.
+    # SAMPLE_TEXT's Alice and Bob were never cast, so the --clean-cache
+    # ordering test below tripped the gate on incidental filler. Cast the
+    # book so the test exercises only the cache ordering it is named for.
+    for speaker, voice in (
+        ("narrator", "af_heart"), ("Alice", "af_bella"), ("Bob", "bm_george"),
+    ):
+        project.cast(speaker, voice)
     project.compile()
     return project.save(tmp_path / name)
 

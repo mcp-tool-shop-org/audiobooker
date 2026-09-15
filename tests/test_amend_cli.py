@@ -60,6 +60,14 @@ def _write_compiled_project(tmp_path: Path, title: str = "Amend Render") -> Path
         author="Amend Tester",
     )
     project.cast("narrator", "af_heart")
+    # FEAT-UX-002 (cli-surface wave, out-of-grant declared edit): `render`
+    # now refuses when a NAMED speaker owns dialogue and has no voice, which
+    # is what a typo'd speaker in a review file looks like. Alice was cast
+    # nowhere and speaks one line, so these render-plumbing tests tripped the
+    # new gate on incidental filler. Same remedy as the PH-B-002 note above:
+    # fix the fixture so it exercises only what the test is named for,
+    # rather than narrowing the gate.
+    project.cast("Alice", "af_bella")
     project.compile()
     path = tmp_path / "amend.audiobooker"
     project.save(path)
@@ -673,7 +681,18 @@ class TestJsonPayloadNotCorruptedByErrors:
         assert "Error" not in captured.out, (
             f"the error line corrupted the JSON payload on stdout: {captured.out!r}"
         )
-        assert "Error" in captured.err
+        # FEAT-UX-004 (cli-surface wave) amended this assertion. It read
+        # `"Error" in captured.err`, which pinned the PROSE format; under
+        # --json the failure is now reported as the same structured
+        # code/message/hint/retryable object errors.py has always carried, so
+        # `json.loads(stderr)` works when something goes wrong. The behaviour
+        # this test is named for — the error is on stderr and not in the
+        # stdout payload — is unchanged and still asserted, above and below.
+        import json as _json
+
+        payload = _json.loads(captured.err)
+        assert payload["code"] == "FILE_NOT_FOUND"
+        assert "not found" in payload["message"].lower()
 
     def test_plain_status_error_also_on_stderr(self, tmp_path, monkeypatch, capsys):
         """Residual 4: stderr routing is unconditional, not gated on --json.

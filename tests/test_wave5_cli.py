@@ -91,9 +91,23 @@ NARRATION_ONLY_TEXT = (
 )
 
 
-def _make_project(tmp_path, text: str, title: str = "Test Book"):
-    """Create + save a project, returning its path (mirrors test_health_c_cli.py)."""
+def _make_project(tmp_path, text: str, title: str = "Test Book", *, cast_all=False):
+    """Create + save a project, returning its path (mirrors test_health_c_cli.py).
+
+    FEAT-UX-002 (cli-surface wave, out-of-grant declared edit): ``cast_all``
+    is new. ``render`` now refuses when a NAMED speaker owns dialogue with no
+    voice — the shape a typo'd speaker in an imported review file takes. The
+    two tests below that assert a render is ALLOWED to proceed are about
+    attribution quality, not about casting, so they cast the book first;
+    otherwise they would pass or fail on the wrong gate. The tests that
+    assert a REFUSAL deliberately do not use it, so they still prove the
+    attribution gate fires on its own.
+    """
     project = AudiobookProject.from_string(text, title=title, author="Author")
+    if cast_all:
+        project.compile()
+        for speaker in sorted(project.get_uncast_speakers()):
+            project.cast(speaker, "af_bella")
     path = tmp_path / "p.audiobooker"
     project.save(path)
     return path
@@ -253,7 +267,7 @@ class TestRenderRefusesOnFailedAttribution:
 
     def test_degraded_attribution_does_not_block_render(self, tmp_path, monkeypatch):
         """Only 'failed' halts render — 'degraded' is a warning, not a wall."""
-        path = _make_project(tmp_path, DEGRADED_TEXT)
+        path = _make_project(tmp_path, DEGRADED_TEXT, cast_all=True)
 
         calls = []
 
@@ -269,7 +283,7 @@ class TestRenderRefusesOnFailedAttribution:
         assert calls, "a merely 'degraded' book must still be allowed to render"
 
     def test_healthy_attribution_renders_normally(self, tmp_path, monkeypatch):
-        path = _make_project(tmp_path, HEALTHY_TEXT)
+        path = _make_project(tmp_path, HEALTHY_TEXT, cast_all=True)
 
         calls = []
 

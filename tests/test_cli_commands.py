@@ -270,13 +270,24 @@ class TestCmdVoices:
     """Tests for cmd_voices command."""
 
     def test_voices_without_soundboard(self, capsys):
-        """voices command without voice-soundboard installed returns error."""
+        """voices falls back to the curated catalog when the backend is absent.
+
+        cli-surface wave: this asserted `code == 1`. `cast-suggest` and
+        `audition` have always returned voice IDs on a backend-less machine
+        (DefaultVoiceRegistry falls back to the curated list), so `voices`
+        exiting 1 meant you could accept the machine's casting offline but
+        never override it — the opposite of the documented offline workflow.
+        `voices` now uses that same fallback and says on stderr which catalog
+        it is showing.
+        """
         with patch.dict("sys.modules", {"voice_soundboard": None, "voice_soundboard.config": None}):
             parser = create_parser()
             args = parser.parse_args(["voices"])
             code = cmd_voices(args)
-            # voice_soundboard is patched to None so the import fails → return 1
-            assert code == 1
+            assert code == 0
+            captured = capsys.readouterr()
+            assert "af_heart" in captured.out
+            assert "curated catalog" in captured.err
 
 
 # ---------------------------------------------------------------------------
