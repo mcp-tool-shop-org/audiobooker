@@ -1437,7 +1437,7 @@ def create_parser() -> argparse.ArgumentParser:
         dest="dry_run",
         help=(
             "Show the resolved project path, whether it already exists, the "
-            "cast that would be applied and the output path — then stop"
+            "cast that would be applied and the output path - then stop"
         ),
     )
     # FEAT-UX-003: `make` is the headline command and the one path that could
@@ -1932,7 +1932,7 @@ def _warn_unknown_character(project, character: str, args) -> None:
 
     suggestions = difflib.get_close_matches(character, sorted(detected), n=3)
     _err(
-        f"WARNING: unknown character {character!r} — no speaker by that name "
+        f"WARNING: unknown character {character!r} - no speaker by that name "
         "appears in this book.",
         args=args,
     )
@@ -2048,7 +2048,7 @@ def _cast_interactive(args) -> int:
         interactive = sys.stdin.isatty()
         if not interactive:
             _out(
-                "Non-interactive stdin — printing suggestions only "
+                "Non-interactive stdin - printing suggestions only "
                 "(run in a terminal to cast interactively):\n"
             )
 
@@ -2269,7 +2269,7 @@ def cmd_audition(args) -> int:
 
         if failed and not rendered:
             _err(
-                f"Error: all {len(failed)} sample render(s) failed — no audition "
+                f"Error: all {len(failed)} sample render(s) failed - no audition "
                 f"audio was written to {out_dir}/.",
                 args=args,
             )
@@ -2386,7 +2386,7 @@ def cmd_compile(args) -> int:
                 })
                 return 0
 
-            _out(f"\nDRY RUN — Compile preview for {project.title}")
+            _out(f"\nDRY RUN - Compile preview for {project.title}")
             _out(f"{'='*70}")
             _out(f"  {'Speaker':<20} {'Lines':<8} {'Sample'}")
             _out(f"  {'-'*20} {'-'*8} {'-'*40}")
@@ -2427,7 +2427,7 @@ def cmd_compile(args) -> int:
         if near_miss and not json_output:
             _out(
                 f"  ({near_miss} more utterance(s) were just below the emotion "
-                "confidence threshold — run 'audiobooker report' to review them.)"
+                "confidence threshold - run 'audiobooker report' to review them.)"
             )
 
         # NLP errors are warnings, not failures — but the user should know
@@ -2516,14 +2516,14 @@ def cmd_compile(args) -> int:
             else:
                 urgency = "consider reviewing attribution before rendering"
             _err(
-                f"WARNING: dialogue attribution is {verdict.upper()} — "
+                f"WARNING: dialogue attribution is {verdict.upper()} - "
                 f"{urgency} (unknown speakers fall back to {behavior!r}).",
                 args=args,
             )
             _err(
                 "Hint: check --lang, add inline [character] overrides, or "
                 "cast the missing speakers. Run 'audiobooker report' for the "
-                "worst offending lines — including the ones that were "
+                "worst offending lines - including the ones that were "
                 "guessed rather than left unattributed, which the "
                 "unattributed count does not show.",
                 args=args,
@@ -2727,7 +2727,7 @@ def _dry_run_single_chapter(args, project) -> int:
         })
         return 0
 
-    _out("DRY RUN — nothing was rendered.")
+    _out("DRY RUN - nothing was rendered.")
     _out(f"  Chapter:    {_chapter_label(chapter.index)} {chapter.title}")
     _out(f"  Output:     {Path(output)}")
     _out(f"  Utterances: {utterance_note}")
@@ -2807,7 +2807,7 @@ def _dry_run_full_book(
         for speaker, voice in sorted(mapping.items()):
             _out(f"  {speaker}: {voice}")
     else:
-        _out("  (nobody is cast — every line would use the fallback voice)")
+        _out("  (nobody is cast - every line would use the fallback voice)")
 
     if offenders:
         _err(
@@ -2864,7 +2864,7 @@ def _handle_clean_cache(args, project_path: Path) -> Optional[int]:
 
     if getattr(args, "dry_run", False):
         _out(
-            f"DRY RUN — would delete {chapters} cached chapter(s) "
+            f"DRY RUN - would delete {chapters} cached chapter(s) "
             f"({files} file(s), {_format_bytes(size)}) from {cache_dir}"
         )
         return None
@@ -2882,7 +2882,7 @@ def _handle_clean_cache(args, project_path: Path) -> Optional[int]:
 
     shutil.rmtree(cache_dir)
     _out(
-        f"Cache cleared: {cache_dir} — deleted {chapters} cached chapter(s) "
+        f"Cache cleared: {cache_dir} - deleted {chapters} cached chapter(s) "
         f"({files} file(s), {_format_bytes(size)})"
     )
     return None
@@ -2953,7 +2953,7 @@ def _check_dialogue_attribution_quality(args, chapters, casting) -> Optional[int
     total = report["total_dialogue"]
 
     _err(
-        "Error: dialogue attribution failed the quality gate — "
+        "Error: dialogue attribution failed the quality gate - "
         f"{guessed + unknown}/{total} dialogue lines ({unverified:.0%}) have "
         "no attribution in the text. "
         f"{guessed} were guessed by alternating turns and {unknown} are "
@@ -2963,7 +2963,7 @@ def _check_dialogue_attribution_quality(args, chapters, casting) -> Optional[int
         args=args,
     )
     _err(
-        "Hint: a guessed line is not visible in the unattributed count — run "
+        "Hint: a guessed line is not visible in the unattributed count - run "
         "'audiobooker report' and check the low-confidence lines, or "
         "'review-export' to fix them by hand. Check --lang if the book is "
         "not English. Pass --force to render anyway (e.g. the book really is "
@@ -3055,7 +3055,7 @@ def _check_uncast_dialogue_speakers(args, project, chapters) -> Optional[int]:
         "Hint: cast them (audiobooker cast <speaker> <voice>), auto-cast them "
         "(audiobooker cast-apply --auto), or pass --force to render anyway. "
         "A speaker you do not recognise is usually a typo in an imported "
-        "review file — check 'audiobooker speakers'.",
+        "review file - check 'audiobooker speakers'.",
         args=args,
     )
     return 1
@@ -3315,7 +3315,7 @@ def _cmd_render_once_inner(args, AudiobookProject, RenderError) -> int:
 
             _out(f"Rendering audiobook to: {output}")
             if not resume:
-                _out("  (cache disabled — full re-render)")
+                _out("  (cache disabled - full re-render)")
             if jobs > 1:
                 _out(f"  (parallel rendering: {jobs} workers)")
             if output_profile == "acx":
@@ -3568,10 +3568,10 @@ def _partial_render_message(summary) -> str:
     if total:
         included = max(total - len(missing), 0)
         return (
-            f"PARTIAL render — {detail}. "
+            f"PARTIAL render - {detail}. "
             f"The file contains {included} of {total} chapters."
         )
-    return f"PARTIAL render — {detail}."
+    return f"PARTIAL render - {detail}."
 
 
 _PARTIAL_RENDER_HINT = (
@@ -3972,7 +3972,7 @@ def cmd_voices(args) -> int:
             else "voice-soundboard is not installed"
         )
         _err(
-            f"Note: {reason}, so this is the built-in curated catalog — the "
+            f"Note: {reason}, so this is the built-in curated catalog - the "
             "same list cast-suggest and audition rank against. Install (or "
             "repair) the backend to see the voices it actually ships.",
             args=args,
@@ -4456,7 +4456,7 @@ def cmd_review_import(args) -> int:
             for title in skipped_titles:
                 _err(f"  - {title}", args=args)
             _err(
-                'Hint: These blocks did not match any chapter by id or title — '
+                'Hint: These blocks did not match any chapter by id or title - '
                 'restore the original "=== Title === [id:...]" header to apply '
                 "your edits.",
                 args=args,
@@ -4684,7 +4684,7 @@ def cmd_cast_apply(args) -> int:
             return 0
 
         if dry_run:
-            _out("DRY RUN — nothing was cast and the project was not saved.")
+            _out("DRY RUN - nothing was cast and the project was not saved.")
         for row in applied:
             verb = "Would cast" if dry_run else "Cast"
             _out(f"  {verb} {row['speaker']} as {row['voice']} ({row['reason']})")
@@ -4796,7 +4796,7 @@ def _cast_preset_save(args, cast_presets) -> int:
 
     casting_list = project._casting_as_list()
     if not casting_list:
-        _out("No characters to save — the casting table is empty.")
+        _out("No characters to save - the casting table is empty.")
         return 0
 
     cast_presets.save_preset(args.name, casting_list)
@@ -4843,7 +4843,7 @@ def _cast_preset_apply(args, cast_presets) -> int:
 
     entries = cast_presets.load_preset(args.name) or []
     if not entries:
-        _out(f"Preset '{args.name}' is empty — nothing to apply.")
+        _out(f"Preset '{args.name}' is empty - nothing to apply.")
         return 0
 
     # Compile (if needed) so we can report matched-vs-unmatched against the
@@ -5396,7 +5396,7 @@ def cmd_cache(args) -> int:
             )
 
             if getattr(args, "dry_run", False):
-                _out(f"DRY RUN — would delete {at_stake} from {cache_root}")
+                _out(f"DRY RUN - would delete {at_stake} from {cache_root}")
                 _out("Re-run with --yes to delete them.")
                 return 0
 
@@ -5420,7 +5420,7 @@ def cmd_cache(args) -> int:
                 except EOFError:
                     answer = ""
                 if answer not in ("y", "yes"):
-                    _out("Aborted — nothing was deleted.")
+                    _out("Aborted - nothing was deleted.")
                     return 1
 
             # Safety check for lockfile
@@ -5432,7 +5432,7 @@ def cmd_cache(args) -> int:
                 )
                 return 1
             shutil.rmtree(cache_root)
-            _out(f"Cache deleted: {cache_root} — removed {at_stake}")
+            _out(f"Cache deleted: {cache_root} - removed {at_stake}")
             return 0
 
         elif cache_command == "clean-failed":
@@ -5527,11 +5527,16 @@ def cmd_report(args) -> int:
         guessed = report["total_low_confidence"]
         if guessed:
             _out(
-                # ASCII on purpose: this is the primary quality readout and
-                # a stock Windows console is cp1252, where an em-dash
-                # degrades to a replacement character. _out no longer
-                # crashes on one, but mojibake in the headline number is
-                # still worse than a hyphen.
+                # ASCII on purpose. An earlier version of this comment said
+                # "cp1252, where an em-dash degrades" — wrong, and worth
+                # correcting rather than deleting: cp1252 is the Windows
+                # ANSI codepage and encodes the em-dash fine, at 0x97. The
+                # codepage a bare cmd.exe actually runs is an OEM one (437
+                # in en-US, 850 in western Europe), and neither has it. See
+                # tests/test_cli_output_is_console_safe.py for the measured
+                # table. _out no longer crashes on an unencodable
+                # character, so this now fails silently — which is why the
+                # guard is a test rather than a convention.
                 f"  Guessed speakers:  {guessed} "
                 f"({report['dialogue_low_confidence_rate']:.1%} of dialogue) "
                 "- attributed by alternating turns, not by the text"
@@ -5685,7 +5690,7 @@ def cmd_diagnose(args: argparse.Namespace) -> int:
                 "check": "dep.pymupdf",
                 "status": "info",
                 "value": "not installed",
-                "hint": "pip install pymupdf — required for PDF sources",
+                "hint": "pip install pymupdf - required for PDF sources",
             }
         )
 
@@ -5707,7 +5712,7 @@ def cmd_diagnose(args: argparse.Namespace) -> int:
                 "check": "dep.python-docx",
                 "status": "info",
                 "value": "not installed",
-                "hint": "pip install python-docx — required for DOCX sources "
+                "hint": "pip install python-docx - required for DOCX sources "
                         "(or: pip install 'audiobooker-ai[docx]')",
             }
         )
@@ -5827,7 +5832,7 @@ def cmd_diagnose(args: argparse.Namespace) -> int:
             indent=2,
         ))
     else:
-        print(f"audiobooker v{__version__} — environment diagnostics\n")
+        print(f"audiobooker v{__version__} - environment diagnostics\n")
         for c in checks:
             icon = (
                 "OK"
@@ -5843,7 +5848,7 @@ def cmd_diagnose(args: argparse.Namespace) -> int:
             print(f"  Output formats available: {', '.join(reachable_formats)}")
         else:
             print(
-                f"NOT ready to render — {len(missing_required)} required "
+                f"NOT ready to render - {len(missing_required)} required "
                 f"component(s) missing: {', '.join(missing_required)}"
             )
             if reachable_formats:
@@ -5852,12 +5857,12 @@ def cmd_diagnose(args: argparse.Namespace) -> int:
                 )
             elif voice_engine_ok:
                 print(
-                    "  Output formats available: none — 'render -c N' can still "
+                    "  Output formats available: none - 'render -c N' can still "
                     "write a single-chapter WAV, but no book can be assembled."
                 )
             else:
                 print(
-                    "  Output formats available: none — no audio can be "
+                    "  Output formats available: none - no audio can be "
                     "synthesized at all."
                 )
             print("  See the hints above for each missing component.")
@@ -5890,7 +5895,7 @@ def _project_at_risk(path: Path) -> str:
 
         data = _json.loads(path.read_text(encoding="utf-8"))
     except Exception:
-        return "an existing project file (unreadable — inspect it before overwriting)"
+        return "an existing project file (unreadable - inspect it before overwriting)"
 
     config = data.get("config") or {}
     characters = (data.get("casting") or {}).get("characters") or {}
@@ -5898,7 +5903,7 @@ def _project_at_risk(path: Path) -> str:
     phonemes = config.get("phoneme_overrides") or {}
     title = data.get("title") or "(untitled)"
     return (
-        f'"{title}" — {len(characters)} cast voice(s), '
+        f'"{title}" - {len(characters)} cast voice(s), '
         f"{len(lexicon) + len(phonemes)} pronunciation override(s), "
         f"{len(data.get('chapters') or [])} chapter(s)"
     )
@@ -6098,7 +6103,7 @@ def _process_book(
 
         _phase(
             1,
-            f"Parsed {project.title!r} — {len(project.chapters)} chapter(s), "
+            f"Parsed {project.title!r} - {len(project.chapters)} chapter(s), "
             f"~{project.total_words:,} words",
         )
 
@@ -6149,17 +6154,17 @@ def _process_book(
         # before the first write. `batch`, `compile` and `render` all had one;
         # `make` — the command that silently destroyed projects — did not.
         if dry_run:
-            _out(f"DRY RUN — nothing written, nothing rendered ({label}).")
+            _out(f"DRY RUN - nothing written, nothing rendered ({label}).")
             _out(f"  Source:       {source}")
             _out(f"  Project file: {project_path}")
             if project_path.exists():
-                _out(f"                EXISTS — {_project_at_risk(project_path)}")
+                _out(f"                EXISTS - {_project_at_risk(project_path)}")
                 _out(
                     "                It would be REPLACED (only with "
                     "--overwrite-project)."
                 )
             else:
-                _out("                does not exist yet — would be created")
+                _out("                does not exist yet - would be created")
             _out(f"  Output:       {final_output}")
             _out(f"  Format:       {out_fmt}")
             mapping = project.casting.get_voice_mapping()
@@ -6466,7 +6471,7 @@ def cmd_batch(args) -> int:
     # --dry-run: show what would be processed without rendering
     dry_run = getattr(args, "dry_run", False)
     if dry_run:
-        _out(f"DRY RUN — {len(book_specs)} book(s) would be processed:\n")
+        _out(f"DRY RUN - {len(book_specs)} book(s) would be processed:\n")
         for i, (source, ov) in enumerate(book_specs, 1):
             label = ov.get("title") or source.name
             _out(f"  [{i}/{len(book_specs)}] {label} ({source})")
@@ -6475,7 +6480,7 @@ def cmd_batch(args) -> int:
             # never mentioned the file `batch` was about to overwrite.
             target = _resolve_project_path(source)
             if target.exists():
-                _out(f"        project: {target} — EXISTS, would be REFUSED")
+                _out(f"        project: {target} - EXISTS, would be REFUSED")
                 _out(f"                 {_project_at_risk(target)}")
             else:
                 _out(f"        project: {target} (new)")
@@ -6536,7 +6541,7 @@ def cmd_batch(args) -> int:
         elif status == "partial":
             _out(
                 f"  PARTIAL: {book_result['output']} "
-                f"({book_result['duration_s']:.1f}s) — {book_result['error']}"
+                f"({book_result['duration_s']:.1f}s) - {book_result['error']}"
             )
         elif status == "failed":
             _out(f"  FAILED: {book_result['error']}")
@@ -6590,7 +6595,7 @@ def cmd_batch(args) -> int:
 
     _out(f"\n{'='*72}")
     _out(
-        f"  BATCH SUMMARY — {success} succeeded, {partial} partial, "
+        f"  BATCH SUMMARY - {success} succeeded, {partial} partial, "
         f"{failed} failed ({refused} refused), {skipped} skipped"
     )
     _out(f"  Total elapsed: {_fmt_duration(total_elapsed)}")
@@ -6760,7 +6765,7 @@ def _watch_loop(source: Path, run_once) -> int:
                     # Still being written — pick it up on the next poll.
                     last_mtime = current
                     continue
-                _out(f"\nChange detected in {source.name} — re-rendering...")
+                _out(f"\nChange detected in {source.name} - re-rendering...")
                 run_once()
                 last_mtime = _mtime()
     except KeyboardInterrupt:
@@ -6954,7 +6959,7 @@ def cmd_master_check(args) -> int:
         failures = result.get("failures") or []
         if passes:
             _out(
-                "\nResult: PASS — meets ACX's measurable loudness, peak, and "
+                "\nResult: PASS - meets ACX's measurable loudness, peak, and "
                 "noise-floor limits.\n"
                 "(ACX also has subjective/quality criteria this check can't verify.)"
             )
@@ -7004,7 +7009,7 @@ def cmd_export_chapters(args) -> int:
         unrendered = [title for title, duration in chapters_data if not (duration or 0) > 0]
         if chapters_data and len(unrendered) == len(chapters_data):
             _err(
-                "Error: no chapter has rendered audio — every duration is 0, so "
+                "Error: no chapter has rendered audio - every duration is 0, so "
                 "every marker would land on the same timestamp.",
                 args=args,
             )
