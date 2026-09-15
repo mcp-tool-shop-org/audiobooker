@@ -36,7 +36,11 @@ _VALID_PROJECT_KWARGS = {
     "output_path", "metadata",
 }
 
-from audiobooker.errors import CompilationFailedError
+from audiobooker.errors import (
+    CompilationFailedError,
+    ProjectSaveLockError,
+    PronunciationProtectedError,
+)
 from audiobooker.models import (
     BookMetadata,
     Chapter,
@@ -46,6 +50,7 @@ from audiobooker.models import (
     ProjectConfig,
     UNSET,
     _looks_absolute,
+    normalize_speaker_key,
     portable_path,
     resolve_stored_path,
 )
@@ -149,8 +154,31 @@ def _csv_aliases(value) -> list[str]:
 # ---------------------------------------------------------------------------
 SCHEMA_VERSION = 2
 
+# Occupancy lock: wait this long to acquire; steal only if the file is older.
+_SAVE_LOCK_TIMEOUT_S = 5.0
+_SAVE_LOCK_STALE_S = 60.0
+
 # Path-valued keys in the project dict, used by the v1 -> v2 migration.
 _V1_PATH_KEYS = ("source_path", "output_path")
+
+
+def _coerce_schema_version(value) -> int:
+    """Return a comparable schema int, or raise the future-schema ValueError.
+
+    ``schema_version`` is compared with ``>`` / ``<`` against SCHEMA_VERSION.
+    A hand-edited string (or bool, which is an ``int`` subclass) used to
+    raise ``TypeError: '>' not supported between instances of 'str' and
+    'int'``. Digit strings like ``'2'`` still load; anything else is named
+    as a field error in the same shape as a future-file refuse.
+    """
+    if isinstance(value, bool) or not isinstance(value, int):
+        if isinstance(value, str) and value.strip().isdigit():
+            return int(value.strip())
+        raise ValueError(
+            f"Project file uses schema v{value!r}, "
+            f"but this version only supports up to v{SCHEMA_VERSION}"
+        )
+    return value
 
 
 def _payload_equal(a, b) -> bool:
@@ -198,14 +226,34 @@ def _merge_chapter_payloads(
             "pause_before_ms",
             "pause_after_ms",
             "utterances",
-            "audio_path",
-            "duration_seconds",
         ):
             chapter[field_name] = _pick_3way(
                 base_ch.get(field_name),
                 our_ch.get(field_name),
                 their_ch.get(field_name),
             )
+        # F-a7b119d2: audio_path is identity-keyed on utterances, not an
+        # independent occupancy field. Overlay a writer's audio only when
+        # that writer's utterance payload equals the merged text; otherwise
+        # keep on-disk audio (or leave it) so a concurrent review-import
+        # cannot pair its new text with the other writer's new WAV.
+        merged_utt = chapter.get("utterances")
+        our_utt_match = _payload_equal(merged_utt, our_ch.get("utterances"))
+        their_utt_match = _payload_equal(merged_utt, their_ch.get("utterances"))
+        if our_utt_match and their_utt_match:
+            chapter["audio_path"] = _pick_3way(
+                base_ch.get("audio_path"),
+                our_ch.get("audio_path"),
+                their_ch.get("audio_path"),
+            )
+            chapter["duration_seconds"] = _pick_3way(
+                base_ch.get("duration_seconds"),
+                our_ch.get("duration_seconds"),
+                their_ch.get("duration_seconds"),
+            )
+        elif our_utt_match:
+            chapter["audio_path"] = our_ch.get("audio_path")
+            chapter["duration_seconds"] = our_ch.get("duration_seconds", 0.0)
         merged.append(chapter)
     return merged
 
@@ -277,11 +325,23 @@ def _unique_project_tmp(path: Path) -> Path:
     return path.with_name(f"{path.name}.{os.getpid()}.{token}.tmp")
 
 
-def _atomic_write_json(path: Path, data: dict) -> None:
+def _dump_project_tmp(path: Path, data: dict) -> Path:
+    """Write JSON to a unique sibling tmp; caller replaces or unlinks it."""
     tmp_path = _unique_project_tmp(path)
     try:
         with open(tmp_path, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
+    except BaseException:
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+    return tmp_path
+
+
+def _replace_project_tmp(path: Path, tmp_path: Path) -> None:
+    try:
         os.replace(str(tmp_path), str(path))
     except BaseException:
         try:
@@ -289,6 +349,11 @@ def _atomic_write_json(path: Path, data: dict) -> None:
         except OSError:
             pass
         raise
+
+
+def _atomic_write_json(path: Path, data: dict) -> None:
+    tmp_path = _dump_project_tmp(path, data)
+    _replace_project_tmp(path, tmp_path)
 
 
 def _peek_modified_at(path: Path) -> Optional[str]:
@@ -314,9 +379,14 @@ def _read_project_payload(path: Path) -> Optional[dict]:
 
 @contextmanager
 def _project_save_lock(path: Path):
-    """Serialize occupancy-check + replace. Stale locks older than 60s are dropped."""
+    """Serialize occupancy-check + replace. Fail closed if the lock is busy.
+
+    Stale locks older than 60s are dropped (the holder died). A live holder
+    that outlasts 5s raises ``ProjectSaveLockError`` — never write without
+    the lock (last-writer-wins is the race this exists to prevent).
+    """
     lock_path = path.with_name(path.name + ".lock")
-    deadline = time.time() + 5.0
+    deadline = time.time() + _SAVE_LOCK_TIMEOUT_S
     held = False
     while True:
         try:
@@ -332,22 +402,17 @@ def _project_save_lock(path: Path):
                 age = time.time() - lock_path.stat().st_mtime
             except OSError:
                 age = 999
-            if age > 60:
+            if age > _SAVE_LOCK_STALE_S:
                 try:
                     lock_path.unlink()
                 except OSError:
                     pass
                 continue
             if time.time() > deadline:
-                logger.warning(
-                    "PROJECT_SAVE_LOCK: timed out on %s; writing without exclusive lock",
-                    lock_path,
-                )
-                break
+                raise ProjectSaveLockError(str(lock_path))
             time.sleep(0.05)
         except OSError as exc:
-            logger.warning("PROJECT_SAVE_LOCK: %s", exc)
-            break
+            raise ProjectSaveLockError(str(lock_path), cause=str(exc)) from exc
     try:
         yield
     finally:
@@ -1142,8 +1207,12 @@ class AudiobookProject:
                 f"(expected a JSON object, got {type(data).__name__})."
             )
 
-        # Check schema version
-        schema_version = data.get("schema_version", 1)
+        # Check schema version. Missing key is v1; a present non-int is a
+        # field error (same ValueError shape as a future schema), not TypeError.
+        if "schema_version" not in data:
+            schema_version = 1
+        else:
+            schema_version = _coerce_schema_version(data.get("schema_version"))
         if schema_version > SCHEMA_VERSION:
             raise ValueError(
                 f"Project file uses schema v{schema_version}, "
@@ -1261,6 +1330,9 @@ class AudiobookProject:
         on-disk ``modified_at`` no longer matches, concurrent edits are
         3-way-merged instead of last-writer-wins. Writes use a unique
         pid+token tmp so overlapping saves cannot interleave into one ``.tmp``.
+        JSON is dumped to that tmp before the lock is acquired; the lock is
+        held only around peek+replace. If the lock times out, save refuses
+        (retryable) rather than writing last-writer-wins.
 
         Args:
             path: Output path (uses project_path if not specified)
@@ -1287,28 +1359,43 @@ class AudiobookProject:
         # round trip yet) is still written out consistent, not just
         # corrected on the NEXT load().
         ours = self._project_payload(path)
+        # Dump JSON before acquire so the lock is only held around peek+replace
+        # (a large book can exceed 5s in json.dump; that must not be the wait).
+        tmp_path = _dump_project_tmp(path, ours)
         merged_write = False
-
-        with _project_save_lock(path):
-            data = ours
-            if path.exists() and self._disk_modified_at is not None:
-                disk_modified = _peek_modified_at(path)
-                if disk_modified is not None and disk_modified != self._disk_modified_at:
-                    disk = _read_project_payload(path)
-                    if disk is not None:
-                        base = self._base_payload if isinstance(self._base_payload, dict) else {}
-                        data = _merge_project_payloads(base, ours, disk)
-                        data["modified_at"] = ours["modified_at"]
-                        logger.warning(
-                            "PROJECT_SAVE_MERGE: %s changed since load "
-                            "(disk modified_at=%s, loaded=%s). Merged render "
-                            "progress with on-disk casting/config/review edits.",
-                            path, disk_modified, self._disk_modified_at,
-                        )
-            _atomic_write_json(path, data)
-            self._remember_written_payload(data)
-            self.modified_at = data["modified_at"]
-            merged_write = data is not ours
+        data = ours
+        try:
+            with _project_save_lock(path):
+                if path.exists() and self._disk_modified_at is not None:
+                    disk_modified = _peek_modified_at(path)
+                    if disk_modified is not None and disk_modified != self._disk_modified_at:
+                        disk = _read_project_payload(path)
+                        if disk is not None:
+                            base = self._base_payload if isinstance(self._base_payload, dict) else {}
+                            data = _merge_project_payloads(base, ours, disk)
+                            data["modified_at"] = ours["modified_at"]
+                            logger.warning(
+                                "PROJECT_SAVE_MERGE: %s changed since load "
+                                "(disk modified_at=%s, loaded=%s). Merged render "
+                                "progress with on-disk casting/config/review edits.",
+                                path, disk_modified, self._disk_modified_at,
+                            )
+                            try:
+                                tmp_path.unlink(missing_ok=True)
+                            except OSError:
+                                pass
+                            tmp_path = _dump_project_tmp(path, data)
+                _replace_project_tmp(path, tmp_path)
+                tmp_path = None
+                self._remember_written_payload(data)
+                self.modified_at = data["modified_at"]
+                merged_write = data is not ours
+        finally:
+            if tmp_path is not None:
+                try:
+                    tmp_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
 
         # After a 3-way merge the on-disk document is the truth (concurrent
         # casting/review edits kept). Rehydrate so a later save of this
@@ -1590,6 +1677,10 @@ class AudiobookProject:
             The indices of the chapters whose compiled text changed, so a
             caller (``pronunciation add``) can say how much will re-render
             instead of printing a bare success.
+
+        Raises:
+            PronunciationProtectedError: If ``word`` names a cast character
+                or alias. The override is not stored.
         """
         if not word or not word.strip():
             raise ValueError("Pronunciation word must not be empty.")
@@ -1597,6 +1688,14 @@ class AudiobookProject:
             raise ValueError("Pronunciation replacement must not be empty.")
         word = word.strip()
         replacement = replacement.strip()
+        if normalize_speaker_key(word) in self.casting.protected_names():
+            logger.error(
+                f"Pronunciation override {word!r} names a CAST CHARACTER (or "
+                f"one of their aliases) and was refused. Rewriting it would "
+                f"leave every line they speak unattributed. Set the "
+                f"pronunciation on the character instead."
+            )
+            raise PronunciationProtectedError(word)
         self.config.pronunciation_overrides[word] = replacement
         self.modified_at = datetime.now().isoformat()
         return self._apply_override_to_compiled(word, replacement)
@@ -1626,7 +1725,6 @@ class AudiobookProject:
         anything), so borrowing it is the only way the filter cannot drift
         away from the matcher it is filtering for.
         """
-        from audiobooker.models import normalize_speaker_key
         from audiobooker.parser.text_cleaners import (
             _override_pattern,
             apply_pronunciation_overrides,
@@ -1771,6 +1869,11 @@ class AudiobookProject:
 
         Returns:
             Path to the rendered WAV file (in a temp directory)
+
+        Notes:
+            ``speed`` and ``emotion`` remain on this public signature; the
+            TTSEngine Protocol synthesize() contract is ``script`` / ``voices``
+            / ``output_path`` only, so they are not forwarded as kwargs.
         """
         import tempfile
 
@@ -1794,11 +1897,12 @@ class AudiobookProject:
         if not text:
             raise ValueError("Preview text is empty after truncation.")
 
-        # Lazy import of TTS engine
-        from audiobooker.renderer.engine import TTSEngine
+        # TTSEngine is a Protocol and cannot be instantiated. Resolve the
+        # concrete engine the same way render does, then call the Protocol
+        # synthesize() contract (script/voices, not text/voice/speed).
+        from audiobooker.renderer.engine import get_default_engine
 
-        engine = TTSEngine()
-        speed = self.config.effective_speed(speed)
+        engine = get_default_engine(self.config.tts_engine)
 
         # CH-B-012: the temp file is created BEFORE synthesis and never
         # cleaned up, so every preview whose backend raised -- a missing TTS
@@ -1819,11 +1923,9 @@ class AudiobookProject:
 
         try:
             engine.synthesize(
-                text=text,
-                voice=voice,
+                script=text,
+                voices={"narrator": voice},
                 output_path=output_path,
-                speed=speed,
-                emotion=emotion or None,
             )
         except BaseException:
             try:
@@ -2171,9 +2273,10 @@ class AudiobookProject:
             path: Path to lexicon file (.csv or .json).
 
         Returns:
-            Dict with ``spelling_count``, ``phoneme_count``, and
+            Dict with ``spelling_count``, ``phoneme_count``,
             ``affected_chapters`` (indices whose compiled text changed or
-            was cleared).
+            was cleared), and ``refused`` (cast-character keys dropped
+            before the map was mutated).
 
         Raises:
             FileNotFoundError: If the file doesn't exist.
@@ -2193,6 +2296,8 @@ class AudiobookProject:
         spelling_count = 0
         phoneme_count = 0
         applied_spelling: list[tuple[str, str, Optional[str]]] = []
+        refused: list[str] = []
+        protected = self.casting.protected_names()
 
         for word, value in entries.items():
             # load_lexicon may return either a plain "replacement" string or a
@@ -2213,6 +2318,15 @@ class AudiobookProject:
             if entry_type == "phoneme":
                 staged_phoneme[key] = repl
                 phoneme_count += 1
+            elif normalize_speaker_key(key) in protected:
+                # F-f3875644: do not store a leftover that later un-casts them.
+                refused.append(key)
+                logger.error(
+                    f"Pronunciation override {key!r} names a CAST CHARACTER (or "
+                    f"one of their aliases) and was refused. Rewriting it would "
+                    f"leave every line they speak unattributed. Set the "
+                    f"pronunciation on the character instead."
+                )
             else:
                 previous = old_spelling.get(key)
                 staged_spelling[key] = repl
@@ -2240,13 +2354,14 @@ class AudiobookProject:
             self._warn_inert_phonemes(where=f"import_lexicon {path}")
 
         logger.info(
-            "Imported lexicon (%d spelling, %d phoneme, %d chapter(s) affected) from %s",
-            spelling_count, phoneme_count, len(affected), path,
+            "Imported lexicon (%d spelling, %d phoneme, %d refused, %d chapter(s) affected) from %s",
+            spelling_count, phoneme_count, len(refused), len(affected), path,
         )
         return {
             "spelling_count": spelling_count,
             "phoneme_count": phoneme_count,
             "affected_chapters": affected,
+            "refused": refused,
         }
 
     def _warn_inert_phonemes(self, *, where: str) -> None:
@@ -2699,7 +2814,24 @@ class AudiobookProject:
             raise CompilationFailedError(summary, chapter_count=len(failed_indices))
 
         if dry_run:
-            return dry_run_result
+            # F-f460a739: live compile() / compile_chapter() run BookNLP,
+            # emotion inference, emotion_preset, and default_intensity after
+            # dialogue parse. Dry-run used to return the parse-only lists, so
+            # `compile --dry-run` lied about those knobs. Apply the same
+            # helpers to scratch copies; do not write onto chapters.
+            from copy import copy
+
+            scratch_chapters: list[Chapter] = []
+            for chapter in self.chapters:
+                if chapter.skip or chapter.index not in dry_run_result:
+                    continue
+                scratch = copy(chapter)
+                scratch.utterances = dry_run_result[chapter.index]
+                scratch_chapters.append(scratch)
+            if scratch_chapters:
+                self._apply_nlp_emotion_to_chapters(scratch_chapters, profile)
+                self._apply_default_intensities(chapters=scratch_chapters)
+            return {ch.index: ch.utterances for ch in scratch_chapters}
 
         # Optional NLP speaker resolution (BookNLP)
         if self.config.booknlp_mode != "off":
