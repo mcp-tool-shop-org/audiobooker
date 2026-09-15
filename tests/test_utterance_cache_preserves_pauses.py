@@ -38,6 +38,10 @@ class _ConcatRecordingRunner:
     `_stitch_utterance_wavs` deletes the concat file in a `finally`, so the
     list has to be captured while the call is in flight — recording argv
     alone would only preserve a path that no longer exists.
+
+    The output WAV duration is the SUM of the listed files, not a fixed
+    0.1s clip. A duration assertion can therefore fail if the stitch
+    omitted the speaker-change gaps.
     """
 
     def __init__(self) -> None:
@@ -47,13 +51,17 @@ class _ConcatRecordingRunner:
         from audiobooker.renderer.protocols import RunResult
 
         concat_file = Path(args[args.index("-i") + 1])
+        listed: list[Path] = []
         for line in concat_file.read_text(encoding="utf-8").splitlines():
             if line.startswith("file "):
-                self.concat_entries.append(Path(line[6:-1]))
+                p = Path(line[6:-1])
+                self.concat_entries.append(p)
+                listed.append(p)
 
         out = Path(args[-1])
         out.parent.mkdir(parents=True, exist_ok=True)
-        write_silence_wav(out, 0.1)
+        total = sum(_wav_duration(p) for p in listed if p.exists())
+        write_silence_wav(out, total if total > 0 else 0.1)
         return RunResult(returncode=0, stdout="", stderr="")
 
 
@@ -184,17 +192,32 @@ class TestStitchRestoresThePauses:
             f"reported {result.duration_seconds:.3f}s, "
             f"stitched {expected:.3f}s"
         )
+        # The runner now writes a WAV whose duration is the sum of the
+        # concat list, so omitting the gaps would shrink the file even if
+        # duration_seconds was computed from gap_before.
+        assert abs(_wav_duration(result.audio_path) - expected) < 0.05, (
+            f"assembled file is {_wav_duration(result.audio_path):.3f}s, "
+            f"stitched {expected:.3f}s"
+        )
 
     def test_a_cached_utterance_wav_holds_no_pause(self, tmp_path):
         """The pause is a *between* thing. Baking it into a neighbour's
         cached WAV would make that WAV depend on its neighbour, which is
-        exactly the coupling a per-utterance cache exists to avoid."""
+        exactly the coupling a per-utterance cache exists to avoid.
+
+        FakeTTSEngine now grows the WAV when the script contains
+        ``<break time="750ms"/>``. Comparing utterance durations to each
+        other used to pass against that bake: every call wrote the same
+        0.25s silence regardless of SSML. This asserts each cached WAV
+        matches speech-only duration (breaks stripped).
+        """
         cache_root = tmp_path / "cache"
         runner = _ConcatRecordingRunner()
+        engine = FakeTTSEngine()
 
         render_chapter_incremental(
             _chapter(), _casting(), tmp_path / "chapter_0000.wav",
-            engine=FakeTTSEngine(),
+            engine=engine,
             cache_root=cache_root,
             render_params_hash="paramhash",
             runner=runner,
@@ -202,10 +225,27 @@ class TestStitchRestoresThePauses:
 
         utt_wavs = [p for p in runner.concat_entries if "gap" not in p.name]
         assert utt_wavs, "nothing was cached"
-        for wav in utt_wavs:
+        assert len(engine.calls) == len(utt_wavs), (
+            f"{len(engine.calls)} synthesize() calls for "
+            f"{len(utt_wavs)} cached utterance WAVs"
+        )
+        for wav, call in zip(utt_wavs, engine.calls):
             assert cache_root in wav.parents, (
                 f"{wav} is not in the utterance cache"
             )
-            # FakeTTSEngine writes a fixed-length clip per call; a pause
-            # baked in would make one longer than the others.
-            assert abs(_wav_duration(wav) - _wav_duration(utt_wavs[0])) < 0.01
+            assert "<break" not in call.script, (
+                "the speaker-change pause was baked into the cached "
+                f"utterance script: {call.script!r}"
+            )
+            speech_only = FakeTTSEngine.duration_for(
+                FakeTTSEngine.strip_breaks(call.script),
+                call.voices,
+                duration_per_call=engine.duration_per_call,
+            )
+            got = _wav_duration(wav)
+            assert abs(got - speech_only) < 0.02, (
+                f"{wav.name} is {got:.3f}s; speech-only FakeTTS duration "
+                f"is {speech_only:.3f}s — a baked "
+                f"{SPEAKER_CHANGE_BREAK_MS}ms break would add "
+                f"{SPEAKER_CHANGE_BREAK_MS / 1000.0:.3f}s"
+            )

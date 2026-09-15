@@ -72,8 +72,20 @@ def prose(words: int, seed: str = "") -> str:
 # ===========================================================================
 # FEAT-IN-002 — EPUB TOC splitting deletes spine documents the TOC omits
 # ===========================================================================
-def _build_epub(path: Path, *, toc_order, include_afterword_in_toc: bool):
-    """Spine [Part1, Ch1, Ch2, Part2, Ch3, Ch4, Afterword] with a chosen TOC."""
+def _build_epub(
+    path: Path,
+    *,
+    toc_order,
+    include_afterword_in_toc: bool,
+    reverse_manifest: bool = False,
+):
+    """Spine [Part1, Ch1, Ch2, Part2, Ch3, Ch4, Afterword] with a chosen TOC.
+
+    ``reverse_manifest`` adds items in the reverse of spine order so
+    ``get_items_of_type(ITEM_DOCUMENT)`` (manifest/add order) disagrees
+    with ``book.spine``. The use_toc='off' path must still emit spine
+    order — that is the probe that caught F-b19e4d72 / F-2a6f3dc4.
+    """
     from ebooklib import epub
 
     book = epub.EpubBook()
@@ -90,7 +102,6 @@ def _build_epub(path: Path, *, toc_order, include_afterword_in_toc: bool):
             f"<html><head><title>{title}</title></head><body>"
             f"<h1>{title}</h1><p>{prose(words, seed)}</p></body></html>"
         )
-        book.add_item(item)
         made[name] = item
         return item
 
@@ -103,6 +114,9 @@ def _build_epub(path: Path, *, toc_order, include_afterword_in_toc: bool):
         doc("ch4.xhtml", "Chapter 4", 240, "chapter four"),
         doc("afterword.xhtml", "Afterword", 220, "afterword"),
     ]
+    add_order = list(reversed(spine)) if reverse_manifest else list(spine)
+    for item in add_order:
+        book.add_item(item)
     book.spine = spine
 
     names = list(toc_order)
@@ -228,15 +242,106 @@ class TestEpubTocDropsSpineDocuments:
             tmp_path / "stale.epub",
             toc_order=_STALE_TOC_ORDER,
             include_afterword_in_toc=False,
+            reverse_manifest=True,
         )
         _, chapters = parse_epub(path, min_chapter_words=50, use_toc="off")
-        # The spine path is untouched: every content document, in spine order.
-        # (It also emits the EPUB nav document as a short titled chapter —
-        # pre-existing behaviour of that path, not something this change
-        # introduced.)
-        assert [c.source_file for c in chapters][:7] == _SPINE_ORDER + [
-            "afterword.xhtml"
-        ]
+        names = [c.source_file for c in chapters]
+        assert names == _SPINE_ORDER + ["afterword.xhtml"], (
+            "use_toc='off' must walk the spine, not ITEM_DOCUMENT add-order: "
+            f"{names}"
+        )
+        assert not any(
+            "nav" in (c.source_file or "").lower()
+            or "nav" in (c.title or "").lower()
+            for c in chapters
+        ), (
+            "the EPUB nav document was narrated as a chapter: "
+            f"{[(c.title, c.source_file) for c in chapters]}"
+        )
+
+
+# ===========================================================================
+# Planted RED — EPUB footer skip_depth / TOC-prefix slice (parsers F-6ff86005,
+# F-a86a68a9). Awaits sibling merge of audiobooker/parser/epub.py.
+# ===========================================================================
+class TestHtmlFooterIsNotSilentlyDeleted:
+    """F-6ff86005: <footer> is in SKIP_TAGS and skip_depth is never
+    force-closed, so a unique author note vanishes and an unclosed footer
+    eats the rest of the chapter."""
+
+    def test_footer_author_note_is_kept(self):
+        from audiobooker.parser.epub import html_to_text
+
+        html = (
+            "<p>Before footer.</p>"
+            "<footer><p>the bell was recast in 1842</p></footer>"
+            "<p>After footer.</p>"
+        )
+        text = html_to_text(html)
+        assert "bell was recast in 1842" in text, (
+            f"<footer> was deleted unconditionally: {text!r}"
+        )
+        assert "After footer" in text
+
+    def test_unclosed_footer_does_not_eat_the_rest_of_the_document(self):
+        from audiobooker.parser.epub import html_to_text
+
+        html = (
+            "<p>Before footer.</p>"
+            "<footer><p>note</p>"
+            "<p>After unclosed footer.</p>"
+        )
+        text = html_to_text(html)
+        assert "After unclosed footer" in text, (
+            "an unclosed <footer> dropped the remainder of the document: "
+            f"{text!r}"
+        )
+
+
+@requires_ebooklib
+class TestTocPrefixSliceIsKept:
+    """F-a86a68a9: TOC splitting starts the first slice at the first
+    anchor, deleting the dedication / epigraph sitting above it in the
+    same XHTML file."""
+
+    def test_dedication_before_first_toc_anchor_is_kept(self, tmp_path):
+        from ebooklib import epub
+        from audiobooker.parser.epub import parse_epub
+
+        book = epub.EpubBook()
+        book.set_identifier("toc-prefix")
+        book.set_title("The Harbour Bell")
+        book.set_language("en")
+        book.add_author("A. Novelist")
+
+        body = (
+            "<html><body>"
+            f"<p>{prose(40, 'the keepers of the Ashgate bell')}</p>"
+            '<h1 id="c1">Chapter 1</h1>'
+            f"<p>{prose(80, 'chapter one body')}</p>"
+            '<h1 id="c2">Chapter 2</h1>'
+            f"<p>{prose(80, 'chapter two body')}</p>"
+            "</body></html>"
+        )
+        doc = epub.EpubHtml(title="Whole", file_name="book.xhtml", lang="en")
+        doc.content = body
+        book.add_item(doc)
+        book.toc = (
+            epub.Link("book.xhtml#c1", "Chapter 1", "c1"),
+            epub.Link("book.xhtml#c2", "Chapter 2", "c2"),
+        )
+        book.spine = ["nav", doc]
+        book.add_item(epub.EpubNcx())
+        book.add_item(epub.EpubNav())
+        path = tmp_path / "prefix.epub"
+        epub.write_epub(str(path), book)
+
+        _, chapters = parse_epub(path, min_chapter_words=20, use_toc="auto")
+        joined = "\n".join(c.raw_text for c in chapters)
+        assert "keepers of the Ashgate bell" in joined.lower(), (
+            "prose before the first TOC anchor was dropped: "
+            f"{[c.title for c in chapters]!r} / {joined[:200]!r}"
+        )
 
 
 # ===========================================================================
