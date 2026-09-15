@@ -18,6 +18,7 @@ faked via a recording runner that materializes its output.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
@@ -105,6 +106,27 @@ def _make_casting() -> CastingTable:
     casting.cast("Alice", "af_bella")
     casting.cast("Bob", "bm_george")
     return casting
+
+
+def _grow_dir(base: Path, target_len: int) -> Path:
+    """Nest boring-named subdirectories under ``base`` until the resulting
+    path's string length is at least ``target_len``.
+
+    COORD-B-002: deterministic regardless of how long ``base`` already is
+    (pytest's own ``tmp_path``/``--basetemp`` length varies by host/CI) --
+    this measures the actual starting length and pads exactly as much as
+    needed, splitting the padding across multiple path components (capped at
+    80 chars each) so no single component gets anywhere near NTFS's 255-char
+    per-component ceiling. The directory is created before returning.
+    """
+    d = base
+    while len(str(d)) < target_len:
+        remaining = target_len - len(str(d)) - 1  # -1 for the "\" being added
+        if remaining <= 0:
+            break
+        d = d / ("p" * min(remaining, 80))
+    d.mkdir(parents=True, exist_ok=True)
+    return d
 
 
 def _make_chapter(index: int = 0) -> Chapter:
@@ -592,3 +614,270 @@ class TestUtteranceHash:
         bare = Utterance(speaker="Alice", text="Hi", emotion="happy")
         graded = Utterance(speaker="Alice", text="Hi", emotion="happy", intensity=0.0)
         assert utterance_hash(bare, "v", "p") != utterance_hash(graded, "v", "p")
+
+
+# ---------------------------------------------------------------------------
+# COORD-B-002: utterance cache vs. Windows MAX_PATH
+# ---------------------------------------------------------------------------
+#
+# The per-utterance cache filename embeds a full 64-character SHA-256 hex
+# digest (``utt_<64 hex>.wav``, longer still as the ``.tmp`` scratch name
+# used during synthesis), which on a sufficiently long project directory
+# pushes the write past Windows' 260-character MAX_PATH. The write then
+# fails with an ordinary ``FileNotFoundError: [Errno 2]``, which the old
+# code reported as "failed to synthesize" -- blaming the TTS engine for a
+# filesystem problem.
+#
+# These tests construct the overflow deterministically by padding a
+# directory to a *computed* target length (via `_grow_dir`), never by
+# assuming anything about how long pytest's own tmp_path/--basetemp happens
+# to be on this host.
+
+WINDOWS_MAX_PATH = 260
+
+
+def _utterance_and_hash(text: str = "Only one line.") -> tuple[Utterance, str]:
+    from audiobooker.renderer.hash_utils import utterance_hash as _utterance_hash
+    utt = Utterance(speaker="narrator", text=text, utterance_type=UtteranceType.NARRATION)
+    uhash = _utterance_hash(utt, "af_heart", "paramhash")
+    return utt, uhash
+
+
+def _fixed_suffix_len() -> int:
+    """Chars added between a project dir and its utterance-cache directory.
+
+    Measured from the real cache-layout functions (not hardcoded) so this
+    stays correct if the directory layout ever changes.
+    """
+    from audiobooker.renderer.cache_manifest import get_cache_root, get_utterance_wav_dir
+    probe_root = "C:/probe"
+    probe_dir = get_utterance_wav_dir(get_cache_root(Path(probe_root)), 0)
+    return len(str(probe_dir)) - len(probe_root)
+
+
+class TestUtteranceCachePathLength:
+    """COORD-B-002 (wave 5, MEDIUM): utterance cache path budget + diagnosis.
+
+    Windows-only: MAX_PATH is a Windows concept, so these skip on other
+    platforms rather than fake an OS behavior that wouldn't be real there.
+    """
+
+    # mkdir(parents=True) for the utterance directory happens BEFORE any
+    # per-utterance filename is added, and is a separate (unhandled) call
+    # site from the one this finding is about. Both tests below must keep
+    # the DIRECTORY comfortably under MAX_PATH on its own -- only directory
+    # + leaf filename may cross the line -- or they'd exercise the wrong
+    # code path (a raw mkdir() OSError, never reaching engine.synthesize()).
+    _MKDIR_SAFETY_MARGIN = 20   # utt_dir stays this far under MAX_PATH
+    _FIT_MARGIN = 10            # post-fix dir+leaf stays this far under it
+
+    def test_reclaiming_filename_budget_fixes_a_realistic_overflow(self, tmp_path):
+        """A project dir long enough to overflow the OLD 64-hex filename
+        scheme must render successfully once the filename is shortened --
+        proving the reclaimed budget covers the realistic case the finding
+        described (e.g. a synced OneDrive path + nested series folder).
+        """
+        if os.name != "nt":
+            pytest.skip("Windows MAX_PATH overflow is platform-specific")
+
+        utt, uhash = _utterance_and_hash()
+        old_leaf = f"utt_{uhash}.wav"
+        new_leaf = f"utt_{uhash[:16]}.wav"
+        old_tmp_len = len(engine_mod._chapter_tmp_path(Path(old_leaf)).name)
+        new_tmp_len = len(engine_mod._chapter_tmp_path(Path(new_leaf)).name)
+        suffix_len = _fixed_suffix_len()
+
+        # The fix must free up more headroom than our fit margin, or the
+        # window below is empty -- this is a harness sanity check, not the
+        # thing under test (fails loudly here rather than picking a bogus
+        # target and failing confusingly later).
+        assert old_tmp_len - new_tmp_len > self._FIT_MARGIN, (
+            "harness bug: shortening the hash doesn't reclaim enough budget "
+            "for this test's margins to make sense"
+        )
+
+        # Target utt_dir length: the largest value that still leaves the NEW
+        # (post-fix) leaf fitting under MAX_PATH with _FIT_MARGIN to spare.
+        # Because old_tmp_len > new_tmp_len by more than _FIT_MARGIN (just
+        # asserted above), this same target is guaranteed to overflow the
+        # OLD leaf -- i.e. RED before the fix, GREEN after.
+        dir_target = WINDOWS_MAX_PATH - new_tmp_len - 1 - self._FIT_MARGIN
+        project_dir = _grow_dir(tmp_path, max(dir_target - suffix_len, len(str(tmp_path)) + 1))
+
+        from audiobooker.renderer.cache_manifest import get_cache_root, get_utterance_wav_dir
+        cache_root = get_cache_root(project_dir)
+        utt_dir = get_utterance_wav_dir(cache_root, 0)
+        dir_len = len(str(utt_dir))
+        assert dir_len <= WINDOWS_MAX_PATH - self._MKDIR_SAFETY_MARGIN, (
+            "harness bug: the directory chain alone is too close to MAX_PATH "
+            "-- mkdir() itself would fail, which is a different code path"
+        )
+        assert dir_len + 1 + old_tmp_len > WINDOWS_MAX_PATH, (
+            "harness bug: chosen project_dir doesn't actually overflow the "
+            "pre-fix (64-hex) filename scheme"
+        )
+        assert dir_len + 1 + new_tmp_len <= WINDOWS_MAX_PATH, (
+            "harness bug: chosen project_dir still overflows even the "
+            "shortened (16-hex) filename scheme -- tighten the margins"
+        )
+
+        chapter = Chapter(index=0, title="Solo", raw_text="x")
+        chapter.utterances = [utt]
+        out = project_dir / "chapter_0000.wav"
+
+        # RED (pre-fix): this raises RenderError("...failed to synthesize:
+        # [Errno 2] No such file or directory: ...") because the 64-hex
+        # filename overflows MAX_PATH. GREEN (post-fix): the shortened
+        # filename fits, so this completes normally.
+        result = render_chapter_incremental(
+            chapter, _make_casting(), out,
+            engine=FakeTTSEngine(),
+            cache_root=cache_root,
+            render_params_hash="paramhash",
+            runner=_StitchRunner(),
+        )
+        assert result.utterances_synthesized == 1
+        assert out.exists()
+
+    def test_diagnosis_names_path_length_when_still_too_long(self, tmp_path):
+        """Even after reclaiming budget, a pathological project dir can still
+        overflow. When it does, the error must name the real cause (a
+        Windows path-length problem) instead of blaming the TTS engine.
+        """
+        if os.name != "nt":
+            pytest.skip("Windows MAX_PATH overflow is platform-specific")
+
+        from audiobooker.renderer.engine import RenderError
+
+        utt, uhash = _utterance_and_hash()
+        # Compute how long the tmp name would be under the shortened (16-hex)
+        # scheme this fix introduces, WITHOUT depending on the fix existing
+        # yet -- _chapter_tmp_path only touches the leaf, so this is exact
+        # regardless of whether the source has been patched.
+        new_leaf = f"utt_{uhash[:16]}.wav"
+        new_tmp_len = len(engine_mod._chapter_tmp_path(Path(new_leaf)).name)
+        suffix_len = _fixed_suffix_len()
+
+        # Target utt_dir length: as close to MAX_PATH as the mkdir safety
+        # margin allows, which is still well past the point where even the
+        # NEW, shorter leaf overflows -- this case is not fixable by
+        # reclaiming filename budget alone.
+        dir_target = WINDOWS_MAX_PATH - self._MKDIR_SAFETY_MARGIN
+        project_dir = _grow_dir(tmp_path, max(dir_target - suffix_len, len(str(tmp_path)) + 1))
+
+        from audiobooker.renderer.cache_manifest import get_cache_root, get_utterance_wav_dir
+        cache_root = get_cache_root(project_dir)
+        utt_dir = get_utterance_wav_dir(cache_root, 0)
+        dir_len = len(str(utt_dir))
+        assert dir_len <= WINDOWS_MAX_PATH - self._MKDIR_SAFETY_MARGIN + 1, (
+            "harness bug: the directory chain alone is too close to MAX_PATH "
+            "-- mkdir() itself would fail, which is a different code path"
+        )
+        assert dir_len + 1 + new_tmp_len > WINDOWS_MAX_PATH, (
+            "harness bug: chosen project_dir doesn't overflow even the "
+            "shortened (16-hex) filename scheme"
+        )
+
+        chapter = Chapter(index=0, title="Solo", raw_text="x")
+        chapter.utterances = [utt]
+        out = project_dir / "chapter_0000.wav"
+
+        with pytest.raises(RenderError) as exc_info:
+            render_chapter_incremental(
+                chapter, _make_casting(), out,
+                engine=FakeTTSEngine(),
+                cache_root=cache_root,
+                render_params_hash="paramhash",
+                runner=_StitchRunner(),
+            )
+
+        err = exc_info.value
+        # RED (pre-fix): message says "failed to synthesize" -- the wrong
+        # cause, pointing at the TTS engine instead of the filesystem.
+        # GREEN (post-fix): a distinct code + a message naming path length.
+        assert "failed to synthesize" not in str(err), (
+            "the TTS engine did not fail -- the cache write did; the message "
+            "must not blame synthesis"
+        )
+        assert err.code == "CACHE_PATH_TOO_LONG"
+        assert "path" in str(err).lower()
+
+    def test_short_path_engine_failure_still_blames_synthesis(self, tmp_path):
+        """An ordinary (short-path) engine failure must keep the original
+        "failed to synthesize" message -- the new path-length diagnosis must
+        not fire on, or swallow, an unrelated failure. Cross-platform: this
+        does not depend on any OS path-length behavior.
+        """
+        from audiobooker.renderer.engine import RenderError
+
+        chapter = _make_chapter()
+        cache_root = tmp_path / "cache"
+        out = tmp_path / "chapter_0000.wav"
+
+        with pytest.raises(RenderError) as exc_info:
+            render_chapter_incremental(
+                chapter, _make_casting(), out,
+                engine=FakeTTSEngine(fail_on_call=0, fail_error="voice model missing"),
+                cache_root=cache_root,
+                render_params_hash="paramhash",
+                runner=_StitchRunner(),
+            )
+
+        err = exc_info.value
+        assert "failed to synthesize" in str(err)
+        assert "voice model missing" in str(err)
+        assert err.code == "RUNTIME_RENDER"
+
+    def test_old_style_full_hash_filename_still_resolves(self, tmp_path):
+        """An utterance cached under the OLD (pre-fix) full-64-hex filename
+        must still be found and reused after the filename is shortened.
+
+        The manifest stores a concrete `wav_path` per entry (cache_manifest.
+        UtteranceCacheEntry) -- `is_valid()` stats exactly that path, it
+        never recomputes a filename from the hash -- so an existing cache
+        keeps resolving its old (longer) filenames untouched; only NEW
+        utterances synthesized from here on get the shorter name. This is
+        the empirical proof behind that claim, not just a reading of the
+        code: it writes a manifest + WAV in the pre-fix shape by hand and
+        confirms the current code reuses it without re-synthesizing.
+        """
+        from audiobooker.renderer.cache_manifest import (
+            UtteranceCacheEntry, UtteranceCacheManifest,
+            get_utterance_wav_dir, get_utterance_manifest_path,
+            save_utterance_manifest,
+        )
+
+        utt, uhash = _utterance_and_hash()
+        cache_root = tmp_path / "cache"
+        utt_dir = get_utterance_wav_dir(cache_root, 0)
+        utt_dir.mkdir(parents=True, exist_ok=True)
+
+        # Simulate a WAV cached by the OLD (pre-fix) full-hash filename.
+        old_style_wav = utt_dir / f"utt_{uhash}.wav"
+        write_silence_wav(old_style_wav, 0.3)
+
+        manifest_path = get_utterance_manifest_path(cache_root, 0)
+        manifest = UtteranceCacheManifest()
+        manifest.set_entry(UtteranceCacheEntry(
+            utterance_hash=uhash, wav_path=str(old_style_wav), duration_s=0.3,
+        ))
+        save_utterance_manifest(manifest, manifest_path)
+
+        chapter = Chapter(index=0, title="Solo", raw_text="x")
+        chapter.utterances = [utt]
+
+        engine = FakeTTSEngine()
+        result = render_chapter_incremental(
+            chapter, _make_casting(), tmp_path / "chapter_0000.wav",
+            engine=engine,
+            cache_root=cache_root,
+            render_params_hash="paramhash",
+            runner=_StitchRunner(),
+        )
+
+        assert result.utterances_reused == 1
+        assert result.utterances_synthesized == 0
+        assert len(engine.calls) == 0
+        # The old-style file is what got reused -- left untouched, not
+        # replaced by a new short-name file.
+        assert old_style_wav.exists()
