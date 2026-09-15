@@ -644,6 +644,200 @@ def _chapters_from_toc(
     return chapters
 
 
+def _spine_document_names(book) -> list[tuple[str, bool]]:
+    """``(document name, is_linear)`` in spine (reading) order.
+
+    The spine is the EPUB's normative reading order — it is what an e-reader
+    pages through, and ``linear="no"`` marks content it does NOT page through
+    in the main flow. Navigation documents are excluded. Falls back to manifest
+    document order (everything linear) when the book has no resolvable spine.
+    """
+    import ebooklib
+    from ebooklib import epub as _epub
+
+    entries: list[tuple[str, bool]] = []
+    seen: set[str] = set()
+    for spine_item in getattr(book, "spine", None) or []:
+        if isinstance(spine_item, tuple):
+            item_id = spine_item[0]
+            linear = str(spine_item[1]).lower() != "no" if len(spine_item) > 1 else True
+        else:
+            item_id, linear = spine_item, True
+        try:
+            item = book.get_item_with_id(item_id)
+        except Exception:  # defensive: malformed spine must not abort parsing
+            item = None
+        if item is None or isinstance(item, _epub.EpubNav):
+            continue
+        name = item.get_name()
+        if name and name not in seen:
+            seen.add(name)
+            entries.append((name, linear))
+
+    if entries:
+        return entries
+
+    for item in book.get_items_of_type(ebooklib.ITEM_DOCUMENT):
+        if isinstance(item, _epub.EpubNav):
+            continue
+        name = item.get_name()
+        if name and name not in seen:
+            seen.add(name)
+            entries.append((name, True))
+    return entries
+
+
+def _document_chapter(
+    item,
+    *,
+    index: int,
+    min_chapter_words: int,
+    keep_titled_short_chapters: bool,
+    footnote_behavior: str,
+) -> Optional[Chapter]:
+    """Build one Chapter from a whole spine document, or None if too short."""
+    content = item.get_content()
+    if isinstance(content, bytes):
+        content = _decode_item_content(content, item.get_name())
+
+    text = html_to_text(content, footnote_behavior=footnote_behavior)
+    word_count = len(text.split())
+    title = extract_title_from_html(content)
+
+    if word_count < min_chapter_words:
+        if title and keep_titled_short_chapters:
+            logger.info(
+                "Keeping short titled section: %r (%d words < %d threshold)",
+                title, word_count, min_chapter_words,
+            )
+        else:
+            logger.info(
+                "Skipping short section: %r (%d words < %d threshold)",
+                title or item.get_name(), word_count, min_chapter_words,
+            )
+            return None
+
+    return Chapter(
+        index=index,
+        title=title or f"Chapter {index + 1}",
+        raw_text=_strip_sentinels(text),
+        source_file=item.get_name(),
+    )
+
+
+def _reconcile_toc_with_spine(
+    book,
+    chapters: list[Chapter],
+    *,
+    min_chapter_words: int,
+    keep_titled_short_chapters: bool,
+    footnote_behavior: str,
+) -> list[Chapter]:
+    """Put TOC-derived chapters back in reading order and recover orphans.
+
+    FEAT-IN-002. ``_chapters_from_toc`` builds purely from resolved TOC
+    entries and never cross-checks them against the spine, so a stale or
+    hand-edited TOC — extremely common after a Word → Calibre or a Scrivener
+    export — silently did two harmful things:
+
+    * a spine document the TOC never mentions was DELETED. An afterword's 220
+      words of real prose simply did not appear in the audiobook, and nothing
+      was logged at any level, not even under ``--debug``.
+    * a TOC that lists chapter 2 before chapter 1 narrated them in that order.
+      The spine, not the TOC, is the EPUB's normative reading order; the TOC is
+      navigation.
+
+    Both are fixed against the spine: chapters are emitted in spine order, and
+    a document with no TOC entry is recovered into its own chapter at its spine
+    position (not appended at the end — a copyright page belongs at the front,
+    an afterword at the back). Each correction is warned about, naming the
+    documents involved, and the warning says how to drop a recovered document
+    that really is not part of the book.
+
+    A recovered document goes through exactly the short-section policy the
+    spine fallback path applies (``min_chapter_words`` /
+    ``keep_titled_short_chapters``), and ``linear="no"`` spine entries are
+    left out — a TOC that omits those omitted them on purpose.
+    """
+    import ebooklib
+
+    spine_entries = _spine_document_names(book)
+    if not spine_entries:
+        return chapters
+    spine_names = [name for name, _ in spine_entries]
+    in_spine = set(spine_names)
+
+    by_doc: dict[str, list[Chapter]] = {}
+    for chapter in chapters:
+        by_doc.setdefault(chapter.source_file, []).append(chapter)
+
+    # A TOC document missing from the spine cannot be positioned; those keep
+    # their original relative order at the end rather than being guessed at.
+    unpositioned = [name for name in by_doc if name not in in_spine]
+
+    docs_by_name = {
+        it.get_name(): it
+        for it in book.get_items_of_type(ebooklib.ITEM_DOCUMENT)
+    }
+
+    ordered: list[Chapter] = []
+    recovered: list[str] = []
+    for name, linear in spine_entries:
+        if name in by_doc:
+            ordered.extend(by_doc.pop(name))
+            continue
+        item = docs_by_name.get(name)
+        if item is None:
+            continue
+        if not linear:
+            # linear="no" is content the reader does not page through in the
+            # main flow; a TOC that omits it omitted it on purpose.
+            logger.info(
+                "Leaving non-linear document %r out of the chapter list.", name,
+            )
+            continue
+        built = _document_chapter(
+            item,
+            index=len(ordered),
+            min_chapter_words=min_chapter_words,
+            keep_titled_short_chapters=keep_titled_short_chapters,
+            footnote_behavior=footnote_behavior,
+        )
+        if built is not None:
+            recovered.append(name)
+            ordered.append(built)
+
+    for name in unpositioned:
+        ordered.extend(by_doc.pop(name, []))
+
+    # Did the spine actually move anything the TOC had placed?
+    was = [c.source_file for c in chapters if c.source_file in in_spine]
+    now = [c.source_file for c in ordered if c.source_file not in recovered]
+    if was != now:
+        logger.warning(
+            "The table of contents in this EPUB lists its documents in a "
+            "different order than the spine (the book's own reading order): "
+            "TOC order %s vs reading order %s. Using the reading order — a "
+            "stale TOC would otherwise narrate the chapters out of sequence.",
+            was, now,
+        )
+
+    if recovered:
+        logger.warning(
+            "%d document(s) in this EPUB are not listed in its table of "
+            "contents and would have been dropped: %s. They have been "
+            "recovered as chapters at their reading-order position. If they "
+            "really are not part of the book, exclude them with "
+            "'chapters exclude', or pass use_toc='off' to split on the spine "
+            "alone.",
+            len(recovered), ", ".join(recovered),
+        )
+
+    for position, chapter in enumerate(ordered):
+        chapter.index = position
+    return ordered
+
+
 def parse_epub(
     path: Path,
     min_chapter_words: int = 50,
@@ -837,7 +1031,16 @@ def parse_epub(
                 footnote_behavior=footnote_behavior,
             )
             if toc_chapters:
-                chapters = toc_chapters
+                # FEAT-IN-002: the TOC decides titles and anchor slicing; the
+                # SPINE decides reading order and what exists at all.
+                chapters = _reconcile_toc_with_spine(
+                    book,
+                    toc_chapters,
+                    min_chapter_words=min_chapter_words,
+                    keep_titled_short_chapters=keep_titled_short_chapters,
+                    footnote_behavior=footnote_behavior,
+                )
+                chapter_index = len(chapters)
                 split_pattern = "toc"
                 logger.info(
                     "Using EPUB table of contents for chapter boundaries "

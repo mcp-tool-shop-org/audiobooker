@@ -16,6 +16,7 @@ from typing import Optional
 
 from audiobooker.models import Chapter
 from audiobooker.language.profile import LanguageProfile
+from audiobooker.parser.text import compose_chapter_title
 
 logger = logging.getLogger("audiobooker.parser")
 
@@ -106,17 +107,13 @@ def _is_chapter_heading(
     if not line:
         return None
 
-    # Check explicit chapter patterns
+    # Check explicit chapter patterns (FEAT-IN-006: one shared composer, so a
+    # compound spelled-out number is not split into a phantom subtitle and a
+    # localized heading is not re-worded in English).
     for pattern in patterns:
         match = pattern.match(line)
         if match:
-            groups = match.groups()
-            if len(groups) >= 2 and groups[1]:
-                return f"Chapter {groups[0]}: {groups[1].strip()}"
-            elif len(groups) >= 1 and groups[0]:
-                return line
-            else:
-                return line
+            return compose_chapter_title(line, match)
 
     # All-caps line that looks like a title (3-60 chars, mostly letters) AND
     # carries a corroborating signal: it stands alone, is short, does not end
@@ -175,9 +172,17 @@ def _chapters_from_outline(
     """Build chapters from the PDF's own outline / bookmarks (PARSER-AMEND-6).
 
     The outline is authored metadata, so it is a far better chapter source than
-    a text heuristic. Only the top outline level is used, so a deep outline does
-    not shred the book into sections. Returns None when the outline does not
-    yield at least two usable chapters (caller falls back to text heuristics).
+    a text heuristic. NESTED outlines are descended into (FEAT-IN-003), the way
+    ``parser/epub.py``'s ``_flatten_toc`` already descends into TOC sections —
+    this used to keep ONLY ``min(level)``, so an ordinary Part > Chapter
+    bookmark tree (one level-1 Part, three level-2 Chapters) kept just the
+    Part, failed the two-chapter test, and dropped the whole book through to
+    the text heuristics, usually collapsing it to a single chapter. Two
+    otherwise-identical PDFs differing only in outline nesting parsed to four
+    chapters and one.
+
+    Returns None when the outline does not yield at least two usable chapters
+    (caller falls back to text heuristics).
     """
     rows: list[tuple[int, str, int]] = []
     for row in outline or []:
@@ -195,19 +200,42 @@ def _chapters_from_outline(
     if len(rows) < 2:
         return None
 
+    # The original worry behind the top-level-only rule was real: a four-level
+    # outline (Part > Chapter > Section > Subsection) would shred the book.
+    # Keep every level, then walk the cut-off back one level at a time if the
+    # result is implausible for the page count — the same "roughly one chapter
+    # per page" shape the post-parse warning already looks for.
     top_level = min(r[0] for r in rows)
-    entries = [(t, p) for lvl, t, p in rows if lvl == top_level]
-    entries.sort(key=lambda e: e[1])
+    max_level = max(r[0] for r in rows)
+    plausible_max = max(3, int(len(page_texts) * 0.5))
 
-    # One slice per page: two outline entries on the same page would otherwise
-    # produce overlapping (or empty) slices.
     deduped: list[tuple[str, int]] = []
-    seen_pages: set[int] = set()
-    for title, page_idx in entries:
-        if page_idx in seen_pages:
-            continue
-        seen_pages.add(page_idx)
-        deduped.append((title, page_idx))
+    for cutoff in range(max_level, top_level - 1, -1):
+        entries = [(t, p) for lvl, t, p in rows if lvl <= cutoff]
+        entries.sort(key=lambda e: e[1])
+
+        # One slice per page: two outline entries on the same page would
+        # otherwise produce overlapping (or empty) slices. Sorting is stable
+        # and by page only, so a parent entry keeps its page over its first
+        # child.
+        candidate: list[tuple[str, int]] = []
+        seen_pages: set[int] = set()
+        for title, page_idx in entries:
+            if page_idx in seen_pages:
+                continue
+            seen_pages.add(page_idx)
+            candidate.append((title, page_idx))
+
+        deduped = candidate
+        if len(candidate) <= plausible_max:
+            if cutoff < max_level:
+                logger.info(
+                    "PDF outline is %d levels deep; using levels %d-%d "
+                    "(deeper levels would give %d sections across %d pages).",
+                    max_level - top_level + 1, top_level, cutoff,
+                    len(rows), len(page_texts),
+                )
+            break
 
     if len(deduped) < 2:
         return None
