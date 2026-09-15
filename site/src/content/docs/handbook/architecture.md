@@ -61,7 +61,7 @@ Key design principles:
 audiobooker/
   parser/            EPUB/PDF/DOCX/TXT/folder parsing
   casting/           dialogue detection, attribution, voice registry, voice suggester
-  language/          language profiles (en, extensible)
+  language/          language profiles (7 shipped, extensible)
   nlp/               BookNLP adapter, emotion inference, speaker resolver
   renderer/          TTS engine, cache manifest, FFmpeg assembly, progress, failure reports
   review.py          review format import/export

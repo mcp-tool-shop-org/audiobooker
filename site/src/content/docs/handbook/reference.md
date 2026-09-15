@@ -25,7 +25,7 @@ Every command supports `-h`/`--help`. Global flags (before or after the subcomma
 
 | Command | Description |
 |---------|-------------|
-| `cast <char> <voice>` | Assign a voice (`--emotion`, `--speed`). |
+| `cast <char> <voice>` | Assign a voice (`--emotion`, `--description`). |
 | `cast --interactive` | Guided per-uncast-speaker casting. |
 | `cast-suggest` · `cast-apply --auto` | Ranked suggestions · auto-apply the top pick. |
 | `cast-fill` | Bulk-assign by gender/role: `--gender`, `--voices a,b,c`, `--narrator`, `--minor-voice`, `--minor-threshold`. |
