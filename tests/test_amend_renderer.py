@@ -43,6 +43,7 @@ from audiobooker.renderer import engine as engine_mod
 from audiobooker.renderer import ffmpeg_runner as ffmpeg_runner_mod
 from audiobooker.renderer.cache_manifest import (
     ChapterCacheEntry,
+    UtteranceCacheEntry,
     get_chapter_wav_path,
     get_manifest_path,
     load_manifest,
@@ -376,7 +377,13 @@ class TestSampleStaleWav:
     def test_unverified_disk_fallback_warns(
         self, tmp_path: Path, monkeypatch, caplog, ffmpeg_available
     ):
-        """A WAV with no manifest entry must not be reused as the sample."""
+        """A WAV with no manifest entry must not be reused as the sample.
+
+        F-fa847627: occupancy (file exists) is not identity. Re-synthesis
+        (engine.calls) is the spend lock; a WARNING that names the
+        no-manifest / unverified WAV is the log that distinguishes a miss
+        from a silent occupancy reuse.
+        """
         project = _make_project()
         cache_root = tmp_path / "cache"
         wav = get_chapter_wav_path(cache_root, 0)
@@ -388,19 +395,41 @@ class TestSampleStaleWav:
             "audiobooker.renderer.ffmpeg_runner.RealFFmpegRunner", lambda: runner
         )
         engine = FakeTTSEngine()
-        engine_mod.render_sample(
-            project,
-            from_chapter=0,
-            duration=30.0,
-            output_path=tmp_path / "sample.m4a",
-            engine=engine,
-            cache_root=cache_root,
-        )
+        with caplog.at_level(logging.WARNING, logger="audiobooker.renderer"):
+            engine_mod.render_sample(
+                project,
+                from_chapter=0,
+                duration=30.0,
+                output_path=tmp_path / "sample.m4a",
+                engine=engine,
+                cache_root=cache_root,
+            )
 
         assert engine.calls, (
             "render_sample reused a no-manifest truncated/unverified WAV "
             "as the retail sample (F-12572710)"
         )
+        warnings = [
+            r.getMessage()
+            for r in caplog.records
+            if r.levelno >= logging.WARNING
+        ]
+        blob = " ".join(warnings).lower()
+        assert warnings, (
+            "no-manifest occupancy reuse was silent — Cached-wrong is "
+            "indistinguishable from a miss (F-12572710 / F-fa847627)"
+        )
+        assert any(
+            token in blob
+            for token in (
+                "manifest",
+                "unverified",
+                "not reused",
+                "no-manifest",
+                "occupancy",
+                "truncated",
+            )
+        ), warnings
 
 
 # ---------------------------------------------------------------------------
@@ -784,6 +813,28 @@ class TestCacheEntryIntegrity:
         assert not entry.is_valid("t", "c", "p"), (
             "a truncated WAV passed validation because the only check was "
             "'file is non-empty'"
+        )
+
+    def test_truncated_utterance_wav_is_not_valid(self, tmp_path: Path):
+        """F-2d778457 / F-f0dd9a89: UtteranceCacheEntry must miss a truncated WAV.
+
+        ChapterCacheEntry already pins size_bytes. Mutating utterance is_valid
+        back to occupancy (exists and st_size>0) must go RED here.
+        """
+        wav = tmp_path / "utt.wav"
+        write_silence_wav(wav, duration_s=1.0)
+        entry = UtteranceCacheEntry(
+            utterance_hash="h",
+            wav_path=str(wav),
+            duration_s=1.0,
+            size_bytes=wav.stat().st_size,
+        )
+        assert entry.is_valid()
+
+        wav.write_bytes(b"RIFF" + b"\x00" * 64)
+        assert not entry.is_valid(), (
+            "a truncated utterance WAV passed validation because the only "
+            "check was 'file is non-empty' (F-2d778457)"
         )
 
     def test_legacy_entry_without_size_still_validates(self, tmp_path: Path):

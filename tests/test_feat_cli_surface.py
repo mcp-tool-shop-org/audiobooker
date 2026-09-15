@@ -291,6 +291,83 @@ class TestJsonOnTheCommandsThatComputeNumbers:
         assert payload["code"]
         assert "ffmpeg" in payload["message"]
 
+    def test_render_json_ffmpeg_missing_without_force(
+        self, tmp_path, capsys, monkeypatch
+    ):
+        """F-2d778457: ``render --json`` (no --force) ffmpeg miss is JSON.
+
+        Renderer API preflights exist; the CLI operator copy used to be only
+        the --force RenderError plant. Demand DEP_FFMPEG_MISSING on stderr.
+        """
+        import audiobooker.renderer.output as output_mod
+
+        project = AudiobookProject.from_string(
+            DIALOGUE_TEXT, title="Cast Book", author="Author"
+        )
+        project.compile()
+        for speaker in list(project.get_uncast_speakers()):
+            project.cast(speaker, "af_bella")
+        project.config.validate_voices_on_render = False
+        path = tmp_path / "book.audiobooker"
+        project.save(path)
+
+        monkeypatch.setattr(output_mod, "check_ffmpeg", lambda: False)
+        monkeypatch.setattr(output_mod, "_ffmpeg_checked", False)
+
+        code = main([
+            "render", "-p", str(path), "--json",
+            "-o", str(tmp_path / "out.m4b"),
+        ])
+        assert code == 1
+        captured = capsys.readouterr()
+        assert captured.out.strip() == "", captured.out
+        payload = json.loads(captured.err)
+        assert payload["code"] == "DEP_FFMPEG_MISSING"
+        assert payload["message"]
+        assert "hint" in payload
+
+    def test_render_json_engine_down_without_force(
+        self, tmp_path, capsys, monkeypatch
+    ):
+        """F-2d778457: ``render --json`` engine ImportError is JSON.
+
+        get_default_engine raising ImportError must surface
+        RENDER_BACKEND_UNAVAILABLE (not UNEXPECTED_ERROR / English).
+        """
+        import audiobooker.renderer.output as output_mod
+
+        project = AudiobookProject.from_string(
+            DIALOGUE_TEXT, title="Cast Book", author="Author"
+        )
+        project.compile()
+        for speaker in list(project.get_uncast_speakers()):
+            project.cast(speaker, "af_bella")
+        project.config.validate_voices_on_render = False
+        path = tmp_path / "book.audiobooker"
+        project.save(path)
+
+        monkeypatch.setattr(output_mod, "check_ffmpeg", lambda: True)
+        monkeypatch.setattr(output_mod, "_ffmpeg_checked", True)
+
+        def _boom(name=None):
+            raise ImportError("voice-soundboard is required for rendering")
+
+        monkeypatch.setattr(
+            "audiobooker.renderer.engine.get_default_engine", _boom
+        )
+
+        code = main([
+            "render", "-p", str(path), "--json",
+            "-o", str(tmp_path / "out.m4b"),
+        ])
+        assert code != 0
+        captured = capsys.readouterr()
+        assert captured.out.strip() == "", captured.out
+        payload = json.loads(captured.err)
+        assert payload["code"] == "RENDER_BACKEND_UNAVAILABLE", payload
+        assert payload["message"]
+        assert "hint" in payload
+
 
 # ---------------------------------------------------------------------------
 # FEAT-UX-002 — a typo'd speaker must not reach the TTS bill
