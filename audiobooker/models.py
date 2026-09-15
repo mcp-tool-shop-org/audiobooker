@@ -260,6 +260,24 @@ class UtteranceType(Enum):
     FOOTNOTE = "footnote"
 
 
+# FEAT-CAST-001: where an utterance's speaker came from.
+#
+#   tag    — a speech-verb attribution in the prose ("said Alice").
+#   turn   — INFERRED by conversation alternation. A guess, and the reason this
+#            vocabulary exists: compile_chapter records an alternation guess as
+#            a successful attribution, which LOWERS the unattributed rate. A
+#            guess that cannot be distinguished from a real attribution makes
+#            the quality signal improve as attribution degrades.
+#   nlp    — resolved by the BookNLP coref pass.
+#   inline — a user's `[Character]` override in the source text.
+#   user   — set by hand after the fact (review/CLI edit).
+#
+# ``None`` is not a member: it means "not an attributed dialogue line at all"
+# (narration, pauses, stage directions), which is a different statement from
+# any of the five.
+ATTRIBUTION_SOURCES = frozenset({"tag", "turn", "nlp", "inline", "user"})
+
+
 @dataclass
 class Utterance:
     """
@@ -280,6 +298,14 @@ class Utterance:
             the inline (emotion:0.7) script tag.
         chapter_index: Which chapter this belongs to
         line_index: Position within the chapter
+        attribution_source: FEAT-CAST-001. One of ATTRIBUTION_SOURCES, or None
+            for anything that is not an attributed dialogue line (narration,
+            pauses, stage directions). Provenance, so a guess is visibly a
+            guess rather than indistinguishable from a tagged attribution.
+        confidence: FEAT-CAST-001. 0.0-1.0 strength of the attribution, or None
+            where attribution_source is None. An alternation guess scores below
+            casting.dialogue.LOW_CONFIDENCE_THRESHOLD by construction; an
+            unattributed ('unknown') line scores 0.0.
     """
     speaker: str
     text: str
@@ -291,6 +317,11 @@ class Utterance:
     start_pos: int = -1
     end_pos: int = -1
     id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    # FEAT-CAST-001: both default to None so every existing construction site
+    # keeps working unchanged and every project file written before this
+    # feature still loads. See to_dict/from_dict for the round-trip contract.
+    attribution_source: Optional[str] = None
+    confidence: Optional[float] = None
 
     def __post_init__(self):
         """CASTING-DEPTH v2.1: validate intensity is within 0.0-1.0 when set.
@@ -298,6 +329,12 @@ class Utterance:
         None is the default (current behavior preserved); any other value must
         be a number in [0.0, 1.0] so the renderer's emphasis-band mapping has a
         well-defined input.
+
+        FEAT-CAST-001 adds the same treatment for ``confidence``, and a
+        membership check for ``attribution_source``. A provenance field whose
+        vocabulary is not enforced decays into free text, and the whole point
+        of the field is that a downstream reader can trust ``== "turn"`` to
+        mean "this was guessed".
         """
         if self.intensity is not None:
             if not isinstance(self.intensity, (int, float)) or isinstance(
@@ -311,6 +348,28 @@ class Utterance:
                 raise ValueError(
                     f"Utterance intensity must be between 0.0 and 1.0, "
                     f"got {self.intensity}."
+                )
+
+        if self.attribution_source is not None:
+            if self.attribution_source not in ATTRIBUTION_SOURCES:
+                raise ValueError(
+                    f"Utterance attribution_source must be one of "
+                    f"{', '.join(sorted(ATTRIBUTION_SOURCES))} (or None for "
+                    f"narration), got {self.attribution_source!r}."
+                )
+
+        if self.confidence is not None:
+            if not isinstance(self.confidence, (int, float)) or isinstance(
+                self.confidence, bool
+            ):
+                raise ValueError(
+                    f"Utterance confidence must be a number between 0.0 and 1.0, "
+                    f"got {self.confidence!r}."
+                )
+            if not (0.0 <= self.confidence <= 1.0):
+                raise ValueError(
+                    f"Utterance confidence must be between 0.0 and 1.0, "
+                    f"got {self.confidence}."
                 )
 
     def to_script_line(
@@ -351,6 +410,13 @@ class Utterance:
         # files (intensity == None) round-trip byte-for-byte unchanged.
         if self.intensity is not None:
             data["intensity"] = self.intensity
+        # FEAT-CAST-001: same contract. `is not None`, never truthiness —
+        # confidence 0.0 is the meaningful "unattributed" value and would be
+        # silently dropped by a falsy test.
+        if self.attribution_source is not None:
+            data["attribution_source"] = self.attribution_source
+        if self.confidence is not None:
+            data["confidence"] = self.confidence
         return data
 
     @classmethod
@@ -377,6 +443,11 @@ class Utterance:
             start_pos=data.get("start_pos", -1),
             end_pos=data.get("end_pos", -1),
             id=data.get("id", str(uuid.uuid4())),
+            # FEAT-CAST-001: absent in every project file written before this
+            # feature -> None, which means "provenance unknown" and is exactly
+            # right for those files.
+            attribution_source=data.get("attribution_source"),
+            confidence=data.get("confidence"),
         )
 
 
@@ -820,6 +891,79 @@ class CastingTable:
                 if self.normalize_key(alias) == key:
                     return char
         return None
+
+    def merge_speaker(self, source: str, target: str) -> 'Character':
+        """
+        FEAT-CAST-003: fold cast slot ``source`` into ``target``.
+
+        One character routinely becomes three slots — ``Dr. Merrin`` /
+        ``Merrin`` / ``The Doctor`` — because attribution reads whatever the
+        prose happens to call them on that line. The audio was never wrong
+        (``get_voice`` resolves aliases), but the cast was: a permanently
+        dirty uncast warning, line counts split three ways, and one character
+        occupying three rows of every report.
+
+        ``suggest_aliases`` proposes these merges; this applies one. It is the
+        other half of the feature — a proposal no one can act on is not a fix
+        — and it lives here rather than in the CLI so that the CLI, the
+        resolver and any future UI all perform the merge identically.
+
+        ``source``'s display name and every alias it already carried become
+        aliases of ``target``, so the next compile attributes those spellings
+        straight to ``target`` (see ``extract_speaker_from_context``'s alias
+        fold). Line counts are added rather than dropped. The ``source`` slot
+        is then removed.
+
+        Raises:
+            ValueError: if either slot is missing, if they are the same slot,
+                or if ``source`` is the narrator (removing the narrator would
+                leave every unattributed line with nowhere to go).
+        """
+        source_key = self.normalize_key(source)
+        target_key = self.normalize_key(target)
+
+        if source_key == target_key:
+            raise ValueError(
+                f"Cannot merge {source!r} into itself. Name two different "
+                "cast members."
+            )
+        if source_key in ("narrator", self.normalize_key(self.default_narrator)):
+            raise ValueError(
+                f"Refusing to merge away the narrator ({source!r}). Every "
+                "unattributed line falls back to it. Merge the other "
+                "direction, or rename the character instead."
+            )
+        if source_key not in self.characters:
+            raise ValueError(
+                f"No cast member named {source!r}. Known: "
+                f"{', '.join(sorted(c.name for c in self.characters.values())) or '(none)'}."
+            )
+        if target_key not in self.characters:
+            raise ValueError(
+                f"No cast member named {target!r}. Known: "
+                f"{', '.join(sorted(c.name for c in self.characters.values())) or '(none)'}."
+            )
+
+        source_char = self.characters[source_key]
+        target_char = self.characters[target_key]
+
+        existing = {self.normalize_key(a) for a in target_char.aliases}
+        existing.add(target_key)
+        for alias in [source_char.name, *source_char.aliases]:
+            key = self.normalize_key(alias)
+            if key and key not in existing:
+                target_char.aliases.append(alias)
+                existing.add(key)
+
+        target_char.line_count += source_char.line_count
+        del self.characters[source_key]
+
+        logger.info(
+            "FEAT-CAST-003: merged cast slot %r into %r (%d lines, %d aliases)",
+            source_char.name, target_char.name,
+            target_char.line_count, len(target_char.aliases),
+        )
+        return target_char
 
     def get_voice(self, speaker: str) -> tuple[str, Optional[str]]:
         """

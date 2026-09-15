@@ -12,13 +12,18 @@ Handles:
 
 from audiobooker.casting.dialogue import (
     AUSTEN_STYLE,
+    DIALOGUE_UNKNOWN_FAIL_RATE,
+    DIALOGUE_UNKNOWN_WARN_RATE,
     FANTASY_MULTI_SPEAKER,
     HEMINGWAY_STYLE,
+    LOW_CONFIDENCE_THRESHOLD,
     MODERN_THRILLER,
     compile_chapter,
     compile_report,
     detect_dialogue,
+    dialogue_quality_verdict,
     extract_speaker_from_context,
+    extract_speaker_with_confidence,
     is_valid_speaker_name,
     parse_inline_override,
     utterances_to_script,
@@ -46,7 +51,16 @@ __all__ = [
     "compile_chapter",
     "compile_report",
     "detect_dialogue",
+    "dialogue_quality_verdict",
     "extract_speaker_from_context",
+    # FEAT-CAST-001: attribution provenance + confidence. `cli.py` belongs to
+    # another agent this wave; a `speakers merge <from> <to>` command and the
+    # `compile` low-confidence summary need these names and
+    # `audiobooker.nlp.speaker_resolver.suggest_aliases`.
+    "extract_speaker_with_confidence",
+    "LOW_CONFIDENCE_THRESHOLD",
+    "DIALOGUE_UNKNOWN_WARN_RATE",
+    "DIALOGUE_UNKNOWN_FAIL_RATE",
     "is_valid_speaker_name",
     "parse_inline_override",
     "utterances_to_script",

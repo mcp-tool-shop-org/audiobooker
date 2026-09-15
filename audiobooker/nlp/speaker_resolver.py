@@ -149,6 +149,13 @@ class SpeakerResolver:
                 if match_result is not None:
                     improved, confidence = match_result
                     utterance.speaker = improved
+                    # FEAT-CAST-001: record WHERE this speaker came from. The
+                    # resolver already computed a confidence and kept it only
+                    # in its own stats object, so nothing downstream of the
+                    # pipeline could tell an NLP resolution from a tagged
+                    # attribution.
+                    utterance.attribution_source = "nlp"
+                    utterance.confidence = confidence
                     stats.speakers_resolved += 1
                     stats.match_confidence.append(confidence)
                     if confidence < self.LOW_CONFIDENCE_BAND:
@@ -279,7 +286,10 @@ class AliasProposal:
     speaker: str            # the confirmed speaker it most co-occurs with
     score: float            # 0.0-1.0 co-occurrence strength
     co_occurrences: int     # raw co-occurrence count used for the score
-    source: str = "co-occurrence"  # "co-occurrence" | "coref"
+    # "co-occurrence" | "coref" | "name-overlap" (FEAT-CAST-003: a merge
+    # between two CONFIRMED cast slots, justified by shared surname or
+    # title+surname rather than by proximity).
+    source: str = "co-occurrence"
 
 
 # Honorific+surname / title / "the X" attribution-candidate patterns.
@@ -298,33 +308,137 @@ def _collect_alias_candidates(
     profile,
 ) -> list[str]:
     """
-    Collect attribution-candidate descriptors that are NOT confirmed speakers.
+    Collect descriptors worth proposing as an alias of a confirmed speaker.
 
     These are the descriptor-shaped attributions the casting table does not yet
     recognize as a real speaker (titles, "the X", honorific+surname). The
     English profile's ``is_valid_speaker_name`` deliberately *accepts* these
     shapes as plausible names, so the discriminating filter for ALIAS proposals
-    is "descriptor-shaped AND not already a confirmed character or existing
-    alias" — a referring expression for someone, rather than its own cast slot.
+    is "descriptor-shaped AND a referring expression for someone" rather than
+    its own cast slot.
+
+    FEAT-CAST-003: the confirmed-speaker guard used to be absolute — any
+    descriptor already in ``casting.characters`` was skipped outright. That
+    skipped the case that actually hurts. ``Dr. Merrin`` / ``Merrin`` /
+    ``The Doctor`` all become cast slots during compile, so by the time anyone
+    asks for suggestions the duplicates are confirmed speakers and the guard
+    threw every one of them away — leaving a permanently dirty uncast warning,
+    split line counts, and one character occupying three report rows.
+
+    The guard is now shape-aware rather than absolute. A confirmed speaker is
+    still skipped when it is a proper NAME (``Halloway`` names a person, and
+    co-occurrence alone is not evidence that it names the same person as
+    someone standing next to them). It is kept when it is a ``the X``
+    REFERRING EXPRESSION, which by construction stands in for a name rather
+    than being one. Merges between two confirmed proper names are the job of
+    :func:`_name_overlap_merges`, which uses name overlap as its evidence
+    instead of proximity.
+
+    Existing aliases are still skipped in both cases — those are already
+    resolved and need no proposal.
     """
     candidates: list[str] = []
     seen: set[str] = set()
-    for pat in (_HONORIFIC_RE, _THE_X_RE):
+    for pat, is_referring_expression in ((_HONORIFIC_RE, False), (_THE_X_RE, True)):
         for m in pat.finditer(text):
             descriptor = m.group(1).strip()
             key = descriptor.casefold()
             if key in seen:
                 continue
             seen.add(key)
-            # Skip descriptors that ARE already a confirmed speaker or a known
-            # alias — those need no proposal.
-            norm = casting.normalize_key(descriptor)
-            if norm in casting.characters:
-                continue
             if casting.resolve_alias(descriptor) is not None:
                 continue
+            norm = casting.normalize_key(descriptor)
+            if norm in casting.characters:
+                if not is_referring_expression:
+                    continue
+                # Name the CAST SLOT, not the spelling that happened to appear
+                # in the prose — the user is merging slots, so "The Doctor"
+                # rather than "the Doctor".
+                descriptor = casting.characters[norm].name
             candidates.append(descriptor)
     return candidates
+
+
+def _strip_title(name: str, profile) -> str:
+    """``name`` with any of the profile's title prefixes removed."""
+    titles = getattr(profile, "name_titles", ()) or ()
+    if not titles:
+        return name.strip()
+    pattern = re.compile(rf'^(?:(?i:{"|".join(titles)}))\s+')
+    stripped = pattern.sub("", name.strip(), count=1)
+    return stripped.strip() or name.strip()
+
+
+def _name_overlap_merges(
+    casting: "CastingTable",
+    profile,
+) -> list[AliasProposal]:
+    """
+    FEAT-CAST-003: propose merges BETWEEN confirmed cast slots.
+
+    ``Dr. Merrin`` and ``Merrin`` are one person holding two slots. The audio
+    was already right — ``CastingTable.get_voice`` resolves aliases — so this
+    was never a wrong-voice bug; it was a wrong-CAST bug, and it does not heal
+    on its own because both halves keep getting re-attributed every compile.
+
+    The evidence here is the NAMES, read off the cast table, not proximity in
+    the text: two slots overlap when one is the other with a title in front, or
+    when they share a surname and at most one of them carries a title. Two
+    DIFFERENT titles over the same surname (``Mr. Holmes`` / ``Mrs. Holmes``)
+    are two people and are deliberately not proposed.
+
+    The merge direction points at the slot with the most lines — the dominant
+    identity — and ties break toward the untitled form, because the title is a
+    decoration on the name rather than part of it.
+    """
+    slots: list[tuple[str, str, str, int]] = []  # (name, core, surname, lines)
+    for key, char in casting.characters.items():
+        if key in ("narrator", "narration"):
+            continue
+        core = _strip_title(char.name, profile)
+        slots.append((
+            char.name, core, core.split()[-1] if core.split() else core,
+            getattr(char, "line_count", 0) or 0,
+        ))
+
+    proposals: list[AliasProposal] = []
+    for i, (name_a, core_a, sur_a, lines_a) in enumerate(slots):
+        for name_b, core_b, sur_b, lines_b in slots[i + 1:]:
+            titled_a = core_a.casefold() != name_a.casefold()
+            titled_b = core_b.casefold() != name_b.casefold()
+            same_core = core_a.casefold() == core_b.casefold()
+            same_surname = sur_a.casefold() == sur_b.casefold()
+            if not (same_core or same_surname):
+                continue
+            if titled_a and titled_b:
+                title_a = name_a[: len(name_a) - len(core_a)].strip().casefold()
+                title_b = name_b[: len(name_b) - len(core_b)].strip().casefold()
+                if title_a != title_b:
+                    # Mr. Holmes and Mrs. Holmes are two people.
+                    continue
+
+            # Target = most lines; tie -> the untitled form.
+            if (lines_a, not titled_a) >= (lines_b, not titled_b):
+                target, candidate = name_a, name_b
+            else:
+                target, candidate = name_b, name_a
+            if candidate.casefold() == target.casefold():
+                continue
+            proposals.append(AliasProposal(
+                candidate=candidate,
+                speaker=target,
+                # A full-core match ("Dr. Merrin" vs "Merrin") is stronger
+                # evidence than a bare shared surname.
+                score=1.0 if same_core else 0.75,
+                co_occurrences=lines_a + lines_b,
+                source="name-overlap",
+            ))
+            logger.debug(
+                "FEAT-CAST-003: proposing merge %r -> %r (same_core=%s)",
+                candidate, target, same_core,
+            )
+    return proposals
 
 
 def suggest_aliases(
@@ -401,6 +515,12 @@ def suggest_aliases(
                 for norm_name, display in confirmed.items():
                     if not norm_name:
                         continue
+                    # FEAT-CAST-003: a confirmed speaker may now BE a
+                    # candidate (a "the X" slot), and every mention of it sits
+                    # inside its own neighborhood. Counting that would make it
+                    # an alias of itself and drown the real target.
+                    if norm_name == casting.normalize_key(descriptor):
+                        continue
                     mentions = neighborhood.count(norm_name)
                     if mentions:
                         co_counts[cand_key][display] += mentions
@@ -456,15 +576,31 @@ def suggest_aliases(
             source = "coref"
         if score < min_score:
             continue
+        candidate = candidate_display[cand_key]
+        if casting.normalize_key(candidate) == casting.normalize_key(best_speaker):
+            continue
         proposals.append(
             AliasProposal(
-                candidate=candidate_display[cand_key],
+                candidate=candidate,
                 speaker=best_speaker,
                 score=score,
                 co_occurrences=best_count,
                 source=source,
             )
         )
+
+    # FEAT-CAST-003: merges between two CONFIRMED slots. Evidence is name
+    # overlap read off the cast table, so this pass needs no text and fires
+    # even on a cast assembled by hand. Already-proposed candidates win — a
+    # co-occurrence proposal carries corroboration from the prose.
+    proposed = {casting.normalize_key(p.candidate) for p in proposals}
+    for merge in _name_overlap_merges(casting, profile):
+        if casting.normalize_key(merge.candidate) in proposed:
+            continue
+        if merge.score < min_score:
+            continue
+        proposals.append(merge)
+        proposed.add(casting.normalize_key(merge.candidate))
 
     proposals.sort(key=lambda p: (-p.score, p.candidate.casefold()))
     logger.info("FT-NLP-025: proposed %d aliases", len(proposals))
