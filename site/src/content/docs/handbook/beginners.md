@@ -76,7 +76,7 @@ For non-English books, pass `--lang` when creating the project:
 audiobooker new mybook.epub --lang en
 ```
 
-Only English (`en`) is built in currently, but the language profile system is extensible.
+Seven profiles ship today -- English, Spanish, French, Italian, Portuguese, German and Japanese (`en`, `es`, `fr`, `it`, `pt`, `de`, `ja`) -- and the system is extensible.
 
 ## Key concepts
 
@@ -142,7 +142,9 @@ Audiobooker infers emotions using a rule-based system that checks attribution ve
 Audiobooker writes a `render_failure_report.json` to the cache directory with full diagnostics. Completed chapters remain cached. Fix the issue and run `audiobooker render` again to resume. Use `audiobooker diagnose` to check your environment.
 
 **Q: What output formats are supported?**
-The default is M4B (AAC with chapter markers). If FFmpeg cannot embed chapters, Audiobooker falls back to M4A. You can also render individual chapters as WAV files with `--chapter N`.
+M4B, MP3, Opus, FLAC and WAV, via `--format`. The default is M4B (AAC with chapter markers), which is what most audiobook players expect.
+
+Two things worth knowing. **WAV carries no chapter markers** -- the format has nowhere to put them, so a WAV render says so rather than reporting a failure; use it when you are taking the audio into an editor. And `--split` writes one file per chapter instead of one file for the book.
 
 **Q: Can I use Docker instead of installing locally?**
 Yes. A Dockerfile is included for a consistent environment with all dependencies. Build with `docker build -t audiobooker .` and mount your working directory: `docker run --rm -v "$(pwd):/work" audiobooker audiobooker new /work/mybook.epub`.
