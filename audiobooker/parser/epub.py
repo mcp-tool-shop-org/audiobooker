@@ -125,11 +125,16 @@ class HTMLTextExtractor(HTMLParser):
     # aside+epub:type). <nav> is skipped but logged. Unclosed skip tags are
     # force-closed in get_text() so they cannot eat the rest of the document.
     SKIP_TAGS = {"script", "style", "head", "meta", "link", "nav"}
+    # HTML5 void elements never fire handle_endtag unless written self-closing.
+    # Incrementing skip_depth on <link>/<meta> leaks skip mode through </head>
+    # and deletes the body (F-dbe7d4d5). Treat them as empty — they have no
+    # narratable children.
+    VOID_SKIP_TAGS = {"meta", "link"}
 
     # Table cells: join with ", " and terminate each row with a full stop,
     # mirroring parser.docx._table_to_speakable. Minified XHTML has no
     # whitespace between <td>s, so we cannot wait for source spaces.
-    CELL_TAGS = {"td", "th"}
+    CELL_TAGS = {"td", "th", "dt", "dd"}
     _ROW_END_PUNCT = (".", "!", "?", ":", ";")
 
     # Tags that always indicate footnote content (FT-CORE-019)
@@ -228,6 +233,8 @@ class HTMLTextExtractor(HTMLParser):
     def handle_starttag(self, tag: str, attrs: list) -> None:
         tag = tag.lower()
         if tag in self.SKIP_TAGS:
+            if tag in self.VOID_SKIP_TAGS:
+                return
             if tag == "nav" and not self._logged_nav:
                 logger.info(
                     "Skipping HTML <nav> element (navigation / table of contents)."
@@ -249,6 +256,12 @@ class HTMLTextExtractor(HTMLParser):
             self._pending_newline = True
             return
 
+        if tag == "dl":
+            self._pending_cell_sep = False
+            self._row_has_cell = False
+            self._pending_newline = True
+            return
+
         kind = self._classify_footnote(tag, attrs)
         if kind is not None:
             explicit = kind == "explicit"
@@ -265,6 +278,8 @@ class HTMLTextExtractor(HTMLParser):
 
     def handle_endtag(self, tag: str) -> None:
         tag = tag.lower()
+        if tag in self.VOID_SKIP_TAGS:
+            return
         if tag in self.SKIP_TAGS:
             self.skip_depth = max(0, self.skip_depth - 1)
             return
@@ -276,7 +291,7 @@ class HTMLTextExtractor(HTMLParser):
                 self._row_has_cell = True
             return
 
-        if tag == "tr":
+        if tag in ("tr", "dl"):
             self._terminate_row()
             return
 

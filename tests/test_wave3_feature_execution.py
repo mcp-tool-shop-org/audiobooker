@@ -828,6 +828,7 @@ class TestIntegrationHappyPathString:
             'Dawn broke. "We made it," the traveler said with relief.'
         )
         project = AudiobookProject.from_string(text, title="String Pipeline")
+        project.project_path = tmp_path / "string_pipeline.audiobooker"
         project.cast("narrator", "af_heart")
         project.cast("the guard", "am_eric")
         project.cast("the traveler", "af_bella")
@@ -873,6 +874,7 @@ class TestIntegrationEPUBPath:
                 author="Tester",
                 chapters=fake_chapters,
             )
+            project.project_path = tmp_path / "epub_integration.audiobooker"
             project.cast("narrator", "af_heart", emotion="calm")
             mock_from_epub.return_value = project
 

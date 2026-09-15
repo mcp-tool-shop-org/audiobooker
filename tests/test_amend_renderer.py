@@ -376,7 +376,7 @@ class TestSampleStaleWav:
     def test_unverified_disk_fallback_warns(
         self, tmp_path: Path, monkeypatch, caplog, ffmpeg_available
     ):
-        """A WAV with no manifest entry may be reused, but never silently."""
+        """A WAV with no manifest entry must not be reused as the sample."""
         project = _make_project()
         cache_root = tmp_path / "cache"
         wav = get_chapter_wav_path(cache_root, 0)
@@ -388,20 +388,18 @@ class TestSampleStaleWav:
             "audiobooker.renderer.ffmpeg_runner.RealFFmpegRunner", lambda: runner
         )
         engine = FakeTTSEngine()
-        with caplog.at_level(logging.WARNING, logger="audiobooker.renderer"):
-            engine_mod.render_sample(
-                project,
-                from_chapter=0,
-                duration=30.0,
-                output_path=tmp_path / "sample.m4a",
-                engine=engine,
-                cache_root=cache_root,
-            )
+        engine_mod.render_sample(
+            project,
+            from_chapter=0,
+            duration=30.0,
+            output_path=tmp_path / "sample.m4a",
+            engine=engine,
+            cache_root=cache_root,
+        )
 
-        assert not engine.calls, "an unverified but present WAV should still be reused"
-        warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
-        assert any("verif" in r.getMessage().lower() for r in warnings), (
-            "the unverified fallback was logged at INFO — the user never sees it"
+        assert engine.calls, (
+            "render_sample reused a no-manifest truncated/unverified WAV "
+            "as the retail sample (F-12572710)"
         )
 
 

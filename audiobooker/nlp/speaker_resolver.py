@@ -240,7 +240,14 @@ class SpeakerResolver:
             if backend <= self.BACKEND_CONFIDENCE_FLOOR:
                 continue
             existing = mapping.get(key)
-            if existing is None or backend > existing[1]:
+            if existing is None:
+                mapping[key] = (quote.speaker, backend)
+            elif existing[0] and existing[0] != quote.speaker:
+                # Same normalized text, two speakers ('Yes.' / 'Yes!').
+                # First-writer-win at confidence 1.0 would improve
+                # attribution_quality as identity degrades (F-7feed459).
+                mapping[key] = ("", 0.0)
+            elif existing[0] == quote.speaker and backend > existing[1]:
                 mapping[key] = (quote.speaker, backend)
         return mapping
 
@@ -274,6 +281,8 @@ class SpeakerResolver:
         exact = nlp_attributions.get(text_norm)
         if exact is not None:
             speaker, backend = exact
+            if not speaker:
+                return None
             return speaker, min(1.0, backend)
 
         best_ratio = 0.0

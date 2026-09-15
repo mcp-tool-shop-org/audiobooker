@@ -1986,6 +1986,13 @@ def _render_project_impl(
         # mutating the caller's config object.
         effective_config = replace(project.config, utterance_cache=utterance_cache)
 
+    if engine is None:
+        # Hash and synthesize must share one engine. get_default_engine()
+        # without a name ignores config.tts_engine (env/default only), so a
+        # None-engine render stored WAVs under a piper digest then later
+        # CLI piper renders HIT the soundboard audio (F-9f81fbf2).
+        engine = get_default_engine(getattr(effective_config, "tts_engine", None))
+
     # Compute current hashes. The engine and the effective output profile are
     # part of the render-params key — rendering the same text with a different
     # TTS engine or a different mastering profile must not hit the cache.
@@ -2765,9 +2772,6 @@ def render_sample(
     cached_path = get_chapter_wav_path(cache_root, chapter_index)
     manifest_path = get_manifest_path(cache_root)
     manifest = load_manifest(manifest_path)
-    # Tracks whether the cache had an OPINION about this chapter. An entry that
-    # exists and failed validation is a positive REJECTION, not an absence.
-    entry_rejected = False
     if manifest is not None:
         entry = manifest.get_entry(chapter_index)
         if entry is not None:
@@ -2793,33 +2797,16 @@ def render_sample(
                     f"SAMPLE_CACHE_HIT: chapter={chapter_index} reusing {chapter_wav}"
                 )
             else:
-                entry_rejected = True
                 logger.info(
                     f"SAMPLE_CACHE_STALE: chapter={chapter_index} manifest entry "
                     f"failed validation — re-rendering instead of reusing "
                     f"{entry.wav_path!r}"
                 )
 
-    if (
-        chapter_wav is None
-        and not entry_rejected
-        and cached_path.exists()
-        and cached_path.stat().st_size > 1024
-    ):
-        # WAV on disk with NO manifest entry: nothing claims it is stale, so
-        # reuse it rather than re-rendering a whole chapter for a 3-minute
-        # sample — but say out loud that it could not be verified.
-        #
-        # The `not entry_rejected` guard is the fix: this branch used to run
-        # even when the hash check above had just REJECTED that exact file, so
-        # `audiobooker sample` re-served pre-edit audio as the retail sample.
-        chapter_wav = cached_path
-        logger.warning(
-            f"SAMPLE_CACHE_UNVERIFIED: reusing on-disk chapter WAV "
-            f"{chapter_wav} — there is no cache manifest entry for chapter "
-            f"{chapter_index}, so it could not be verified against the current "
-            f"text/casting. Run 'audiobooker render' if the sample sounds stale."
-        )
+    # Do not reuse a chapter WAV that has no size_bytes-backed manifest
+    # entry. A kill mid-sample leaves a non-empty partial at cached_path;
+    # st_size > 1024 used to serve that truncated file as the retail sample
+    # (F-12572710). Miss and re-render instead.
 
     if chapter_wav is None:
         # Render the chapter fresh into the cache location.

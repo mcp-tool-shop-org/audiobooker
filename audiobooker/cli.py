@@ -6593,6 +6593,9 @@ def cmd_batch(args) -> int:
 
     # --dry-run: show what would be processed without rendering
     dry_run = getattr(args, "dry_run", False)
+    if json_output:
+        global _QUIET
+        _QUIET = True
     if dry_run:
         _out(f"DRY RUN - {len(book_specs)} book(s) would be processed:\n")
         for i, (source, ov) in enumerate(book_specs, 1):
@@ -6610,6 +6613,27 @@ def cmd_batch(args) -> int:
         _out(f"\nFormat: {fmt or 'from config (default m4b)'}")
         _out(f"Language: {lang}")
         _out(f"Workers: {jobs}")
+        if json_output:
+            import json as json_mod
+            print(json_mod.dumps(
+                {
+                    "dry_run": True,
+                    "format": fmt or "m4b",
+                    "language": lang,
+                    "workers": jobs,
+                    "books": [
+                        {
+                            "source": str(source),
+                            "title": ov.get("title") or source.name,
+                            "project": str(_resolve_project_path(source)),
+                            "project_exists": _resolve_project_path(source).exists(),
+                        }
+                        for source, ov in book_specs
+                    ],
+                },
+                indent=2,
+                ensure_ascii=False,
+            ))
         return 0
 
     _out(f"Batch processing {len(book_specs)} book(s)...\n")
