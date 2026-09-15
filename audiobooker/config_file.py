@@ -391,13 +391,108 @@ def find_config_files(source_path: Optional[str | Path] = None) -> dict[str, Opt
 # ---------------------------------------------------------------------------
 
 
-def _map_table(raw: dict[str, Any], origin: str) -> dict[str, Any]:
+# ---------------------------------------------------------------------------
+# FEAT-UX-006: unknown-key diagnosis
+# ---------------------------------------------------------------------------
+#
+# The pre-fix behavior was NOT "zero warning" — ``_map_table`` already logged
+# one per unknown key, and ``cli.main`` calls ``logging.basicConfig(WARNING)``
+# before dispatching, so it did reach stderr on a real CLI run (measured).
+# What it could not do was tell the user what to write instead: the message
+# named the key and stopped there, so ``output_fromat`` read as "audiobooker
+# does not have that setting" rather than "you meant output_format".
+#
+# The genuinely missing pieces were the suggestion, a machine-readable report
+# (nothing could surface this in the CLI's own output — only through the
+# logging module), and any use at all of ``find_config_files``, which computes
+# exactly the provenance a user needs and had no caller outside its tests.
+
+# Keys that are real COMMAND-LINE flags but not config fields. These are the
+# dangerous ones: no spelling-distance heuristic will ever connect "acx" to
+# "output_profile", and because ``--acx`` exists the guess is natural — so the
+# user writes ``acx = true``, sees their book render, and believes it was
+# mastered to ACX when it was not.
+_CLI_ONLY_HINTS: dict[str, str] = {
+    "acx": (
+        "'acx' is a command-line flag (--acx), not a config key. "
+        "Write profile = \"acx\" instead."
+    ),
+    "jobs": (
+        "'jobs' is a command-line flag (--jobs), not a config key — it is "
+        "per-run, not per-project. Did you mean workers (compile workers)?"
+    ),
+    "resume": "'resume' is a command-line flag (--resume), not a config key.",
+    "force": "'force' is a command-line flag (--force), not a config key.",
+    "split": "'split' is a command-line flag (--split), not a config key.",
+    "cover": "'cover' is a command-line flag (--cover), not a config key.",
+    "output": (
+        "'output' is a command-line flag (--output) for the destination "
+        "path. Did you mean format (the output FORMAT)?"
+    ),
+    "engine": (
+        "'engine' is a command-line flag (--engine). The config field is "
+        "tts_engine."
+    ),
+}
+
+
+def _known_config_keys() -> set[str]:
+    """Every spelling a user may legitimately write in a config file."""
+    return set(_PASSTHROUGH_FIELDS) | set(_ALIAS_TO_FIELD) | set(_SECTION_KEYS)
+
+
+def _suggest_key(key: str) -> Optional[str]:
+    """Nearest valid config key to ``key``, or None when nothing is close."""
+    import difflib
+
+    matches = difflib.get_close_matches(key, sorted(_known_config_keys()), n=1,
+                                        cutoff=0.7)
+    if not matches:
+        return None
+    suggestion = matches[0]
+    # Report the canonical field for an alias, so the message teaches the
+    # name that appears in the documentation.
+    return _ALIAS_TO_FIELD.get(suggestion, suggestion)
+
+
+def _describe_unknown_key(key: str, origin: str) -> dict[str, Optional[str]]:
+    """Build the report entry (and the warning text) for one unknown key."""
+    suggestion = _suggest_key(key)
+    cli_hint = _CLI_ONLY_HINTS.get(key)
+    if cli_hint:
+        message = f"Ignoring unknown config key {key!r} in {origin}: {cli_hint}"
+    elif suggestion:
+        message = (
+            f"Ignoring unknown config key {key!r} in {origin} — "
+            f"did you mean {suggestion!r}?"
+        )
+    else:
+        message = (
+            f"Ignoring unknown config key {key!r} in {origin} "
+            f"(not a recognized audiobooker setting)."
+        )
+    return {
+        "key": key,
+        "origin": origin,
+        "suggestion": suggestion,
+        "message": message,
+    }
+
+
+def _map_table(
+    raw: dict[str, Any],
+    origin: str,
+    unknown_out: Optional[list[dict[str, Optional[str]]]] = None,
+) -> dict[str, Any]:
     """Map a raw config table to ProjectConfig-compatible keys + sections.
 
     * Friendly aliases (lang, format, ...) are renamed to canonical fields.
     * Canonical ProjectConfig fields pass through unchanged.
     * Known sections (book, casting, lexicon) pass through under their own key.
-    * Unknown keys are dropped with a warning.
+    * Unknown keys are dropped with a warning that now names the nearest valid
+      key (FEAT-UX-006), and are appended to ``unknown_out`` when given so a
+      caller can surface them in its own output instead of relying on the
+      logging module being configured.
     * F-CORE-2 (wave 2 amend): numeric fields are type/range-checked here
       (see ``_NUMERIC_VALIDATORS``) and raise ``ConfigFileError`` naming both
       the key and ``origin`` on a bad value, instead of letting it reach
@@ -423,18 +518,71 @@ def _map_table(raw: dict[str, Any], origin: str) -> dict[str, Any]:
                 validator(field, value, key, origin)
             mapped[field] = value
         else:
-            logger.warning(
-                "Ignoring unknown config key %r in %s "
-                "(not a recognized audiobooker setting).",
-                key,
-                origin,
-            )
+            entry = _describe_unknown_key(key, origin)
+            logger.warning("%s", entry["message"])
+            if unknown_out is not None:
+                unknown_out.append(entry)
     return mapped
 
 
 # ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
+
+
+@dataclasses.dataclass(frozen=True)
+class ConfigReport:
+    """What ``load_config`` resolved, and everything it had to ignore.
+
+    FEAT-UX-006. ``load_config`` returns only the merged values, so the two
+    things a user actually needs when a setting "isn't working" — which files
+    were read, and which keys were thrown away — existed nowhere a caller
+    could reach. ``find_config_files`` already computed the first half and
+    had no caller outside its own tests; the second half was only ever
+    emitted through the logging module.
+
+    Attributes:
+        values: The merged, ProjectConfig-compatible dict — byte-for-byte
+            what ``load_config`` returns for the same input.
+        sources: ``find_config_files`` output — project_rc / pyproject /
+            user_rc, each a path string or None.
+        unknown_keys: One entry per ignored key, each with ``key``,
+            ``origin`` (the file it came from), ``suggestion`` (nearest valid
+            key, or None) and a ready-to-print ``message``.
+    """
+
+    values: dict[str, Any]
+    sources: dict[str, Optional[str]]
+    unknown_keys: list[dict[str, Optional[str]]]
+
+    @property
+    def any_source(self) -> bool:
+        """True when at least one config file was found."""
+        return any(self.sources.values())
+
+
+def load_config_report(source_path: Optional[str | Path] = None) -> ConfigReport:
+    """``load_config`` plus provenance and a list of the keys it ignored.
+
+    Same resolution, same precedence, same pure-read guarantee. Use this
+    wherever the result is shown to a person (a ``config`` command, or a
+    warning banner before a long render); use ``load_config`` when only the
+    values matter.
+
+    Args:
+        source_path: The book source being processed (file or folder), used
+            to anchor project-local discovery. None anchors at the CWD.
+
+    Returns:
+        A :class:`ConfigReport`.
+    """
+    unknown: list[dict[str, Optional[str]]] = []
+    values = _load_config_impl(source_path, unknown_out=unknown)
+    return ConfigReport(
+        values=values,
+        sources=find_config_files(source_path),
+        unknown_keys=unknown,
+    )
 
 
 def load_config(source_path: Optional[str | Path] = None) -> dict[str, Any]:
@@ -458,6 +606,19 @@ def load_config(source_path: Optional[str | Path] = None) -> dict[str, Any]:
 
     Side effects: none. This is a pure read.
     """
+    return _load_config_impl(source_path)
+
+
+def _load_config_impl(
+    source_path: Optional[str | Path] = None,
+    *,
+    unknown_out: Optional[list[dict[str, Optional[str]]]] = None,
+) -> dict[str, Any]:
+    """Shared resolution behind ``load_config`` and ``load_config_report``.
+
+    ``unknown_out``, when given, collects one entry per ignored key across
+    every layer that was read (see ``_describe_unknown_key``).
+    """
     base = _base_dir(source_path)
 
     # --- user layer (lowest precedence) ------------------------------------
@@ -466,7 +627,9 @@ def load_config(source_path: Optional[str | Path] = None) -> dict[str, Any]:
     if user_rc is not None:
         data = _read_toml(user_rc)
         if data:
-            user_layer = _map_table(data, "user config (~/.audiobookerrc)")
+            user_layer = _map_table(
+                data, "user config (~/.audiobookerrc)", unknown_out
+            )
 
     # --- project-local layer (highest precedence) --------------------------
     # Prefer an explicit .audiobookerrc; otherwise a [tool.audiobooker] table
@@ -477,7 +640,7 @@ def load_config(source_path: Optional[str | Path] = None) -> dict[str, Any]:
     if project_rc is not None:
         data = _read_toml(project_rc)
         if data:
-            project_layer = _map_table(data, str(project_rc))
+            project_layer = _map_table(data, str(project_rc), unknown_out)
     else:
         pyproject = _find_pyproject(base)
         if pyproject is not None:
@@ -486,7 +649,7 @@ def load_config(source_path: Optional[str | Path] = None) -> dict[str, Any]:
             table = tool.get("audiobooker") if isinstance(tool, dict) else None
             if isinstance(table, dict):
                 project_layer = _map_table(
-                    table, f"{pyproject} [tool.audiobooker]"
+                    table, f"{pyproject} [tool.audiobooker]", unknown_out
                 )
 
     # --- merge: project-local wins key-by-key ------------------------------
@@ -497,6 +660,10 @@ def load_config(source_path: Optional[str | Path] = None) -> dict[str, Any]:
 
 __all__ = [
     "load_config",
+    # FEAT-UX-006: what cli.py needs for a `config` command (provenance +
+    # ignored keys with suggestions). See ConfigReport.
+    "load_config_report",
+    "ConfigReport",
     "find_config_files",
     "have_toml_support",
     "ConfigFileError",

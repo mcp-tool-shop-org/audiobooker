@@ -33,11 +33,26 @@ def chapter_text_hash(chapter: "Chapter") -> str:
     F-RENDER-B-017: Includes compiled utterance data (speaker + text + emotion)
     when available, since those directly affect the rendered audio.
     Falls back to raw_text when chapter is not yet compiled.
+
+    FEAT-PROD-003: ``intensity`` is keyed too. It was measurably missing: an
+    utterance's graded intensity picks the SSML emphasis band in
+    ``engine._emphasis_for`` (``<emphasis level="reduced">`` below 0.34,
+    ``"moderate"`` below 0.67, the preset's full level above it), so two
+    utterances differing only in intensity emit different SSML and therefore
+    different audio — while hashing to the same digest. Grading an emotion on
+    a finished book reported "Cached" for every chapter and shipped the
+    ungraded audio. ``None`` is preserved distinctly from ``0.0`` (a bare
+    emotion is not a zero-intensity one), matching ``utterance_hash``.
     """
     if chapter.utterances:
         # Hash the compiled utterance data — this is what actually gets rendered
         utterance_data = [
-            {"speaker": u.speaker, "text": u.text, "emotion": u.emotion or ""}
+            {
+                "speaker": u.speaker,
+                "text": u.text,
+                "emotion": u.emotion or "",
+                "intensity": getattr(u, "intensity", None),
+            }
             for u in chapter.utterances
         ]
         return sha256_json(utterance_data)
@@ -80,15 +95,114 @@ def utterance_hash(
     return sha256_json(obj)
 
 
-def casting_hash(casting: "CastingTable") -> str:
-    """Hash the voice assignments that affect audio output."""
+def _character_cache_record(character) -> dict:
+    """The audio-affecting fields of one casting entry.
+
+    FEAT-PROD-003: ``speed``, ``pitch_shift`` and ``emphasis`` are keyed
+    alongside voice+emotion. They are not decorative — ``utterances_to_script``
+    emits them as ``{speed:1.4} {pitch:-0.3} {emphasis:1.7}`` hints whenever a
+    casting table is passed, which is the script both the utterance-level
+    incremental path and (as of this wave) the chapter path synthesize from.
+    Leaving them out of the key meant retuning a character's delivery scored a
+    cache HIT on every chapter and re-served the old performance.
+
+    ``getattr`` defaults keep a legacy/duck-typed Character without these
+    fields hashing exactly as it did before rather than raising mid-render.
+    """
+    return {
+        "voice": character.voice,
+        "emotion": character.emotion,
+        "speed": getattr(character, "speed", 1.0),
+        "pitch_shift": getattr(character, "pitch_shift", 0.0),
+        "emphasis": getattr(character, "emphasis", 1.0),
+    }
+
+
+def _chapter_casting_keys(
+    casting: "CastingTable", chapter: "Chapter"
+) -> Optional[set[str]]:
+    """Normalized casting keys a chapter's utterances actually resolve to.
+
+    Returns None when the scope cannot be established (the chapter is not
+    compiled, so there are no speakers to read), which the caller treats as
+    "hash the whole table" — the historical, always-correct-but-coarse answer.
+
+    Alias resolution matters here: a chapter whose speaker is an alias is
+    served by the aliased Character, so that Character's entry — not a
+    non-existent one under the alias — is what must be keyed.
+    """
+    utterances = getattr(chapter, "utterances", None)
+    if not utterances:
+        return None
+
+    keys: set[str] = set()
+    for utt in utterances:
+        speaker = getattr(utt, "speaker", "") or ""
+        key = casting.normalize_key(speaker)
+        if key in casting.characters:
+            keys.add(key)
+            continue
+        alias_char = casting.resolve_alias(speaker)
+        if alias_char is not None:
+            keys.add(casting.normalize_key(alias_char.name))
+            continue
+        # Uncast speaker: it falls back to the narrator (or the fallback
+        # voice). Both of those are keyed unconditionally below, so there is
+        # nothing chapter-specific left to add — but recording the raw key
+        # keeps "this chapter contains an uncast speaker" in the digest, so
+        # CASTING that speaker later is a miss rather than a silent hit.
+        keys.add(key)
+    return keys
+
+
+def casting_hash(
+    casting: "CastingTable", chapter: Optional["Chapter"] = None
+) -> str:
+    """Hash the voice assignments that affect a render's audio output.
+
+    FEAT-OUT-001: pass ``chapter`` to scope the digest to the characters that
+    chapter actually speaks. Without it this hashes the WHOLE casting table,
+    so recasting one character invalidated every chapter in the book —
+    measured on a two-chapter book where Bob appears in one: changing only
+    Bob's voice re-synthesized both. On a 40-chapter book, fixing one
+    side character's voice cost a full re-render.
+
+    The narrator entry, the default-narrator name and ``fallback_voice_id``
+    are always included: any speaker the chapter does not have a cast entry
+    for resolves through one of them, so a change there can affect any
+    chapter. ``unknown_character_behavior`` is included for the same reason —
+    it decides WHICH of those fallbacks a missing speaker lands on.
+
+    An uncompiled chapter (or ``chapter=None``) falls back to the whole
+    table: coarse, but never wrong.
+    """
+    keys = _chapter_casting_keys(casting, chapter) if chapter is not None else None
+
+    if keys is None:
+        selected = dict(casting.characters)
+    else:
+        # Always-relevant entries: whatever an uncast speaker would resolve to.
+        always = {
+            casting.normalize_key(casting.default_narrator),
+            casting.normalize_key("narrator"),
+        }
+        selected = {
+            k: c for k, c in casting.characters.items() if k in keys or k in always
+        }
+
     obj = {
         "characters": {
-            k: {"voice": c.voice, "emotion": c.emotion}
-            for k, c in sorted(casting.characters.items())
+            k: _character_cache_record(c) for k, c in sorted(selected.items())
         },
         "fallback_voice_id": casting.fallback_voice_id,
     }
+    if keys is not None:
+        # Only present on the scoped digest, so an existing whole-table hash
+        # is unchanged by the scoping machinery itself (it still changes from
+        # the per-character fields above, which the manifest bump covers).
+        obj["default_narrator"] = casting.normalize_key(casting.default_narrator)
+        obj["unknown_character_behavior"] = casting.unknown_character_behavior
+        obj["speakers"] = sorted(keys)
     return sha256_json(obj)
 
 
@@ -191,6 +305,16 @@ def render_params_hash(
     different sample rate and loudness than 'podcast', so switching profiles
     must not re-serve the other profile's audio.
 
+    ``emotion_preset`` is keyed for exactly the same reason, and was missing.
+    It is not cosmetic and it is not dead: ``_render_project_impl`` reads it
+    off the config and hands it to ``render_chapter``, which hands it to
+    ``preprocess_ssml``, which resolves the emphasis level through
+    ``_EMOTION_EMPHASIS_PRESETS``. Measured: 'literary' pulls angry/excited/
+    happy down from "strong" to "moderate" (5 of the 9 mapped emotions differ
+    from 'neutral'), so the emitted SSML genuinely changes — yet all four
+    presets returned a byte-identical digest. Switching preset on a finished
+    book reported "Cached" for every chapter, changed nothing, and exited 0.
+
     Args:
         config: The project config.
         engine: Optional injected TTSEngine instance (or an engine name). When
@@ -211,5 +335,13 @@ def render_params_hash(
         "engine": identity["name"],
         "engine_version": identity["version"],
         "output_profile": profile,
+        "emotion_preset": getattr(config, "emotion_preset", "neutral"),
+        # FEAT-PROD-009: the utterance-level cache synthesizes one utterance
+        # per engine call and concatenates the results, where the chapter path
+        # makes a single whole-chapter call. Same text, same voices, but not
+        # the same waveform (the chapter SSML's inter-speaker <break> has no
+        # equivalent across a concat boundary). Toggling the flag must
+        # therefore miss rather than re-serve the other path's audio.
+        "utterance_cache": bool(getattr(config, "utterance_cache", False)),
     }
     return sha256_json(obj)

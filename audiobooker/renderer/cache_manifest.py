@@ -23,7 +23,20 @@ logger = logging.getLogger("audiobooker.cache")
 # Every v1 entry therefore misses on the hash comparison and re-renders once;
 # the bump additionally stops an OLDER audiobooker from trusting a v2 manifest
 # whose key schema it cannot reproduce (load_manifest refuses future versions).
-MANIFEST_VERSION = 2
+#
+# v3 (FEAT-PROD-003, phase 7): three audio-affecting inputs joined the keys.
+#   chapter_text_hash    + utterance intensity (picks the SSML emphasis band)
+#   render_params_hash   + emotion_preset (picks the emphasis MAP)
+#                        + utterance_cache (picks per-utterance vs per-chapter
+#                          synthesis, which is not the same waveform)
+#   casting_hash         + speed / pitch_shift / emphasis per character, and
+#                          per-chapter speaker scoping (FEAT-OUT-001)
+# A v2 entry was written without them, so it cannot prove its WAV matches the
+# render about to run. Every v2 entry misses once and re-renders — that cost
+# is the correct one to pay: the alternative is what shipped before this
+# bump, where switching to the 'literary' preset reported "Cached" on every
+# chapter and handed back the 'neutral' audio.
+MANIFEST_VERSION = 3
 MANIFEST_FILENAME = "render_v1.json"
 
 # FT-RENDER-P-004: the utterance-level incremental cache lives in its OWN
