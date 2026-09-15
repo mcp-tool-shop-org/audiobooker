@@ -10,6 +10,7 @@ Default is English.
 
 import logging
 import re
+import statistics
 from pathlib import Path
 from typing import Optional
 
@@ -58,6 +59,47 @@ _MAX_SCAN_LINES = 40_000
 # nothing" check is noise — a 3-heading file that yields 1 chapter is ordinary.
 _IMPLAUSIBLE_MIN_MATCHES = 5
 
+# FEAT-IN-007: sections headed by a bare numeral — "I / II / III" or
+# "1 / 2 / 3" with no heading word at all — are common in literary fiction and
+# in translated classics. No language profile can carry a pattern for them:
+# ``^\d+$`` in a profile would match every page number in every book. They are
+# therefore a language-neutral LAST-RESORT tier, scored only when no profile
+# pattern produced a candidate, and admitted only when the matches look like
+# chapters rather than pagination.
+_BARE_NUMERAL_PATTERNS = (
+    r"^([IVXLCDM]{1,7})$",
+    r"^(\d{1,3})$",
+)
+
+# Longest bare numeral we will even look at (keeps the scan near-free).
+_BARE_NUMERAL_MAX_LEN = 7
+
+# Above this many bare-numeral matches the document is paginated, not
+# chaptered — a 300-page book carries ~300 page numbers and ~30 chapters.
+_MAX_BARE_NUMERAL_SECTIONS = 60
+
+# Median words between consecutive bare numerals before they count as chapter
+# breaks. Measured against book-scale fixtures: a typeset page carries ~250-350
+# words (310 in the fixture), a bare-numeral chapter ~2600, and even a short
+# vignette section ~650. 400 sits above the page ceiling and well below the
+# shortest plausible section.
+_MIN_BARE_NUMERAL_SECTION_WORDS = 400
+
+_ROMAN_VALUES = {"I": 1, "V": 5, "X": 10, "L": 50, "C": 100, "D": 500, "M": 1000}
+
+
+def _roman_to_int(text: str) -> Optional[int]:
+    """Value of an uppercase Roman numeral, or None if it is not one."""
+    total = 0
+    previous = 0
+    for char in reversed(text):
+        value = _ROMAN_VALUES.get(char)
+        if value is None:
+            return None
+        total += -value if value < previous else value
+        previous = max(previous, value)
+    return total or None
+
 
 def _sampled_lines(lines: list[str]) -> list[tuple[int, str]]:
     """(index, line) pairs to score, covering head, tail and middle."""
@@ -71,6 +113,99 @@ def _sampled_lines(lines: list[str]) -> list[tuple[int, str]]:
         stride = max(1, (total - 2 * edge) // remaining)
         picked.update(range(edge, total - edge, stride))
     return [(i, lines[i]) for i in sorted(picked)]
+
+
+def _bare_numeral_candidate(lines: list[str], total_lines: int) -> Optional[str]:
+    """Last-resort pattern for sections headed by a bare numeral (FEAT-IN-007).
+
+    Returns the winning pattern string, or None when the bare numerals in the
+    document look like pagination (or like nothing at all) rather than chapter
+    breaks. Four guards, all of which must hold:
+
+    * the numerals form a consecutive run starting at 1 / I,
+    * there are at most ``_MAX_BARE_NUMERAL_SECTIONS`` of them,
+    * their matches are DISTRIBUTED through the document (the same spread test
+      the profile patterns get), and
+    * the median gap between them is at least
+      ``_MIN_BARE_NUMERAL_SECTION_WORDS`` words — the test that actually
+      separates a chapter break from a page number.
+    """
+    best: Optional[tuple[int, float, str]] = None
+
+    for pattern in _BARE_NUMERAL_PATTERNS:
+        rx = re.compile(pattern)
+        hits: list[tuple[int, int]] = []
+        too_many = False
+        for index, raw in enumerate(lines):
+            stripped = raw.strip()
+            # Cheap pre-filter: a bare numeral is a very short line.
+            if not stripped or len(stripped) > _BARE_NUMERAL_MAX_LEN:
+                continue
+            if not rx.match(stripped):
+                continue
+            value = int(stripped) if stripped.isdigit() else _roman_to_int(stripped)
+            if value is None:
+                continue
+            hits.append((index, value))
+            if len(hits) > _MAX_BARE_NUMERAL_SECTIONS:
+                too_many = True
+                break
+
+        if too_many:
+            logger.debug(
+                "Bare-numeral pattern %s matched more than %d lines — that is "
+                "pagination, not chapters.", pattern, _MAX_BARE_NUMERAL_SECTIONS,
+            )
+            continue
+        if len(hits) < 2:
+            continue
+
+        values = [v for _, v in hits]
+        if values != list(range(1, len(values) + 1)):
+            logger.debug(
+                "Bare-numeral pattern %s matched %d lines but they are not a "
+                "consecutive run from 1 (%s…) — not chapter numbering.",
+                pattern, len(values), values[:5],
+            )
+            continue
+
+        positions = [i for i, _ in hits]
+        spread = (positions[-1] - positions[0] + 1) / max(1, total_lines)
+        if spread < _MIN_MATCH_SPREAD:
+            continue
+
+        # Count words per line rather than joining the slices: on a 100 MB
+        # file the join would copy the whole document.
+        word_gaps = [
+            sum(len(lines[k].split()) for k in range(a + 1, b))
+            for a, b in zip(positions, positions[1:])
+        ]
+        median_gap = statistics.median(word_gaps)
+        if median_gap < _MIN_BARE_NUMERAL_SECTION_WORDS:
+            logger.debug(
+                "Bare-numeral pattern %s matched %d lines but the median gap "
+                "is only %.0f words (< %d) — those are page numbers, not "
+                "chapter headings.",
+                pattern, len(positions), median_gap,
+                _MIN_BARE_NUMERAL_SECTION_WORDS,
+            )
+            continue
+
+        score = (len(positions), spread, pattern)
+        if best is None or score[:2] > best[:2]:
+            best = score
+
+    if best is None:
+        return None
+
+    logger.warning(
+        "No chapter-heading words were found in this document, but %d "
+        "bare-numeral section headings were (pattern %s). Treating them as "
+        "chapter breaks. If they are page numbers or verse numbers, pass "
+        "--chapter-delimiter with a regex matching the real headings.",
+        best[0], best[2],
+    )
+    return best[2]
 
 
 def detect_chapter_pattern(
@@ -117,6 +252,15 @@ def detect_chapter_pattern(
 
     candidates = [p for p, c in counts.items() if c > 1]
     if not candidates:
+        # FEAT-IN-007: nothing in the profile matched. Before giving up (and
+        # narrating the whole book as one chapter), try the language-neutral
+        # bare-numeral tier — "I / II / III" and "1 / 2 / 3" section heads.
+        # It is deliberately last-resort: a bare-numeral pattern outscores
+        # every real heading pattern on any paginated document, so it must
+        # never compete with one.
+        bare = _bare_numeral_candidate(lines, total_lines)
+        if bare is not None:
+            return re.compile(bare, re.MULTILINE)
         return None
 
     def spread(pattern: str) -> float:
@@ -173,6 +317,122 @@ def is_scene_break(
     return False
 
 
+def compose_chapter_title(line: str, match: "re.Match") -> str:
+    """Build a chapter title from a heading line and its pattern match.
+
+    FEAT-IN-006. A chapter pattern's capture groups hold the chapter NUMBER
+    and (optionally) a subtitle — not the title. ``split_into_chapters`` used
+    the first capture on its own whenever there was no subtitle, so
+    ``Chapter 1`` was titled ``1``, ``Capítulo Uno`` was titled ``Uno``, and
+    the subtitle separator ``[:\\-\\.]`` swallowing the hyphen inside a
+    compound spelled-out number turned ``CHAPTER TWENTY-ONE`` into
+    ``Chapter TWENTY: ONE``.
+
+    The rule is the one a reader would apply: if the heading line carries any
+    word the pattern did NOT capture — ``Chapter``, ``Capítulo``, ``Part`` —
+    the line is already a complete, correctly-worded title, so use it
+    verbatim. That fixes all seven language profiles at once, and it stops
+    ``Capítulo Uno: El Puerto`` being re-titled in English as
+    ``Chapter Uno: El Puerto``. Only when the non-captured text is pure
+    punctuation (``# One``, ``1. The Harbour``) are the captures composed.
+
+    ``line`` must be the exact string that ``match`` was produced from — the
+    group offsets are indices into it.
+    """
+    groups = match.groups()
+    if not groups:
+        return line
+
+    # Reconstruct the parts of the heading the pattern did not capture.
+    spans = sorted(
+        (match.start(i), match.end(i))
+        for i in range(1, len(groups) + 1)
+        if match.start(i) >= 0
+    )
+    leftover_parts: list[str] = []
+    cursor = 0
+    for start, end in spans:
+        if start > cursor:
+            leftover_parts.append(line[cursor:start])
+        cursor = max(cursor, end)
+    leftover_parts.append(line[cursor:])
+    leftover = "".join(leftover_parts)
+
+    if any(ch.isalpha() for ch in leftover):
+        # "Chapter 1", "CHAPTER TWENTY-ONE", "Capítulo Uno: El Puerto" — the
+        # heading word lives outside the captures, so the line IS the title.
+        return line
+
+    number = (groups[0] or "").strip()
+    subtitle = (groups[1] or "").strip() if len(groups) >= 2 else ""
+    if number and subtitle:
+        return f"Chapter {number}: {subtitle}"
+    return subtitle or number or line
+
+
+# FEAT-IN-004: Project Gutenberg brackets the actual work with these literal
+# markers. Everything before the START line is the legal header and title
+# page; everything from the END line on is the licence. Both variants ("THE"
+# in modern files, "THIS" in older ones) are accepted.
+_PG_MARKER = "PROJECT GUTENBERG"
+_PG_START_RE = re.compile(
+    r"^[ \t]*\*\*\*[ \t]*START OF (?:THE|THIS) PROJECT GUTENBERG EBOOK\b[^\n]*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+_PG_END_RE = re.compile(
+    r"^[ \t]*\*\*\*[ \t]*END OF (?:THE|THIS) PROJECT GUTENBERG EBOOK\b[^\n]*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+# Refuse to trim down to less than this — a marker in a file that is not
+# actually a Gutenberg book must not delete the book.
+_PG_MIN_BODY_WORDS = 200
+
+
+def strip_gutenberg_boilerplate(text: str) -> str:
+    """Drop the Project Gutenberg header and licence around the real work.
+
+    FEAT-IN-004. The legal header and title page became chapter 0, and the
+    trailing ``*** END OF THE PROJECT GUTENBERG EBOOK ***`` plus the full
+    licence FUSED into the last real chapter — where ``chapters exclude``
+    cannot reach it, because it is not a chapter of its own.
+
+    This trims on PG's own literal brackets only. It is deliberately not a
+    general front/back-matter heuristic: that is a separate, larger effort.
+    Text with no PG markers is returned unchanged.
+    """
+    if _PG_MARKER not in text:
+        return text
+
+    start = 0
+    end = len(text)
+    start_match = _PG_START_RE.search(text)
+    if start_match:
+        start = start_match.end()
+    end_match = _PG_END_RE.search(text, start)
+    if end_match:
+        end = end_match.start()
+
+    if start == 0 and end == len(text):
+        return text
+
+    body = text[start:end]
+    if len(body.split()) < _PG_MIN_BODY_WORDS:
+        logger.warning(
+            "Found Project Gutenberg markers in this text, but the content "
+            "between them is only %d words — leaving the text untrimmed.",
+            len(body.split()),
+        )
+        return text
+
+    logger.info(
+        "Trimmed Project Gutenberg boilerplate: %d characters of header before "
+        "the START marker and %d characters of licence from the END marker on.",
+        start, len(text) - end,
+    )
+    return body
+
+
 def extract_frontmatter(text: str) -> tuple[dict, str]:
     """
     Extract YAML frontmatter if present.
@@ -219,6 +479,12 @@ def split_into_chapters(
     Returns:
         List of (title, content) tuples
     """
+    # FEAT-IN-004: trim Project Gutenberg's own header/licence brackets before
+    # anything looks for chapter boundaries. Done here rather than in
+    # ``parse_text`` so the raw-string entry points get it too; it is a no-op
+    # on text without the literal markers.
+    text = strip_gutenberg_boilerplate(text)
+
     if delimiter_pattern:
         try:
             pattern = re.compile(delimiter_pattern, re.MULTILINE)
@@ -259,7 +525,8 @@ def split_into_chapters(
 
     for line in lines:
         # Check if this line is a chapter delimiter
-        match = pattern.match(line.strip())
+        stripped = line.strip()
+        match = pattern.match(stripped)
 
         if match:
             matched_any = True
@@ -271,15 +538,9 @@ def split_into_chapters(
                 if content:
                     chapters.append((title, content))
 
-            # Start new chapter
-            groups = match.groups()
-            if len(groups) >= 2 and groups[1]:
-                # Pattern has chapter number and title
-                current_title = f"Chapter {groups[0]}: {groups[1]}"
-            elif len(groups) >= 1:
-                current_title = groups[0] if groups[0] else line.strip()
-            else:
-                current_title = line.strip()
+            # Start new chapter (FEAT-IN-006: the captures are the chapter
+            # NUMBER, not the title — see compose_chapter_title).
+            current_title = compose_chapter_title(stripped, match)
 
             current_content = []
         else:
@@ -575,6 +836,9 @@ def read_folder_chapters(
 
         # Frontmatter title (if any) wins over the filename-derived title.
         fm_meta, body = extract_frontmatter(content)
+        # FEAT-IN-004: a Gutenberg download dropped into a chapter folder
+        # carries the same header/licence brackets; no-op without them.
+        body = strip_gutenberg_boilerplate(body)
         title = fm_meta.get("title") or _title_from_stem(file_path.stem)
 
         # Markdown files get inline formatting unwrapped to spoken text.

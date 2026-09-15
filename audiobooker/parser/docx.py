@@ -9,6 +9,11 @@ document carries no such styled headings (common in flat exports), the parser
 falls back to the language profile's ``chapter_patterns`` matched against the
 plain paragraph text, mirroring the text/PDF parsers.
 
+Tables are read too (FEAT-IN-005). ``document.paragraphs`` does not reach
+inside table cells, so the parser walks the body element's children in
+document order and renders each ``w:tbl`` as speakable rows in the position
+the author put it.
+
 Title and author are read from the document's core properties into the
 metadata dict, matching ``parse_epub``'s return shape.
 """
@@ -20,6 +25,7 @@ from typing import Optional
 
 from audiobooker.models import Chapter
 from audiobooker.language.profile import LanguageProfile
+from audiobooker.parser.text import compose_chapter_title
 
 logger = logging.getLogger("audiobooker.parser")
 
@@ -72,11 +78,95 @@ def _heading_from_patterns(
     for pattern in patterns:
         match = pattern.match(line)
         if match:
-            groups = match.groups()
-            if len(groups) >= 2 and groups[1]:
-                return f"Chapter {groups[0]}: {groups[1].strip()}"
-            return line
+            # FEAT-IN-006: shared composer — see parser/text.py.
+            return compose_chapter_title(line, match)
     return None
+
+
+def _cell_text(cell) -> str:
+    """Flatten one table cell — including any table nested inside it."""
+    from docx.oxml.ns import qn
+    from docx.table import Table
+    from docx.text.paragraph import Paragraph
+
+    parts: list[str] = []
+    for child in cell._element.iterchildren():
+        if child.tag == qn("w:p"):
+            text = (Paragraph(child, cell).text or "").strip()
+            if text:
+                parts.append(text)
+        elif child.tag == qn("w:tbl"):
+            nested = _table_to_speakable(Table(child, cell))
+            if nested:
+                parts.append(nested)
+    return " ".join(parts).strip()
+
+
+def _table_to_speakable(table) -> str:
+    """Render a table as lines a narrator can read.
+
+    FEAT-IN-005. Each row becomes one line, cells joined by ", " and
+    terminated with a full stop so the TTS engine does not run consecutive
+    rows together. Horizontally merged cells repeat in python-docx's row view,
+    so consecutive duplicates are collapsed.
+    """
+    lines: list[str] = []
+    for row in table.rows:
+        try:
+            cells = list(row.cells)
+        except (IndexError, ValueError):  # malformed grid
+            continue
+        texts: list[str] = []
+        for cell in cells:
+            value = _cell_text(cell)
+            # A merged cell appears once per grid column it spans.
+            if value and (not texts or texts[-1] != value):
+                texts.append(value)
+        if not texts:
+            continue
+        line = ", ".join(texts)
+        if not line.endswith((".", "!", "?", ":", ";")):
+            line += "."
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def _iter_body_blocks(document):
+    """Yield the document body's paragraphs AND tables in document order.
+
+    FEAT-IN-005. ``document.paragraphs`` does not include paragraphs inside
+    table cells — those live under ``document.tables``, a separate collection
+    that is not interleaved with the body flow. Walking only ``paragraphs``
+    therefore DELETED every table: a dramatis-personae list, a timeline or an
+    appendix vanished outright, sometimes leaving a dangling "The following
+    table lists…" behind it. Walking the body element's children instead keeps
+    each table in the position the author put it.
+
+    Yields ``("paragraph", Paragraph)`` and ``("table", Table)`` pairs.
+
+    Degrades to ``document.paragraphs`` for any document object that exposes
+    no XML body — a document model without tables loses nothing by it.
+    """
+    try:
+        from docx.oxml.ns import qn
+        from docx.table import Table
+        from docx.text.paragraph import Paragraph
+
+        body = document.element.body
+    except (ImportError, AttributeError) as e:
+        logger.debug(
+            "DOCX body element unavailable (%s) — walking paragraphs only; "
+            "any tables in this document will not be read.", e,
+        )
+        for para in document.paragraphs:
+            yield "paragraph", para
+        return
+
+    for child in body.iterchildren():
+        if child.tag == qn("w:p"):
+            yield "paragraph", Paragraph(child, document)
+        elif child.tag == qn("w:tbl"):
+            yield "table", Table(child, document)
 
 
 def parse_docx(
@@ -198,7 +288,19 @@ def parse_docx(
         ))
         current_title = None
 
-    for para in document.paragraphs:
+    tables_seen = 0
+
+    for kind, block in _iter_body_blocks(document):
+        if kind == "table":
+            # FEAT-IN-005: table content is body text, in its authored
+            # position. It never starts a chapter.
+            rendered = _table_to_speakable(block)
+            if rendered:
+                tables_seen += 1
+                current_lines.append(rendered)
+            continue
+
+        para = block
         text = (para.text or "").strip()
         style_name = None
         try:
@@ -267,8 +369,8 @@ def parse_docx(
     else:
         heading_mode = "none (single-chapter fallback)"
     logger.info(
-        "Parsed DOCX '%s': %d chapter(s), profile=%s, headings=%s",
-        path.name, len(chapters), profile_code, heading_mode,
+        "Parsed DOCX '%s': %d chapter(s), profile=%s, headings=%s, tables=%d",
+        path.name, len(chapters), profile_code, heading_mode, tables_seen,
     )
 
     return metadata, chapters
