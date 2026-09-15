@@ -54,12 +54,12 @@ def _dash_dialogue_markers(profile: LanguageProfile) -> tuple[str, ...]:
 
     Profile-driven, in priority order:
 
-    1. an explicit ``dash_dialogue_markers`` field, when the profile grows one;
+    1. ``LanguageProfile.dash_dialogue_markers`` when the profile sets it;
     2. any ``dialogue_quotes`` pair whose CLOSE is a newline — that pair shape is
        already how pt.py declares "this language opens speech with a dash";
     3. the default raya markers, for languages known to use the convention.
     """
-    explicit = getattr(profile, "dash_dialogue_markers", None)
+    explicit = profile.dash_dialogue_markers
     if explicit:
         return tuple(explicit)
 
@@ -237,9 +237,12 @@ def _build_quote_patterns(
 
 
 # Inline override pattern: [Character|emotion] or [Character]
-# Name part must contain at least one letter to reject e.g. [123|sad]
+# Name part must contain at least one Unicode letter (class L / [^\W\d_])
+# to reject e.g. [123|sad] while accepting [太郎] and [Иван] (F-40078542).
+# [a-zA-Z] was an ASCII gate on a public compile feature, not a CJK-regex
+# console-safety table.
 INLINE_OVERRIDE_PATTERN = re.compile(
-    r'\[([^\]|]*[a-zA-Z][^\]|]*)(?:\|([^\]]+))?\]\s*',
+    r'\[([^\]|]*[^\W\d_][^\]|]*)(?:\|([^\]]+))?\]\s*',
 )
 
 
@@ -625,14 +628,23 @@ def detect_dialogue(
 # and the quote it tags — whitespace and punctuation only. Anything with LETTERS
 # in it is intervening prose (an action beat, another sentence, another quote's
 # body), which severs the link.
-_ATTRIB_GAP_RE = re.compile(r'^[\s,;:.!?—–…·\-]*$')
+#
+# F-fc1ac386: every code point in _DEFAULT_RAYA_MARKERS belongs in this class
+# (U+2015 HORIZONTAL BAR was missing) so a profile that declares ('―','\n')
+# cannot harvest the opener as a quote delimiter while the gap regex rejects it
+# as a separator. Profile attribution_separator particles (Japanese と/は/が/も)
+# are layered on in _attrib_gap_re — do not bake those into this English class.
+_ATTRIB_GAP_CLASS = (
+    r"\s,;:.!?…·\-" + "".join(re.escape(m) for m in _DEFAULT_RAYA_MARKERS)
+)
+_ATTRIB_GAP_RE = re.compile(rf"^[{_ATTRIB_GAP_CLASS}]*$")
 
 # Characters a profile may list in `dialogue_quotes` that must NOT be treated
 # as delimiters when measuring the gap between a quote and its attribution.
-# Both are raya-convention markers, and both appear in _ATTRIB_GAP_RE above as
-# attributive separators — a character cannot be a delimiter and a separator
-# at once. Kept next to that regex so the two stay in view of each other.
-_NON_DELIMITING_QUOTES = frozenset({"\n", "—", "–"})
+# Raya-convention markers appear in _ATTRIB_GAP_RE above as attributive
+# separators — a character cannot be a delimiter and a separator at once.
+# Kept next to that regex so the two stay in view of each other.
+_NON_DELIMITING_QUOTES = frozenset({"\n", *_DEFAULT_RAYA_MARKERS})
 
 # A sentence boundary inside the gap means the tag was already closed off: it is
 # the PREVIOUS quote's trailing tag, not this quote's leading tag. Such a tag may
@@ -678,7 +690,27 @@ def _attribution_quote_chars(profile: LanguageProfile) -> str:
     return "".join(sorted(chars))
 
 
-def _gap_is_attributive(gap: str, quote_chars: str, *, allow_quotes: bool) -> bool:
+@lru_cache(maxsize=16)
+def _attrib_gap_re(separator: str) -> re.Pattern:
+    """Gap regex: English punctuation, plus the profile's attribution_separator.
+
+    F-fc1ac386: ja ``attribution_separator`` allows と/は/が/も, which sit in
+    the after-window of ``「こんにちは」と太郎は言った。``. The letter-free
+    English class rejected that gap, so a matching said-pattern never won.
+    ``\\s+`` (the English default) is already covered by the punct class.
+    """
+    if not separator or separator in (r"\s+", r"\s*"):
+        return _ATTRIB_GAP_RE
+    return re.compile(rf"^(?:[{_ATTRIB_GAP_CLASS}]|{separator})*$")
+
+
+def _gap_is_attributive(
+    gap: str,
+    quote_chars: str,
+    *,
+    allow_quotes: bool,
+    gap_re: Optional[re.Pattern] = None,
+) -> bool:
     """
     True when ``gap`` (the text between a candidate tag and the quote) is thin
     enough that the tag can be attributing THIS quote.
@@ -694,7 +726,7 @@ def _gap_is_attributive(gap: str, quote_chars: str, *, allow_quotes: bool) -> bo
             gap = "".join(ch for ch in gap if ch not in quote_chars)
         elif any(ch in quote_chars for ch in gap):
             return False
-    return bool(_ATTRIB_GAP_RE.match(gap))
+    return bool((gap_re or _ATTRIB_GAP_RE).match(gap))
 
 
 # ---------------------------------------------------------------------------
@@ -809,6 +841,7 @@ def _collect_candidates(
     quote_chars: str,
     *,
     before: bool,
+    gap_re: Optional[re.Pattern] = None,
 ) -> list[tuple[int, int, int, int, str, str]]:
     """
     Gather attribution candidates from ONE window, scored by DISTANCE to the
@@ -833,7 +866,9 @@ def _collect_candidates(
             gap = window[:match.start()]
             distance = match.start()
 
-        if not _gap_is_attributive(gap, quote_chars, allow_quotes=before):
+        if not _gap_is_attributive(
+            gap, quote_chars, allow_quotes=before, gap_re=gap_re,
+        ):
             break
 
         # Tier 0 — directly attached to this quote.
@@ -1021,17 +1056,20 @@ def _extract_speaker(
     said_patterns = profile.build_said_patterns()
     emotion_pattern = profile.build_emotion_verb_pattern()
     quote_chars = _attribution_quote_chars(profile)
+    gap_re = _attrib_gap_re(profile.attribution_separator or "")
 
     candidates: list[tuple[int, int, int, int, str, str]] = []
     for pattern_rank, pattern in enumerate(said_patterns):
         candidates.extend(
             _collect_candidates(
-                window_after, pattern, pattern_rank, quote_chars, before=False,
+                window_after, pattern, pattern_rank, quote_chars,
+                before=False, gap_re=gap_re,
             )
         )
         candidates.extend(
             _collect_candidates(
-                window_before, pattern, pattern_rank, quote_chars, before=True,
+                window_before, pattern, pattern_rank, quote_chars,
+                before=True, gap_re=gap_re,
             )
         )
 

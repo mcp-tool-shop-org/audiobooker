@@ -497,7 +497,8 @@ class BookNLPAdapter:
         prop_per_counts: dict[str, Counter] = {}
 
         entities_path = Path(output_dir) / "book.entities"
-        if entities_path.exists():
+        entities_exist = entities_path.exists()
+        if entities_exist:
             lines = entities_path.read_text(encoding="utf-8").splitlines()
             idx_map = _header_index_map(lines[0], _ENTITIES_COLUMNS) if lines else None
             body = lines[1:] if idx_map is not None else lines
@@ -534,7 +535,10 @@ class BookNLPAdapter:
         }
 
         quotes_path = Path(output_dir) / "book.quotes"
-        if quotes_path.exists():
+        quotes_exist = quotes_path.exists()
+        quote_rows_seen = 0
+        skipped_missing_prop_per = 0
+        if quotes_exist:
             lines = quotes_path.read_text(encoding="utf-8").splitlines()
             idx_map = _header_index_map(lines[0], _QUOTES_COLUMNS) if lines else None
             body = lines[1:] if idx_map is not None else lines
@@ -549,12 +553,14 @@ class BookNLPAdapter:
                         line_num, need, len(parts), line[:80],
                     )
                     continue
+                quote_rows_seen += 1
                 quote_text = parts[idx_map["quote"]]
                 char_id = parts[idx_map["char_id"]].strip()
                 if not quote_text or not char_id or char_id.casefold() == "none":
                     continue
                 speaker = coref_to_name.get(char_id, "")
                 if not speaker:
+                    skipped_missing_prop_per += 1
                     logger.debug(
                         "Skipping quote line %d: no PROP PER name for char_id %s",
                         line_num, char_id,
@@ -568,6 +574,35 @@ class BookNLPAdapter:
                     confidence=1.0,
                 ))
                 speakers.add(speaker)
+
+        # F-503cd84c: empty quotes with success=True is only honest when the
+        # quotes TSV is present and truly empty (header-only / no rows).
+        # Missing files, or quote rows whose char_id never maps to a PROP PER
+        # name, used to look like a successful NLP pass that found nothing.
+        if not entities_exist and not quotes_exist:
+            return BookNLPResult(
+                entities=entities,
+                quotes=quotes,
+                speakers=sorted(speakers),
+                success=False,
+                error="BookNLP produced no book.entities or book.quotes",
+            )
+        if not quotes_exist:
+            return BookNLPResult(
+                entities=entities,
+                quotes=quotes,
+                speakers=sorted(speakers),
+                success=False,
+                error="BookNLP produced no book.quotes",
+            )
+        if quote_rows_seen > 0 and not quotes and skipped_missing_prop_per > 0:
+            return BookNLPResult(
+                entities=entities,
+                quotes=quotes,
+                speakers=sorted(speakers),
+                success=False,
+                error="BookNLP quotes had no PROP PER name for any char_id",
+            )
 
         return BookNLPResult(
             entities=entities,

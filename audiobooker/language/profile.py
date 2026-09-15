@@ -39,6 +39,12 @@ class LanguageProfile:
     dialogue_quotes: tuple[tuple[str, str], ...] = ()
     smart_quotes: tuple[tuple[str, str], ...] = ()
     single_quotes: tuple[tuple[str, str], ...] = ()
+    # Line-initial dash (raya) openers. Empty means derive them: first from
+    # dialogue_quotes pairs whose close is a newline, then from the ISO
+    # raya-language set in casting.dialogue. A synthetic profile that uses
+    # U+2015 HORIZONTAL BAR can set this explicitly instead of relying on
+    # getattr against a field that did not exist (F-fc1ac386).
+    dash_dialogue_markers: tuple[str, ...] = ()
 
     # Speaker attribution
     speaker_verbs: frozenset[str] = frozenset()
