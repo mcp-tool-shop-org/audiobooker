@@ -1,9 +1,12 @@
 <p align="center">
-  <a href="https://github.com/mcp-tool-shop-org/audiobooker/blob/main/README.md">English</a> | <a href="https://github.com/mcp-tool-shop-org/audiobooker/blob/main/README.zh.md">中文</a> | <a href="https://github.com/mcp-tool-shop-org/audiobooker/blob/main/README.es.md">Español</a> | <a href="https://github.com/mcp-tool-shop-org/audiobooker/blob/main/README.fr.md">Français</a> | <a href="https://github.com/mcp-tool-shop-org/audiobooker/blob/main/README.hi.md">हिन्दी</a> | <a href="https://github.com/mcp-tool-shop-org/audiobooker/blob/main/README.it.md">Italiano</a> | <a href="https://github.com/mcp-tool-shop-org/audiobooker/blob/main/README.pt-BR.md">Português (BR)</a>
+  <a href="https://github.com/mcp-tool-shop-org/audiobooker/blob/main/README.ja.md">日本語</a> | <a href="https://github.com/mcp-tool-shop-org/audiobooker/blob/main/README.zh.md">中文</a> | <a href="https://github.com/mcp-tool-shop-org/audiobooker/blob/main/README.es.md">Español</a> | <a href="https://github.com/mcp-tool-shop-org/audiobooker/blob/main/README.fr.md">Français</a> | <a href="https://github.com/mcp-tool-shop-org/audiobooker/blob/main/README.hi.md">हिन्दी</a> | <a href="https://github.com/mcp-tool-shop-org/audiobooker/blob/main/README.it.md">Italiano</a> | <a href="https://github.com/mcp-tool-shop-org/audiobooker/blob/main/README.pt-BR.md">Português (BR)</a>
 </p>
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/mcp-tool-shop-org/audiobooker/main/assets/audiobooker-logo.png" alt="Audiobooker" width="500" />
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/mcp-tool-shop-org/audiobooker/main/assets/audiobooker-logo-dark.png">
+    <img src="https://raw.githubusercontent.com/mcp-tool-shop-org/audiobooker/main/assets/audiobooker-logo.png" alt="Audiobooker" width="500" />
+  </picture>
 </p>
 
 <p align="center">
@@ -15,14 +18,14 @@
 </p>
 
 <p align="center">
-  Turn <strong>EPUB / TXT / PDF / DOCX</strong> books into professionally narrated, multi-voice audiobooks — <strong>M4B / MP3 / Opus / FLAC</strong>, with chapter markers, cover art, and <strong>ACX/Audible-ready</strong> mastering. From one command.
+  Turn <strong>EPUB / TXT / PDF / DOCX</strong> books into professionally narrated, multi-voice audiobooks — <strong>M4B / MP3 / Opus / FLAC / WAV</strong>, with chapter markers, cover art, and mastering to the <strong>ACX audio spec</strong>. From one command.
 </p>
 
 ```bash
 npx @mcptoolshop/audiobooker make mybook.epub --acx
 ```
 
-オーディオブッカーは、会話を検出し、各キャラクターに特徴的な声を与え、感情を推測し、1秒分の音声もレンダリングする前に、すべてを確認および修正できるようにします。その後、結果を仕様に合わせて最適化します。そのため、出力されるのは単なる生成された音声ではなく、提出可能なオーディオブックになります。
+オーディオブッカーは、会話を検出し、各キャラクターに異なる声を与え、感情を推測し、1秒分の音声もレンダリングする前に、すべてを確認および修正できるようにし、最後に結果をACXのオーディオ仕様に合わせて調整します。そのため、出力されるのは「完成」したオーディオブックであり、単なる生成されたオーディオではありません。
 
 ## インストール
 
@@ -38,7 +41,25 @@ uvx audiobooker --help                 # zero-install trial
 pip install "audiobooker-ai[render]"   # with the TTS voice engine
 ```
 
-**音声のレンダリング**には、[`voice-soundboard`](https://pypi.org/project/voice-soundboard/) TTSエンジン（`[render]`エクストラ）と、PATH上の**FFmpeg**が必要です（`winget install ffmpeg`・`brew install ffmpeg`・`apt install ffmpeg`）。レンダリングまでのすべての処理（解析、声優の割り当て、コンパイル、確認）は、これらがなくても実行できます。`audiobooker diagnose`を実行して、環境設定を確認してください。
+**Docker** — ffmpegはすでに含まれており、すべてのリリース時にGHCRに公開されます。
+```bash
+docker run --rm -v "$(pwd):/data" ghcr.io/mcp-tool-shop-org/audiobooker \
+  make /data/mybook.epub --acx
+```
+この1つのマウントで十分であり、`--rm`は安全です。レンダリングキャッシュは、プロジェクトファイルと一緒に、ホームディレクトリではなく保存されます。そのため、再実行すると、最初からオーディオブックを再合成するのではなく、中断したところから**再開**されます。
+
+<details>
+<summary>Container details — tags, the cache, and file ownership</summary>
+
+- `latest`、`2`、`2.1`、および正確なバージョンにタグ付けし、すべてのリリース時にGHCRにプッシュします。
+- エントリーポイントは`audiobooker`であるため、イメージ名の直後にサブコマンドを渡します。プログラム名を繰り返さないでください。
+- キャッシュは`<book-dir>/.audiobooker/cache`に保存されます。そのため、1つのバインドマウントで永続化が可能です。これを失うと、TTS処理全体を再度実行する必要があり、単に再マルチプレックスするだけでは済みません。
+- `/ext`はオプションの2番目のマウントであり、独自のTTSホイールを供給する場合にのみ使用します。
+- コンテナは、非rootユーザーID 1000として実行されます。Linuxでは、マウントされたディレクトリがそのUIDによって書き込み可能でない場合、キャッシュに書き込むことができません。`--user "$(id -u):$(id -g)"`または`chown`をディレクトリに追加してください。macOSおよびWindowsのDocker Desktopは、これを自動的に処理します。
+
+</details>
+
+**オーディオのレンダリング**には、[`voice-soundboard`](https://pypi.org/project/voice-soundboard/) TTSエンジン（`[render]`の追加機能）と、PATHにある**FFmpeg**（`winget install ffmpeg`・`brew install ffmpeg`・`apt install ffmpeg`）が必要です。解析、キャスト、コンパイル、レビューなど、レンダリングまでのすべての処理は、これらがなくても実行できます。`audiobooker diagnose`を実行して、セットアップを確認してください。
 
 <details>
 <summary>From source</summary>
@@ -71,62 +92,84 @@ audiobooker master-check mybook.m4b    # PASS/FAIL vs ACX loudness/peak/noise-fl
 ## 機能
 
 ### 入力と構造
-- **EPUB、TXT、Markdown、PDF、DOCX**、または**各章ごとのファイルのフォルダ**（Scrivener/Obsidian/連載小説）。
-- **目次に基づいたEPUBの分割** - 書籍自体の目次から章の区切りとタイトルを抽出します。
-- **DOCX**は、Wordの「見出し1/2」または「タイトル」スタイルで分割されます。**PDF**は、見出しを検出し（スキャンされたPDFに対する保護機能付き）、カスタム `--chapter-delimiter` を使用できます。
-- スマートなテキストクリーニング、Markdownに対応したストリッピング、脚注処理、および**再利用可能な発音辞書**（`pronunciation import/export`、CSV/JSON形式で、フォネームをそのまま使用可能）。
+- **EPUB、TXT、Markdown、PDF、DOCX**、または**チャプターごとのファイルのフォルダ**（Scrivener / Obsidian / シリアライズされたフィクション）。
+- **TOC駆動のEPUB分割** — 書籍自体の目次からチャプターの境界とタイトルを取得します。
+- **DOCX**は、Wordの`Heading 1/2`/`Title`スタイルで分割します。**PDF**は、見出しを検出し（スキャンされたPDFに対するガード付き）、カスタムの`--chapter-delimiter`を使用します。
+- スマートなテキストクリーニング、Markdown対応のストリッピング、脚注の処理、および**再利用可能な発音辞書**（`pronunciation import/export`、CSV / JSON、およびフォネームのパススルー）。
 
-### 声優の割り当てと属性設定
-- **複数音声合成**。説明可能な、ランク付けされた声優の**候補**を表示し、各キャラクターに対してA/Bテストを行うための**`audition`**コマンドを使用できます。
-- **インタラクティブな声優の割り当て**、性別/役割による**一括 `cast-fill`**、シリーズ全体で再利用できる**名前付きの声優プリセット**、および共同作業者向けの**CSV形式の声優シート**。
-- **会話の検出 + 話者の属性設定**（オプションで**BookNLP**の共参照を使用）、**エイリアスの自動検出**、および調整可能な**強度**、**シーンレベルのムード**、およびジャンル**プリセットパック**を使用した**感情推論**。
+### キャストとアトリビューション
+- **Multi-voice synthesis** with explainable, ranked voice **suggestions** and an **`audition`** command to A/B candidates per character.
+- **Interactive casting**, **bulk `cast-fill`** by gender/role, **named cast presets** reusable across a series, and **CSV cast sheets** for collaborators.
+- **Dialogue detection + speaker attribution** (optional **BookNLP** co-reference), **alias auto-discovery**, and **emotion inference** with adjustable **intensity**, **scene-level mood**, and genre **preset packs**.
 
 ### レンダリングと出力
-- **M4B**（章マーカー + 埋め込みカバー + シリーズメタデータ）、**MP3**、**Opus**、**FLAC**。各章ごとのエクスポート、**ポッドキャスト/RSS**フィードのエクスポート。
-- **ACX/Audibleのマスターリング** (`--acx`) + 音量、ピーク、ノイズフロアに関するPASS/FAILを報告する**`master-check`**。小売用の**`sample`**クリップも作成します。
-- 並列レンダリング、再開可能な**永続的なレンダリングキャッシュ**、動的な進行状況とETA表示、および構造化されたエラーレポート。
+- **M4B**（チャプターマーカー + 埋め込みカバー + シリーズメタデータ）、**MP3**、**Opus**、**FLAC**、**WAV**。チャプターごとのエクスポート。**ポッドキャスト/RSS**フィードのエクスポート。
+WAVにはチャプターアトムがないため、WAVレンダリングでは、チャプターのマルチプレックスに失敗したというメッセージが表示されるのではなく、そのことを明示的に示します。オーディオをエディターに渡す場合は、WAVを使用してください。
+- **ACX仕様に準拠したマスタリング**（`--acx`）+ **RMSラウドネス、ピーク、およびノイズフロア**でPASS / FAILを報告する**`master-check`**。小売用の**`sample`**クリップ。
+- 並列レンダリング、**永続的なレンダリングキャッシュ**（再開機能付き）、動的な進行状況 + ETA、および構造化されたエラーレポート。
 
 ### ワークフローとエコシステム
-- **`make`**によるワンショットパイプライン、**設定ファイル**（`.audiobookerrc` / `[tool.audiobooker]`）、**`--watch`**モード、**マニフェスト駆動型バッチ処理**、シェル補完。
-- **7つの言語プロファイル**（en/fr/de/es/ja/it/pt）、**プラグイン可能なTTSエンジン**（`--engine`、エントリーポイント - Piper/Coqui/ElevenLabsを導入可能）、ほとんどのコマンドでスクリプト化された`--json`形式での出力、構造化された終了コード。
+- **`make`**ワンショットパイプライン、**構成ファイル**（`.audiobookerrc` / `[tool.audiobooker]`）、**`--watch`**モード、**マニフェスト駆動のバッチ**、およびシェル補完。
+- **7つの言語プロファイル**（en / fr / de / es / ja / it / pt）、**プラグ可能なTTSエンジン**（`--engine`、エントリーポイント — Piper / Coqui / ElevenLabs）、ほとんどのコマンドでスクリプト可能な`--json`、および構造化された終了コード。
 
-## ACX / Audibleへの公開
+## ACXオーディオ仕様へのマスタリング
 
-オーディオブッカーは、測定可能なACX提出仕様に直接対応します。
+ACXは、正確で測定可能なオーディオターゲットを公開しています。これは、オーディオブックの世界におけるマスタリング標準に最も近いものであり、ファイルに対してどのような処理を行っても、この基準を満たす価値があります。
+
+| 要件 | ACX仕様 | `--acx`が何をするか |
+|---|---|---|
+| ラウドネス | RMSは**-23〜-18 dBFS**の間 | -20 LUFSで2パスの`loudnorm`処理を行い、これにより、この範囲内に収まります。 |
+| ピーク | **-3 dBFS以下** | 同じパスで強制されます。 |
+| ノイズフロア | **-60 dBFS以下** | 測定およびレポートされます。ただし、サイレントに「修正」されることはありません。 |
+| フォーマット | **44.1 kHz、192 kbps CBR MP3** | サンプルレートを設定します。コーデックには`--format mp3 --bitrate 192k`を追加します。 |
 
 ```bash
-audiobooker render --acx               # loudnorm -20 LUFS, -3 dBTP peak, 44.1k, 192k
-audiobooker master-check book.m4b      # PASS/FAIL: RMS [-23,-18], peak <= -3 dB, floor <= -60 dB
+audiobooker render --acx --format mp3 --bitrate 192k
+audiobooker master-check book.mp3      # PASS/FAIL against the three measured limits
 audiobooker sample --duration 180      # a mastered retail sample clip
 ```
 
-`master-check`は、測定可能な要件（音量、ピーク、ノイズフロア）を検証します。ACXには主観的/QC基準もあり、ツールでは認定できませんが、これを使用すれば、音量違反で却下されることはありません。
+上記の数値について、以下の2点に注意する必要があります。
+
+**`master-check`は、非加重RMSを測定するものであり、LUFSではありません。**これらは異なる量であり、ACXは前者に対してゲートを設定します。-20 LUFSの数値は、マスタリングパスがそれを**どのように達成するか**であり、これは`ffmpeg loudnorm`がターゲットにできる値であり、その後にチェックされるものではありません。
+
+**ノイズフロアは測定されますが、修正はされません。**これは、最も失敗しやすい要件であり、ソースオーディオから発生します。ツールがこれを静かにゲートで処理すると、確認する必要がある唯一の数値が隠されてしまいます。
+
+### AIナレーションオーディオブックが実際にどこまで行けるか
+
+仕様を満たすことは、承認されることと同じではありません。これは明確にしておく価値があります。**ACXの標準的な送信フローは、人間のナレーション用です。**2026年4月の要件リストには、許可されていないテキスト読み上げおよびAI録音が、受け入れられないものとして記載されています。したがって、AIナレーションのタイトルは、通常の送信ではなく、ACXからの事前の承認が必要です。
+
+AIによるナレーションを受け入れる販売ルートは、通常、その旨の明示とともに、AmazonのKDP（Amazonのみでの販売）を通じた**Virtual Voice**や、**Spotify Audiobooks for Authors**、**Author's Republic**、**Kobo Writing Life**などの集約サービスなどが含まれます。この分野における販売業者のポリシーは急速に変化するため、この段落を鵜呑みにせず、最新の利用規約を必ずご自身でご確認ください。
+
+したがって、`--acx`はオーディオに関するものです。販売業者がAIによるナレーションのタイトルを受け入れるかどうかは、その販売業者の判断であり、あなたが作成したファイルの特性ではありません。
 
 ## CLIコマンド
 
 | コマンド | 説明 |
 |---------|-------------|
-| `make <file>` | ワンショット：新規作成 → コンパイル → 自動声優割り当て → レンダリング |
-| `new <ファイル\ | フォルダ>` | EPUB/TXT/MD/PDF/DOCXまたはフォルダからプロジェクトを作成します。 |
+| `make <file>` | ワンショット：新規作成→コンパイル→自動キャスト→レンダリング |
+| `new <ファイル\ | フォルダ>` | EPUB/TXT/MD/PDF/DOCXファイルまたはフォルダからプロジェクトを作成します。 |
 | `from-stdin` | パイプで渡されたテキストからプロジェクトを作成します。 |
-| `cast <キャラクター> <声優>`・`cast --interactive` | 声優を割り当てます（または、話者ごとのガイド付きの声優割り当て）。 |
-| `cast-suggest`・`cast-apply --auto`・`cast-fill` | 声優候補を提案/自動適用/一括割り当てします。 |
-| `cast-preset save\ | list\ | apply\ | delete` | シリーズ全体で再利用できる声優プリセット。 |
-| `audition <char>` | 1つのキャラクターに対して、ランク付けされた候補の声優をA/Bテストします（`--render`）。 |
-| `compile` | 会話を検出し、話者の属性を設定し、感情を推論します。 |
-| `report` | 品質のコンパイル：不明なレート、最も属性が設定されていない行の上位、感情の混合。 |
-| `review-export`・`review-import <ファイル>` | 人間が編集できるレビューラウンドトリップ。 |
-| `render` | オーディオブックをレンダリングします（`--acx`、`--format`、`--split`、`--bitrate`、`--engine`、`--watch`、`--cover`、`-j N`）。 |
-| `sample`・`master-check <ファイル>` | マスターリングされた小売用サンプル・ACXコンプライアンスチェック。 |
-| `export-chapters`・`podcast` | 章のキューシート（ffmetadata/cue/json）・ポッドキャストRSSフィード。 |
-| `preview`・`batch`・`diagnose` | 音声QAクリップ・バッチ処理/`--manifest`・環境チェック。 |
-| `voices`・`chapters`・`speakers`・`info`・`status`・`cache`・`emotions`・`pronunciation`・`completion` | 検査と管理 |
+| `cast <char> <voice>` · `cast-interactive` | 音声の割り当て（または、キャラクターごとのガイダンス付きのキャスト。また、`cast -i`も同様）。 |
+| `cast-suggest` · `cast-apply --auto` · `cast-fill` | 音声の提案/自動適用/一括割り当て |
+| `cast-preset save\ | list\ | apply\ | delete` | 複数の書籍で再利用可能なキャストプリセット |
+| `cast-export` · `cast-import <file>` | キャストをJSON/CSV形式で双方向変換します。手動で編集したり、複数のエディションで再利用したりできます。 |
+| `audition <char>` | 1つのキャラクターに対するA/B評価された候補音声（`--render`） |
+| `compile` | 会話の検出、話者の属性付け、感情の推測 |
+| `report` | 品質のコンパイル：不明なレート、属性が割り当てられていない上位の行、感情の混合 |
+| `review-export` · `review-import <file>` | 人間が編集可能なレビューの双方向変換 |
+| `render` | オーディオブックをレンダリングします（`--acx`、`--format`、`--split`、`--bitrate`、`--engine`、`--watch`、`--cover`、`-j N`） |
+| `sample` · `master-check <file>` | マスターされた小売サンプル。ACXのオーディオ仕様に照らして確認します。 |
+| `export-chapters` · `podcast` | チャプターのキューシート（ffmetadata/cue/json）。ポッドキャストのRSSフィード。 |
+| `preview` · `batch` · `diagnose` | 音声QAクリップ。バッチ処理/`--manifest`。環境チェック（ボックスがレンダリングできない場合、ゼロ以外の値を返します）。 |
+| `load <file>` | 既存の`.audiobooker`プロジェクトを開きます。 |
+| `voices` · `chapters` · `speakers` · `info` · `status` · `cache` · `emotions` · `pronunciation` · `completion` | 検査と管理 |
 
-すべてのコマンドは`-h/--help`をサポートします。グローバルフラグ：`--silent`、`--debug`。**終了コード:** `0` OK、`1` ユーザーエラー、`2` ランタイムエラー、`3` 部分的な成功（バッチ処理）。
+すべてのコマンドは`-h/--help`をサポートします。グローバルフラグ：`--silent`、`--debug`。**終了コード：**`0` OK · `1` ユーザーエラー（コンパイルできない書籍、または属性付けが失敗したためレンダリングが拒否された場合を含む）· `2` ランタイム · `3` 部分（バッチ）。
 
 ## 設定
 
-フラグを再入力する代わりに、一度デフォルトを設定します。`.audiobookerrc`（TOML形式）を書籍の横に配置するか、`[tool.audiobooker]`を`pyproject.toml`に記述します。優先順位は**CLIフラグ > プロジェクト設定 > ユーザー設定 (`~/.audiobookerrc`) > デフォルト設定**です。
+フラグを毎回再指定する代わりに、デフォルト値を一度設定します。`.audiobookerrc`（TOML）を書籍の横に配置するか、`[tool.audiobooker]`を`pyproject.toml`に配置します。優先順位は、**CLIフラグ > プロジェクト設定 > ユーザー設定（`~/.audiobookerrc`）> 組み込みのデフォルト**です。
 
 ```toml
 # .audiobookerrc
@@ -139,13 +182,13 @@ booknlp_mode = "auto"
 
 ## プラグイン可能なTTSエンジン
 
-デフォルトのエンジンは`voice-soundboard`ですが、合成バックエンドはsetuptoolsのエントリーポイント（`audiobooker.tts_engines`）を介して切り替えることができます。
+デフォルトのエンジンは`voice-soundboard`ですが、setuptoolsのエントリーポイント（`audiobooker.tts_engines`）を介して合成バックエンドを切り替えることができます。
 
 ```bash
 audiobooker render --engine piper      # or set AUDIOBOOKER_ENGINE=piper
 ```
 
-プラグイン（`pip install audiobooker-piper`）が自身を登録します。フォークは必要ありません。
+プラグイン（`pip install audiobooker-piper`）は自身を登録します。フォークは必要ありません。
 
 ## Python API
 
@@ -160,7 +203,7 @@ project.render("mybook.m4b")                          # resumes from cache on re
 project.save("mybook.audiobooker")
 ```
 
-`render(...)`と`compile(...)`は、注入された`engine=`（`TTSEngine`プロトコルを実装する任意のオブジェクト）と進行状況コールバックを受け入れます。これにより、オーディオブッカーをGUIまたはサービスに組み込むことができます。
+`render(...)`と`compile(...)`は、注入された`engine=`（`TTSEngine`プロトコルを実装する任意のオブジェクト）と、進捗状況コールバックを受け入れます。オーディオブック作成ツールをGUIまたはサービスに組み込むことができます。
 
 ## アーキテクチャ
 
@@ -176,24 +219,24 @@ audiobooker/
 
 ```
 Source (EPUB/PDF/DOCX/TXT/folder) -> Parser -> Chapters -> Dialogue & Emotion ->
-Casting -> Review/Edit -> TTS (pluggable) -> cached audio -> FFmpeg master -> M4B/MP3/Opus/FLAC
+Casting -> Review/Edit -> TTS (pluggable) -> cached audio -> FFmpeg master -> M4B/MP3/Opus/FLAC/WAV
 ```
 
 ## セキュリティとデータ範囲
 
-- **ネットワーク:** なし — テレメトリー、データストレージ、認証情報の送信は行いません。書籍ファイルを読み込み、オーディオファイルとキャッシュをアウトプットディレクトリに書き出します。
-- **権限:** 入力への読み取りアクセス、出力への書き込みアクセス。オプションでFFmpegとTTSエンジンをPATHに追加。
-- [SECURITY.md](SECURITY.md) を参照してください。
+- **ネットワーク：** なし。テレメトリ、データストレージ、認証情報は一切使用しません。書籍ファイルを読み取り、オーディオとキャッシュを出力ディレクトリに書き込みます。
+- **権限：** 入力への読み取りアクセス、出力への書き込みアクセス。オプションで、FFmpegとPATHにあるTTSエンジンが必要です。
+- [SECURITY.md](SECURITY.md)を参照してください。
 
 ## スコアカード
 
 | ゲート | ステータス |
 |------|--------|
-| A. セキュリティの基本設定 | 合格 |
-| B. エラー処理 | 合格 |
-| C. 運用者向けドキュメント | 合格 |
-| D. リリース時の衛生管理 | 合格 |
-| E. ID管理 | 合格 |
+| A. セキュリティの基本 | PASS |
+| B. エラー処理 | PASS |
+| C. 運用ドキュメント | PASS |
+| D. リリースの衛生管理 | PASS |
+| E. 識別 | PASS |
 
 ## ライセンス
 
@@ -201,4 +244,4 @@ Casting -> Review/Edit -> TTS (pluggable) -> cached audio -> FFmpeg master -> M4
 
 ---
 
-<a href="https://mcp-tool-shop.github.io/">MCP Tool Shop</a> によって作成
+MCP Tool Shopによって作成されました。

@@ -1,40 +1,55 @@
 # Scorecard
 
-> Score a repo before remediation. Fill this out first, then use SHIP_GATE.md to fix.
-
 **Repo:** audiobooker
-**Date:** 2026-02-27
-**Type tags:** [pypi] [cli] [container]
+**Type tags:** [pypi] [npm] [cli] [container]
 
-## Pre-Remediation Assessment (HISTORICAL)
+## Current — measured 2026-09-14 (v2.1.1, post dogfood swarm)
 
-> **Note:** This section is historical. All items below were resolved during the v1.0.0 remediation pass. See Post-Remediation for current scores.
+`npx @mcptoolshop/shipcheck audit` — **26 checked · 0 unchecked · 11 skipped ·
+100% · all hard gates pass.**
 
-| Category | Score | Notes |
-|----------|-------|-------|
-| A. Security | 5/10 | No SECURITY.md, no threat model in README |
-| B. Error Handling | 8/10 | RenderError, RenderFailureReport, structured CLI output |
-| C. Operator Docs | 8/10 | Good README with CLI reference, CHANGELOG present |
-| D. Shipping Hygiene | 6/10 | CI exists but no coverage, no verify script, pre-1.0 version |
-| E. Identity (soft) | 10/10 | Logo, translations, landing page, metadata all present |
-| **Overall** | **37/50** | |
+| Category | Score | Evidence |
+|----------|-------|----------|
+| A. Security | 10/10 | SECURITY.md with a real supported-versions table (it named 1.0.x while 2.1.1 shipped, until this pass); threat model in README; `pip-audit` gates CI in a clean venv |
+| B. Error Handling | 10/10 | Structured `code`/`message`/`hint`/`retryable` on every raise; exit codes `0/1/2/3`; a failed compile now raises instead of returning `None` and exits 1, not 2 |
+| C. Operator Docs | 10/10 | 34/34 subcommands in the README table; `--help` accuracy **measured**, not dated — `tools/check_help_accuracy.py`, 0 documented-but-nonexistent flags |
+| D. Shipping Hygiene | 10/10 | `make verify`; version derived rather than retyped in 4 places; CI 5 jobs / 5 billable minutes; published tarballs carry CHANGELOG |
+| E. Identity (soft) | 10/10 | Logo (light + dark via `<picture>`), 7 translations, landing page, 7-page handbook, repo metadata |
+| **Overall** | **50/50** | |
 
-## Key Gaps
+### What that number does and does not mean
 
-1. No SECURITY.md — no vulnerability reporting process
-2. No coverage in CI, no verify script, no dep-audit
-3. Version still at 0.5.2 — needs promotion to 1.0.0
-4. No Security & Data Scope in README
+50/50 is a **gate** score: every hard gate has a truthful, current claim
+behind it. It is not a defect count. This repo took **160+ findings** across
+five swarm waves in one day, and several were CRITICAL — a book whose every
+chapter failed to compile reported success and exited 0; `make` destroyed
+hand-tuned casting without asking; two languages gave every line the previous
+speaker's voice. The gates did not catch any of those, because gates check
+that the claims are true, not that the code is right.
 
-## Remediation Priority
+The tests are what moved: **1468 → 1708**.
 
-| Priority | Item | Estimated effort |
-|----------|------|-----------------|
-| 1 | Create SECURITY.md + threat model in README | 5 min |
-| 2 | Add coverage + Codecov + dep-audit to CI, create Makefile | 10 min |
-| 3 | Bump version to 1.0.0 + update CHANGELOG | 3 min |
+### Three gates were passing on claims that were false
 
-## Post-Remediation
+Worth recording, because a green scorecard is exactly where this hides:
+
+- `[npm] SKIP: not an npm package` — audiobooker ships `@mcptoolshop/audiobooker`.
+  The false skip hid a real failure: the published 2.1.1 tarball had no CHANGELOG.
+- `[complex] SKIP: not complex enough for a handbook` — 34 subcommands and a
+  7-page Starlight handbook. The skip itself stands, but for a different
+  reason (C7 wants an *ops* handbook and this is a one-shot CLI); the stated
+  reason was wrong on its face.
+- `[cli] --help accurate` — evidence read "verified in CI, 2026-02-27", still
+  sitting there after two-thirds of the CLI had been added. Measured now:
+  one documented flag (`cast --speed`) did not exist.
+
+A gate whose evidence is a date decays silently. The C4 check is a script now.
+
+---
+
+## Historical — v0.5.2 → v1.0.0 remediation (2026-02-27)
+
+> Kept as a record of that pass. Superseded by the table above.
 
 | Category | Before | After |
 |----------|--------|-------|
@@ -44,3 +59,7 @@
 | D. Shipping Hygiene | 6/10 | 10/10 |
 | E. Identity (soft) | 10/10 | 10/10 |
 | **Overall** | **37/50** | **50/50** |
+
+Gaps closed in that pass: no SECURITY.md or vulnerability reporting process;
+no coverage, verify script or dep-audit in CI; version still at 0.5.2; no
+Security & Data Scope section in the README.

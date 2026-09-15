@@ -96,7 +96,7 @@ A Dockerfile is included for containerized builds. This is often the simplest wa
 docker build -t audiobooker .
 
 # Run a project inside the container
-docker run --rm -v "$(pwd):/work" audiobooker audiobooker new /work/mybook.epub
+docker run --rm -v "$(pwd):/data" ghcr.io/mcp-tool-shop-org/audiobooker new /data/mybook.epub
 ```
 
 Mount your working directory so the container can access source files and write output.

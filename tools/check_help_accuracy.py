@@ -24,8 +24,20 @@ DOC_FILES = [
 ]
 
 FLAG = re.compile(r"(?<![\w-])(--[a-z][a-z0-9-]{1,30})")
-# Flags that appear in prose about OTHER tools, not audiobooker.
-FOREIGN = {"--version-file", "--no-cache", "--build-arg", "--rm", "--env-file"}
+# Flags that appear in prose about OTHER tools, not audiobooker. The docs
+# legitimately show `docker run`, `pip install` and friends, and their flags
+# are not audiobooker's to implement.
+#
+# Keep this list HONEST: it is an exemption list on a gate, which is exactly
+# the shape that quietly stops catching things. Add a flag here only when it
+# demonstrably belongs to another program in the text where it appears —
+# never to silence a genuine miss.
+FOREIGN = {
+    # docker
+    "--rm", "--build-arg", "--env-file", "--user", "--mount", "--platform",
+    # pip / pipx / npm
+    "--version-file", "--no-cache", "--no-cache-dir", "--upgrade",
+}
 
 
 def real_flags():

@@ -5,7 +5,7 @@ sidebar:
   order: 1
 ---
 
-Audiobooker converts **EPUB, PDF, DOCX, TXT, and Markdown** books (or a folder of per-chapter files) into chaptered, multi-voice audiobooks — **M4B, MP3, Opus, or FLAC** — with dialogue detection, emotion inference, a review-before-render workflow, and ACX/Audible-ready mastering.
+Audiobooker converts **EPUB, PDF, DOCX, TXT, and Markdown** books (or a folder of per-chapter files) into chaptered, multi-voice audiobooks — **M4B, MP3, Opus, FLAC or WAV** — with dialogue detection, emotion inference, a review-before-render workflow, and mastering to the ACX audio spec.
 
 ## Requirements
 

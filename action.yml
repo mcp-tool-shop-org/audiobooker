@@ -14,11 +14,11 @@ inputs:
     required: false
     default: 'audiobook.m4b'
   format:
-    description: 'Output format: m4b | mp3 | opus | flac'
+    description: 'Output format: m4b | mp3 | opus | flac | wav'
     required: false
     default: 'm4b'
   acx:
-    description: 'Master to ACX/Audible spec (true/false)'
+    description: 'Master to the ACX audio spec — RMS -23..-18 dBFS, peak <= -3, noise floor <= -60 (true/false)'
     required: false
     default: 'false'
   lang:

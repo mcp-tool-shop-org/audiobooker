@@ -17,7 +17,7 @@
   Turn <strong>EPUB / TXT / PDF / DOCX</strong> books into professionally narrated, multi-voice audiobooks (<strong>M4B / MP3 / Opus / FLAC</strong>) — from one command.
 </p>
 
-Il s’agit du **« wrapper `npx` »** pour [`audiobooker-ai`](https://pypi.org/project/audiobooker-ai/) (Python). Il met en place un environnement Python privé lors de la première exécution, installe la version spécifiée à partir de PyPI et exécute l’interface en ligne de commande réelle : pas besoin d’utiliser `pip` manuellement, ni de modifier votre installation Python.
+Il s’agit du **`npx` wrapper** pour [`audiobooker-ai`](https://pypi.org/project/audiobooker-ai/) (Python). Il configure un environnement Python privé lors de la première exécution, installe la version spécifiée depuis PyPI et exécute la véritable interface en ligne de commande : aucune configuration manuelle `pip`, aucune modification de votre installation Python.
 
 ## Essayez-le
 
@@ -31,9 +31,9 @@ Ou installez-le globalement :
 npm install -g @mcptoolshop/audiobooker
 ```
 
-Lors de la première exécution, un environnement virtuel géré est mis en place dans le répertoire des données de votre utilisateur (`~/.local/share/audiobooker`, ou `%LOCALAPPDATA%\audiobooker` sous Windows), et `audiobooker-ai` est installé. Toutes les exécutions suivantes démarrent instantanément.
+La première exécution configure un environnement virtuel géré dans le répertoire des données de votre utilisateur (`~/.local/share/audiobooker`, ou `%LOCALAPPDATA%\audiobooker` sous Windows) et installe `audiobooker-ai`. Chaque exécution suivante démarre instantanément.
 
-**Nécessite Python 3.10+** dans le PATH (le wrapper recherche `python3` / `py`). S’il manque, le wrapper vous indique exactement comment l’installer pour votre système d’exploitation.
+**Nécessite Python 3.10+** dans le PATH (le wrapper trouve `python3` / `py`). S’il est manquant, le wrapper vous indique exactement comment l’installer pour votre système d’exploitation.
 
 ## Démarrage rapide
 
@@ -50,32 +50,33 @@ npx @mcptoolshop/audiobooker render --format m4b
 
 ## Rendu audio (synthèse vocale)
 
-L’analyse syntaxique, la sélection des voix, la compilation et le flux de travail d’examen fonctionnent immédiatement. Le **rendu audio** nécessite le moteur TTS, qui implique l’installation de dépendances plus importantes : activez-le lorsque vous serez prêt :
+L’analyse, la sélection, la compilation et le flux de travail de révision fonctionnent immédiatement. Le **rendu audio** nécessite le moteur TTS, qui entraîne l’installation de dépendances plus importantes : activez cette option lorsque vous serez prêt :
 
 ```bash
 AUDIOBOOKER_INSTALL_EXTRAS=render npx @mcptoolshop/audiobooker render
 ```
 
-Le rendu nécessite également **FFmpeg** dans le PATH pour l’assemblage des fichiers M4B/MP3 (`winget install ffmpeg` / `brew install ffmpeg` / `apt install ffmpeg`). Exécutez `audiobooker diagnose` pour vérifier votre configuration.
+Le rendu nécessite également **FFmpeg** dans le PATH pour l’assemblage M4B/MP3 (`winget install ffmpeg` / `brew install ffmpeg` / `apt install ffmpeg`). Exécutez `audiobooker diagnose` pour vérifier votre configuration.
 
-## Fonctionnalités
+## Ce qu’il fait
 
-- **Sélection de plusieurs voix** avec des suggestions de voix classées et explicables ; `audiobooker audition <character>` vous permet de tester différentes voix avant de faire votre choix.
-- **Détection des dialogues + attribution des locuteurs** (co-référence BookNLP facultative), inférence émotionnelle et lexiques de prononciation réutilisables.
-- **Relecture avant le rendu :** exportez un script modifiable, corrigez les attributions, réimportez-le : rien n’est modifié silencieusement.
-- **Mastering ACX / Audible :** `render --acx` plus `master-check` affiche PASS/FAIL pour le volume sonore, le pic et le bruit de fond.
-- **Formats :** M4B (marqueurs de chapitres + couverture intégrée + métadonnées de série), MP3, Opus, FLAC ; exportation par chapitre ; extraits d’échantillons pour la vente au détail.
+- **Sélection de plusieurs voix** avec des suggestions de voix classées et explicables ; `audiobooker audition <character>` vous permet de tester différentes voix avant de vous décider.
+- **Détection de dialogues + attribution des locuteurs** (co-référence BookNLP facultative), inférence des émotions et lexiques de prononciation réutilisables.
+- **Révision avant le rendu** : exportez un script modifiable, corrigez les attributions, réimportez : rien n’est modifié silencieusement.
+- **Mastering conforme aux spécifications ACX** : `render --acx` effectue le mastering pour atteindre la cible audio ACX : RMS entre −23 et −18 dBFS, pic à ou en dessous de −3, niveau de bruit à ou en dessous de −60 ; et `master-check` indique si les résultats sont ACCEPTABLES ou NON par rapport à ces trois limites mesurées.
+Notez que le respect des spécifications n’est pas la même chose que l’acceptation : le flux de soumission standard d’ACX concerne les narrations humaines. Consultez le [fichier README principal](https://github.com/mcp-tool-shop-org/audiobooker#where-an-ai-narrated-audiobook-can-actually-go) pour connaître les options qui acceptent les livres audio narrés par une IA.
+- **Formats** : M4B (marqueurs de chapitres + couverture intégrée + métadonnées de série), MP3, Opus, FLAC ; exportation par chapitre ; extraits d’échantillons pour la vente au détail.
 - **7 profils linguistiques** (en/fr/de/es/ja/it/pt) et un fichier de configuration par livre pour des paramètres par défaut faciles à configurer et à oublier.
 
 ## Variables d’environnement
 
 | Variable. | Effet. |
 |---|---|
-| `AUDIOBOOKER_INSTALL_EXTRAS=render` | Provisionner l’environnement virtuel géré **avec** le moteur vocal (pour le rendu). |
+| `AUDIOBOOKER_INSTALL_EXTRAS=render` | Configure l’environnement virtuel géré **avec** le moteur vocal (pour le rendu). |
 | `AUDIOBOOKER_FORCE_REINSTALL=1` | Reconstruire l’environnement géré à partir de zéro. |
 | `AUDIOBOOKER_BOOTSTRAP_ROOT=<dir>` | Remplacer l’emplacement de l’environnement virtuel géré. |
 
-## Préférez-vous utiliser pip ?
+## Préférez-vous pip ?
 
 ```bash
 pipx install audiobooker-ai            # isolated CLI install

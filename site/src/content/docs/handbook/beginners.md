@@ -147,7 +147,15 @@ M4B, MP3, Opus, FLAC and WAV, via `--format`. The default is M4B (AAC with chapt
 Two things worth knowing. **WAV carries no chapter markers** -- the format has nowhere to put them, so a WAV render says so rather than reporting a failure; use it when you are taking the audio into an editor. And `--split` writes one file per chapter instead of one file for the book.
 
 **Q: Can I use Docker instead of installing locally?**
-Yes. A Dockerfile is included for a consistent environment with all dependencies. Build with `docker build -t audiobooker .` and mount your working directory: `docker run --rm -v "$(pwd):/work" audiobooker audiobooker new /work/mybook.epub`.
+Yes, and you do not need to build it — an image is published to GHCR on every release:
+
+```bash
+docker run --rm -v "$(pwd):/data" ghcr.io/mcp-tool-shop-org/audiobooker new /data/mybook.epub
+```
+
+The image's entrypoint is `audiobooker` itself, so pass the subcommand straight after the image name rather than repeating the program name. ffmpeg is already inside.
+
+Mounting your book directory is enough to keep the render cache: it lives at `<book-dir>/.audiobooker/cache`, beside the project file rather than in a home directory, so `--rm` does not throw away work and a re-run resumes. The container runs as UID 1000 — on Linux, add `--user "$(id -u):$(id -g)"` if the mounted directory is not writable by it.
 
 **Q: How does the voice naming convention work?**
 Voice IDs follow a prefix convention: `af_` = American female, `am_` = American male, `bf_` = British female, `bm_` = British male. For example, `bm_george` is a British male voice and `af_bella` is an American female voice. Run `audiobooker voices --gender female` to filter by gender.
