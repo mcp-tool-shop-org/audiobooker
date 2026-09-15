@@ -466,7 +466,9 @@ class TestPreviewTempFile:
             def synthesize(self, **kw):
                 raise RuntimeError("no backend")
 
-        monkeypatch.setattr(engine_mod, "TTSEngine", lambda *a, **k: _Boom())
+        monkeypatch.setattr(
+            engine_mod, "get_default_engine", lambda *a, **k: _Boom()
+        )
 
         project = _project()
         with pytest.raises(RuntimeError):
@@ -487,7 +489,9 @@ class TestPreviewTempFile:
                 Path(output_path).write_bytes(b"RIFFfake")
                 return Path(output_path)
 
-        monkeypatch.setattr(engine_mod, "TTSEngine", lambda *a, **k: _Fake())
+        monkeypatch.setattr(
+            engine_mod, "get_default_engine", lambda *a, **k: _Fake()
+        )
 
         project = _project()
         out = project.preview("Hello world.", voice="af_bella")

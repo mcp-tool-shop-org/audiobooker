@@ -254,6 +254,7 @@ _FALLBACK_ERROR_CODES: tuple[tuple[type, str], ...] = (
     (IndexError, "INDEX_OUT_OF_RANGE"),
     (KeyError, "MISSING_KEY"),
     (ValueError, "INVALID_VALUE"),
+    (ImportError, "RENDER_BACKEND_UNAVAILABLE"),
     (OSError, "IO_ERROR"),
 )
 
@@ -3676,6 +3677,17 @@ def _cmd_render_once_inner(args, AudiobookProject, RenderError) -> int:
                 message=f"Render FAILED: {e}",
             )
         return 1
+
+    except ImportError as e:
+        return _refuse(
+            args,
+            code="RENDER_BACKEND_UNAVAILABLE",
+            message=(
+                "you asked to render; I could not load the TTS backend "
+                f"({e})."
+            ),
+            hint=VOICE_SOUNDBOARD_INSTALL_HINT,
+        )
 
     except Exception as e:
         _report_error(e, args)

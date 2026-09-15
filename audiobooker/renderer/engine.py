@@ -2815,6 +2815,15 @@ def render_sample(
     # (F-12572710). Miss and re-render instead.
 
     if chapter_wav is None:
+        # Occupancy of a chapter WAV without a validating manifest is not a
+        # hit (F-12572710 / F-fa847627). Name the leftover so a miss is not
+        # silent success-looking reuse.
+        if cached_path.exists():
+            logger.warning(
+                "SAMPLE_CACHE_UNVERIFIED: chapter=%s no-manifest or stale WAV "
+                "at %s is not reused — occupancy is not identity",
+                chapter_index, cached_path,
+            )
         # F-ff5a0ed1: a miss used to call render_chapter(..., cached_path)
         # straight into the identity-keyed chapter_NNNN.wav and leave the
         # ChapterCacheEntry's hashes/size_bytes untouched. Revert then

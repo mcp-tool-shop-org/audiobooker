@@ -411,14 +411,19 @@ class BookNLPAdapter:
                 skipped_chunks=skipped or len(chunks),
             )
 
-        merged.success = True
+        # Keep quotes/entities from successful chunks, but a partial BookNLP
+        # pass is not success=True (F-4497a94d / implicit-200). Resolver must
+        # not stamp nlp_used on a merge that skipped failures.
         merged.speakers = sorted(all_speakers)
         merged.skipped_chunks = skipped
         if skipped:
+            merged.success = False
             merged.error = (
                 f"{skipped} of {len(chunks)} BookNLP chunk(s) failed"
                 + (f": {last_error}" if last_error else "")
             )
+        else:
+            merged.success = True
         return merged
 
     def _run_analysis(self, text: str) -> BookNLPResult:

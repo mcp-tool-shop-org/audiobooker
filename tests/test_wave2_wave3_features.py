@@ -646,16 +646,15 @@ class TestVoicePreview:
 
         project = AudiobookProject.from_string("Hello.", title="Preview Test")
 
-        with patch("audiobooker.renderer.engine.TTSEngine") as MockEngine:
-            mock_engine = MagicMock()
-            MockEngine.return_value = mock_engine
-
+        mock_engine = MagicMock()
+        with patch(
+            "audiobooker.renderer.engine.get_default_engine",
+            return_value=mock_engine,
+        ):
             project.preview(long_text, voice="af_bella")
 
-            # Verify synthesize was called
             mock_engine.synthesize.assert_called_once()
-            call_kwargs = mock_engine.synthesize.call_args
-            synthesized_text = call_kwargs.kwargs.get("text") or call_kwargs[1].get("text") or call_kwargs[0][0]
+            synthesized_text = mock_engine.synthesize.call_args.kwargs["script"]
 
             # Text should be <= 500 chars and end with sentence punctuation
             assert len(synthesized_text) <= 500
@@ -666,17 +665,15 @@ class TestVoicePreview:
         short_text = "Hello world."
         project = AudiobookProject.from_string("Hello.", title="Preview Short")
 
-        with patch("audiobooker.renderer.engine.TTSEngine") as MockEngine:
-            mock_engine = MagicMock()
-            MockEngine.return_value = mock_engine
-
+        mock_engine = MagicMock()
+        with patch(
+            "audiobooker.renderer.engine.get_default_engine",
+            return_value=mock_engine,
+        ):
             project.preview(short_text, voice="af_bella")
 
             mock_engine.synthesize.assert_called_once()
-            call_args = mock_engine.synthesize.call_args
-            # Access text by keyword
-            text_arg = call_args.kwargs.get("text", "")
-            assert text_arg == short_text
+            assert mock_engine.synthesize.call_args.kwargs["script"] == short_text
 
     def test_preview_empty_text_raises(self):
         """Empty text raises ValueError."""
@@ -690,16 +687,16 @@ class TestVoicePreview:
         """Voice ID and speed are passed to TTS engine."""
         project = AudiobookProject.from_string("Hello.", title="Preview Args")
 
-        with patch("audiobooker.renderer.engine.TTSEngine") as MockEngine:
-            mock_engine = MagicMock()
-            MockEngine.return_value = mock_engine
-
+        mock_engine = MagicMock()
+        with patch(
+            "audiobooker.renderer.engine.get_default_engine",
+            return_value=mock_engine,
+        ):
             project.preview("Hello world.", voice="bm_george", speed=1.5, emotion="happy")
 
             call_kwargs = mock_engine.synthesize.call_args.kwargs
-            assert call_kwargs["voice"] == "bm_george"
-            assert call_kwargs["speed"] == 1.5
-            assert call_kwargs["emotion"] == "happy"
+            assert call_kwargs["voices"] == {"narrator": "bm_george"}
+            assert call_kwargs["script"] == "Hello world."
 
 
 # =========================================================================

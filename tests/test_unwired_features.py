@@ -382,11 +382,14 @@ class TestPronunciationAfterCompile:
         assert "The road was empty" not in scripts
 
     def test_add_refuses_to_rewrite_a_cast_character_name(self, tmp_path):
-        """PH-B-005: an override over a cast name must not silently un-cast."""
+        """PH-B-005 / F-f3875644: an override over a cast name must not store."""
+        from audiobooker.errors import PronunciationProtectedError
+
         p = self._book(tmp_path)
         p.cast("Siobhan", "af_bella")
-        affected = p.add_pronunciation("Siobhan", "shiv-AWN")
-        assert affected == []
+        with pytest.raises(PronunciationProtectedError):
+            p.add_pronunciation("Siobhan", "shiv-AWN")
+        assert "Siobhan" not in p.config.pronunciation_overrides
         joined = " ".join(u.text for u in p.chapters[0].utterances)
         assert "Siobhan" in joined
 

@@ -643,4 +643,6 @@ class TestPodcastCommand:
         assert code == 1
         # No feed built when there's nothing to enclose.
         assert not mock_rss.called
-        assert "no rendered chapter audio" in capsys.readouterr().out.lower()
+        captured = capsys.readouterr()
+        blob = (captured.out + captured.err).lower()
+        assert "no rendered chapter audio" in blob

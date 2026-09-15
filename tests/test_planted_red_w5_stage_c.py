@@ -320,8 +320,8 @@ def _docx_with_notes(path: Path) -> Path:
     doc_xml = contents["word/document.xml"].decode("utf-8")
     marker = "</w:p>"
     note_refs = (
-        f'<w:r><w:footnoteReference w:id="1"/></w:r>'
-        f'<w:r><w:endnoteReference w:id="1"/></w:r>'
+        '<w:r><w:footnoteReference w:id="1"/></w:r>'
+        '<w:r><w:endnoteReference w:id="1"/></w:r>'
         "</w:p>"
     )
     # Attach the references to the first body paragraph close.
