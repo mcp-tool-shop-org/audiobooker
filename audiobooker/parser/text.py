@@ -317,6 +317,35 @@ def is_scene_break(
     return False
 
 
+def format_parse_summary(
+    words_kept: int,
+    dropped_reasons: Optional[dict] = None,
+    extra: Optional[dict] = None,
+) -> str:
+    """PARSER-C one-liner: words kept vs dropped, plus optional extras.
+
+    ``dropped_reasons`` maps a short reason token to a word count (or a
+    count of items when words are not available). Zero/empty reasons are
+    omitted; if none remain the field is ``none``.
+    """
+    reasons = {
+        str(key): int(value)
+        for key, value in (dropped_reasons or {}).items()
+        if value
+    }
+    words_dropped = sum(reasons.values())
+    reason_field = ",".join(f"{k}:{v}" for k, v in reasons.items()) or "none"
+    parts = [
+        f"words_kept={int(words_kept)}",
+        f"words_dropped={words_dropped}",
+        f"dropped_reasons={reason_field}",
+    ]
+    for key, value in (extra or {}).items():
+        if value:
+            parts.append(f"{key}={int(value)}")
+    return ", ".join(parts)
+
+
 def compose_chapter_title(line: str, match: "re.Match") -> str:
     """Build a chapter title from a heading line and its pattern match.
 
@@ -373,15 +402,18 @@ def compose_chapter_title(line: str, match: "re.Match") -> str:
 # FEAT-IN-004: Project Gutenberg brackets the actual work with these literal
 # markers. Everything before the START line is the legal header and title
 # page; everything from the END line on is the licence. Both variants ("THE"
-# in modern files, "THIS" in older ones) are accepted.
-_PG_MARKER = "PROJECT GUTENBERG"
+# in modern files, "THIS" in older ones) are accepted. Older dumps spell
+# ETEXT rather than EBOOK; HTML-wrapped dumps put the marker inside a <p>.
+# The early-return needle is casefolded so title-case "Project Gutenberg"
+# still reaches the IGNORECASE regex (F-4e188049).
+_PG_MARKER = "project gutenberg"
 _PG_START_RE = re.compile(
-    r"^[ \t]*\*\*\*[ \t]*START OF (?:THE|THIS) PROJECT GUTENBERG EBOOK\b[^\n]*$",
-    re.IGNORECASE | re.MULTILINE,
+    r"\*\*\*[ \t]*START OF (?:THE|THIS) PROJECT GUTENBERG (?:EBOOK|ETEXT)\b[^\n]*",
+    re.IGNORECASE,
 )
 _PG_END_RE = re.compile(
-    r"^[ \t]*\*\*\*[ \t]*END OF (?:THE|THIS) PROJECT GUTENBERG EBOOK\b[^\n]*$",
-    re.IGNORECASE | re.MULTILINE,
+    r"\*\*\*[ \t]*END OF (?:THE|THIS) PROJECT GUTENBERG (?:EBOOK|ETEXT)\b[^\n]*",
+    re.IGNORECASE,
 )
 
 # Refuse to trim down to less than this — a marker in a file that is not
@@ -389,7 +421,7 @@ _PG_END_RE = re.compile(
 _PG_MIN_BODY_WORDS = 200
 
 
-def strip_gutenberg_boilerplate(text: str) -> str:
+def strip_gutenberg_boilerplate(text: str, *, stats: Optional[dict] = None) -> str:
     """Drop the Project Gutenberg header and licence around the real work.
 
     FEAT-IN-004. The legal header and title page became chapter 0, and the
@@ -400,35 +432,48 @@ def strip_gutenberg_boilerplate(text: str) -> str:
     This trims on PG's own literal brackets only. It is deliberately not a
     general front/back-matter heuristic: that is a separate, larger effort.
     Text with no PG markers is returned unchanged.
+
+    F-4e188049: the needle is casefolded; START/END accept EBOOK or ETEXT;
+    the marker may sit inside a simple HTML wrapper (no whole-line anchors).
+    ``_PG_MIN_BODY_WORDS`` still refuses to empty a book on a stray mention.
     """
-    if _PG_MARKER not in text:
+    if _PG_MARKER not in text.casefold():
         return text
 
     start = 0
     end = len(text)
     start_match = _PG_START_RE.search(text)
     if start_match:
-        start = start_match.end()
+        # Consume the rest of the marker line so a closing </p> is not spoken.
+        line_end = text.find("\n", start_match.end())
+        start = line_end + 1 if line_end != -1 else start_match.end()
     end_match = _PG_END_RE.search(text, start)
     if end_match:
-        end = end_match.start()
+        # Drop the whole END marker line (including an HTML wrapper).
+        line_start = text.rfind("\n", 0, end_match.start())
+        end = line_start + 1 if line_start != -1 else end_match.start()
 
     if start == 0 and end == len(text):
         return text
 
     body = text[start:end]
-    if len(body.split()) < _PG_MIN_BODY_WORDS:
+    body_words = len(body.split())
+    if body_words < _PG_MIN_BODY_WORDS:
         logger.warning(
             "Found Project Gutenberg markers in this text, but the content "
             "between them is only %d words — leaving the text untrimmed.",
-            len(body.split()),
+            body_words,
         )
         return text
 
+    dropped_words = max(0, len(text.split()) - body_words)
+    if stats is not None:
+        stats["gutenberg"] = stats.get("gutenberg", 0) + dropped_words
     logger.info(
-        "Trimmed Project Gutenberg boilerplate: %d characters of header before "
-        "the START marker and %d characters of licence from the END marker on.",
-        start, len(text) - end,
+        "Trimmed Project Gutenberg boilerplate: %d word(s) of header/licence "
+        "dropped, %d word(s) of body kept. You asked to narrate the book; "
+        "the PG wrapper is not part of it.",
+        dropped_words, body_words,
     )
     return body
 
@@ -647,6 +692,12 @@ def parse_text(
     if "title" not in metadata:
         metadata["title"] = path.stem
 
+    # FEAT-IN-004 / F-4e188049: trim PG brackets before split so the
+    # summary can report how many licence/header words were dropped.
+    # split_into_chapters also trims; a second pass is a no-op.
+    dropped: dict = {}
+    text = strip_gutenberg_boilerplate(text, stats=dropped)
+
     # Split into chapters
     chapter_data = split_into_chapters(text, chapter_delimiter, profile=profile)
 
@@ -669,13 +720,15 @@ def parse_text(
         )
         chapters.append(chapter)
 
-    # Parse-observability summary (PARSER-C).
+    # Parse-observability summary (PARSER-C / F-2f3303fb).
     profile_code = profile.code if profile is not None else "en"
     single_chapter = len(chapters) == 1 and chapters[0].title == "Chapter 1"
+    words_kept = sum(len((c.raw_text or "").split()) for c in chapters)
     logger.info(
-        "Parsed text '%s': %d chapter(s), profile=%s, headings=%s",
+        "Parsed text '%s': %d chapter(s), profile=%s, headings=%s, %s",
         path.name, len(chapters), profile_code,
         "none (single-chapter fallback)" if single_chapter else "detected",
+        format_parse_summary(words_kept, dropped),
     )
 
     return metadata, chapters
