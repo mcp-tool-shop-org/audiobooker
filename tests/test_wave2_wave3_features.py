@@ -190,13 +190,33 @@ class TestCleanTextPipeline:
     """Tests for the full clean_text pipeline."""
 
     def test_default_pipeline(self):
-        """Default pipeline applies all cleaners in order."""
-        text = "Mr. Smith said &amp; then\n42\nHello     world."
+        """Default pipeline applies all cleaners in order.
+
+        F-9f2e0c74 (second instance, same shape). Line 3 of this test used to
+        read
+
+            assert "42" not in result or "Hello" in result
+
+        "Hello" is in the input and no cleaner removes it, so the right operand
+        was unconditionally true and the assertion could not fail. It was also
+        hiding a real behaviour change in its left operand: PARSER-A-003 made
+        ``strip_page_numbers`` PRESERVE a bare standalone number (a countdown,
+        a year, a verse number is not a page marker), so ``"42" not in result``
+        has been False since that fix landed. The vacuous clause meant nobody
+        noticed the pipeline test was asserting the opposite of the unit test
+        directly above it in ``TestStripPageNumbers.test_bare_page_number``.
+
+        Both behaviours are now asserted positively, on the same input.
+        """
+        text = "Mr. Smith said &amp; then\nPage 42\n99\nHello     world."
         result = clean_text(text)
-        assert "Mister Smith" in result
-        assert "&" in result
-        assert "42" not in result or "Hello" in result
+        assert "Mister Smith" in result          # abbreviation expanded
+        assert "&" in result                     # HTML entity decoded
+        assert "&amp;" not in result
+        assert "Page 42" not in result           # prefixed page marker stripped
+        assert "99" in result                    # PARSER-A-003: bare number kept
         # whitespace normalized
+        assert "Hello world." in result
         assert "     " not in result
 
     def test_custom_cleaner_list(self):
@@ -687,29 +707,25 @@ class TestVoicePreview:
 # =========================================================================
 
 class TestPDFParser:
-    """Tests for PDF parser — skipped if pymupdf not available."""
+    """Tests for the PDF parser module.
 
-    @pytest.fixture(autouse=True)
-    def _check_pymupdf(self):
-        try:
-            import pymupdf  # noqa: F401
-            self._has_pymupdf = True
-        except ImportError:
-            try:
-                import fitz  # noqa: F401
-                self._has_pymupdf = True
-            except ImportError:
-                self._has_pymupdf = False
+    TEST-INTEGRITY. ``test_pdf_parser_import`` used to skip when pymupdf was
+    absent, and skip AGAIN — from inside a bare ``try/except ImportError`` —
+    when the import it was testing failed. It could therefore not fail in any
+    environment: no pymupdf meant a skip, and a deleted or broken
+    ``audiobooker/parser/pdf.py`` meant a skip too. It was also gated on the
+    wrong thing. ``pdf.py`` imports no pymupdf at module scope (the fitz import
+    is deferred into ``parse_pdf``'s call path) precisely so that a bare
+    install without the ``[pdf]`` extra can still import the parser package —
+    that is the contract worth asserting, and asserting it needs no pymupdf at
+    all. So the gate is gone and this now runs, and can fail, everywhere.
+    """
 
-    def test_pdf_parser_import(self):
-        """PDF parser module exists (even if pymupdf not installed)."""
-        if not self._has_pymupdf:
-            pytest.skip("pymupdf not installed")
-        # If pymupdf is available, we can try importing the parser
-        try:
-            from audiobooker.parser import pdf  # noqa: F401
-        except ImportError:
-            pytest.skip("PDF parser module not implemented yet")
+    def test_pdf_parser_module_imports_without_pymupdf(self):
+        """audiobooker.parser.pdf imports and exposes parse_pdf with no extra."""
+        from audiobooker.parser import pdf
+
+        assert callable(pdf.parse_pdf)
 
 
 # =========================================================================
@@ -1025,30 +1041,255 @@ class TestEmDashDialogue:
 # =========================================================================
 
 class TestSpanishProfile:
-    """Tests for Spanish language profile — skip if not implemented."""
+    """Tests for the Spanish language profile.
 
-    def test_spanish_profile(self):
-        """Spanish profile is available or skipped."""
-        try:
-            profile = get_profile("es")
-            assert profile.code == "es"
-            assert profile.name == "Spanish"
-            # Check for Spanish verbs
-            assert "dijo" in profile.speaker_verbs or len(profile.speaker_verbs) > 0
-        except ValueError:
-            pytest.skip("Spanish language profile not implemented yet")
+    F-9f2e0c74. This class used to be ONE test whose only substantive line was
+
+        assert "dijo" in profile.speaker_verbs or len(profile.speaker_verbs) > 0
+
+    The right operand is true for every non-empty collection, so the assertion
+    could not fail: the left operand could have been ``"xyzzy" in ...`` and the
+    test would still have been green. It reported coverage of Spanish
+    speaker-verb detection while proving nothing about it — and it proved
+    nothing about *detection* at all, only about the contents of a frozenset.
+    The whole body also sat inside ``try/except ValueError: pytest.skip``, so
+    deleting es.py would have turned it green-as-skipped rather than red.
+
+    Spanish ships (``es`` is in ``available_profiles()`` and the CI import gate
+    loads the language package), so the skip escape hatch is gone. The
+    assertions below are modelled on TestFrenchProfile — which was always the
+    honest version of this class — plus the behavioural ones the original
+    docstring claimed and never made.
+    """
+
+    def test_spanish_registered(self):
+        profile = get_profile("es")
+        assert profile.code == "es"
+        assert profile.name == "Spanish"
+
+    def test_spanish_in_available(self):
+        assert "es" in available_profiles()
+
+    def test_spanish_speaker_verbs(self):
+        """Spanish profile has Spanish speech verbs (the F-9f2e0c74 assertion,
+        with the tautological right operand removed)."""
+        profile = get_profile("es")
+        assert "dijo" in profile.speaker_verbs
+        assert "preguntó" in profile.speaker_verbs
+        assert "respondió" in profile.speaker_verbs
+        assert "susurró" in profile.speaker_verbs
+
+    def test_spanish_emotion_hints(self):
+        """Spanish emotion hints map verbs to emotions."""
+        profile = get_profile("es")
+        assert profile.emotion_hints["susurró"] == "whisper"
+        assert profile.emotion_hints["gritó"] == "angry"
+        assert profile.emotion_hints["rió"] == "happy"
+
+    def test_spanish_speaker_blacklist(self):
+        """Spanish pronouns and manner adverbs are blacklisted."""
+        profile = get_profile("es")
+        assert "él" in profile.speaker_blacklist
+        assert "ella" in profile.speaker_blacklist
+        assert "suavemente" in profile.speaker_blacklist
+
+    def test_spanish_chapter_patterns(self):
+        """A Spanish chapter heading matches one of the profile's patterns.
+
+        Asserted by MATCHING, not by substring-searching the pattern source:
+        es.py writes its heading word as ``Cap\\u00edtulo`` inside a raw string,
+        so ``"Capítulo" in pattern`` is False even though the compiled regex
+        matches the real heading. (TestFrenchProfile's equivalent passes only
+        because "Chapitre" happens to need no escape.)
+        """
+        import re
+        profile = get_profile("es")
+        assert any(
+            re.match(p, "Capítulo 1: El principio")
+            for p in profile.chapter_patterns
+        )
+        assert any(
+            re.match(p, "CAPÍTULO II") for p in profile.chapter_patterns
+        )
+
+    def test_spanish_dialogue_quotes(self):
+        """Spanish declares guillemets and the line-leading raya."""
+        profile = get_profile("es")
+        opens = [pair[0] for pair in profile.dialogue_quotes]
+        assert "«" in opens                       # guillemets
+        assert "—" in opens                       # raya (em dash)
+        # The raya pair is line-terminated, which is how a profile declares
+        # "this language opens speech with a dash" (see _dash_dialogue_markers).
+        assert ("—", "\n") in profile.dialogue_quotes
+
+    # -- Behaviour: the speaker-verb DETECTION the class name promises --------
+
+    def test_spanish_speaker_verb_attributes_guillemet_dialogue(self):
+        """'dijo María' after guillemet dialogue attributes to María.
+
+        This is the assertion F-9f2e0c74 should always have been: it fails if
+        "dijo" leaves ``speaker_verbs``, if the Spanish name fragment stops
+        matching, or if guillemets stop being detected as dialogue.
+        """
+        from audiobooker.casting.dialogue import (
+            detect_dialogue,
+            extract_speaker_from_context,
+        )
+        profile = get_profile("es")
+        text = "«Ven aquí» dijo María."
+        content, _is_dlg, start, end = next(
+            s for s in detect_dialogue(text, profile=profile) if s[1]
+        )
+        assert content == "Ven aquí"
+        speaker, emotion = extract_speaker_from_context(
+            text, start, end, CastingTable(), profile=profile,
+        )
+        assert speaker == "María"
+        assert emotion is None
+
+    def test_spanish_speaker_verb_attributes_name_first(self):
+        """'María dijo' (name before verb) attributes too."""
+        from audiobooker.casting.dialogue import (
+            detect_dialogue,
+            extract_speaker_from_context,
+        )
+        profile = get_profile("es")
+        text = '"Ven aquí" María dijo.'
+        _content, _is_dlg, start, end = next(
+            s for s in detect_dialogue(text, profile=profile) if s[1]
+        )
+        speaker, _emotion = extract_speaker_from_context(
+            text, start, end, CastingTable(), profile=profile,
+        )
+        assert speaker == "María"
+
+    def test_spanish_emotion_verb_sets_emotion_and_accented_name(self):
+        """'gritó Muñoz' yields both the angry hint and the accented name.
+
+        The name carries ñ, so this also guards the profile's own
+        ``name_fragment`` Unicode range: the default ASCII ``[A-Z][a-z]+``
+        would stop at "Mu".
+        """
+        from audiobooker.casting.dialogue import (
+            detect_dialogue,
+            extract_speaker_from_context,
+        )
+        profile = get_profile("es")
+        text = '"Ven aquí" gritó Muñoz.'
+        _content, _is_dlg, start, end = next(
+            s for s in detect_dialogue(text, profile=profile) if s[1]
+        )
+        speaker, emotion = extract_speaker_from_context(
+            text, start, end, CastingTable(), profile=profile,
+        )
+        assert speaker == "Muñoz"
+        assert emotion == "angry"
+
+    def test_spanish_pronoun_is_not_attributed_as_a_speaker(self):
+        """'dijo ella' must NOT cast a character called "ella".
+
+        Proves ``speaker_blacklist`` is enforced, not merely populated.
+        """
+        from audiobooker.casting.dialogue import (
+            detect_dialogue,
+            extract_speaker_from_context,
+        )
+        profile = get_profile("es")
+        text = '"Ven aquí" dijo ella.'
+        _content, _is_dlg, start, end = next(
+            s for s in detect_dialogue(text, profile=profile) if s[1]
+        )
+        speaker, _emotion = extract_speaker_from_context(
+            text, start, end, CastingTable(), profile=profile,
+        )
+        assert speaker is None
+
+    @pytest.mark.xfail(
+        strict=True,
+        reason=(
+            "F-9f2e0c74-A (open defect, dialogue.py — NOT owned by the test "
+            "domain). Attribution never fires on the raya form that modern "
+            "Spanish fiction uses almost exclusively. es.py declares "
+            "('—', '\\n') in dialogue_quotes, so _attribution_quote_chars() "
+            "puts — in the quote-character set, and _gap_is_attributive(..., "
+            "allow_quotes=False) then rejects any after-window candidate whose "
+            "gap contains the attributive raya of '—dijo María'. "
+            "_ATTRIB_GAP_RE explicitly whitelists — and – as attributive "
+            "separators, so the two mechanisms contradict each other. fr.py and "
+            "it.py are unaffected only because they never declare the pair and "
+            "fall back to _RAYA_LANGUAGES; pt.py declares it and is broken the "
+            "same way. Fix: exclude the raya markers from "
+            "_attribution_quote_chars the way '\\n' already is. Remove this "
+            "xfail with that fix — strict=True makes it fail loudly on XPASS."
+        ),
+    )
+    def test_spanish_raya_dialogue_attributes_speaker(self):
+        """—Ven aquí —dijo María. should attribute to María.
+
+        Today it returns None, and compile_chapter's turn-tracking then fills
+        the hole with the PREVIOUS line's speaker, so a raya-set Spanish book
+        renders every character's lines one voice out of step — silently, with
+        no unknown-rate warning past the first line.
+        """
+        from audiobooker.casting.dialogue import (
+            detect_dialogue,
+            extract_speaker_from_context,
+        )
+        profile = get_profile("es")
+        text = "—Ven aquí —dijo María.\n"
+        _content, _is_dlg, start, end = next(
+            s for s in detect_dialogue(text, profile=profile) if s[1]
+        )
+        speaker, _emotion = extract_speaker_from_context(
+            text, start, end, CastingTable(), profile=profile,
+        )
+        assert speaker == "María"
 
 
 class TestJapaneseProfile:
-    """Tests for Japanese language profile — skip if not implemented."""
+    """Tests for the Japanese language profile.
 
-    def test_japanese_profile(self):
-        """Japanese profile is available or skipped."""
-        try:
-            profile = get_profile("ja")
-            assert profile.code == "ja"
-        except ValueError:
-            pytest.skip("Japanese language profile not implemented yet")
+    The original single test asserted only ``get_profile("ja").code == "ja"``,
+    which is true by construction — ``register_profile`` keys the registry on
+    ``profile.code``, so the lookup cannot return a profile with a different
+    code. Like the Spanish one it was also wrapped in ``except ValueError:
+    pytest.skip``, so a deleted ja.py would have read as a skip.
+    """
+
+    def test_japanese_registered(self):
+        profile = get_profile("ja")
+        assert profile.code == "ja"
+        assert profile.name == "Japanese"
+
+    def test_japanese_in_available(self):
+        assert "ja" in available_profiles()
+
+    def test_japanese_corner_brackets(self):
+        """Japanese uses corner brackets as its primary dialogue quotes."""
+        profile = get_profile("ja")
+        opens = [pair[0] for pair in profile.dialogue_quotes]
+        assert "「" in opens
+
+    def test_japanese_speaker_verbs(self):
+        """Japanese profile has Japanese speech verbs."""
+        profile = get_profile("ja")
+        assert "言った" in profile.speaker_verbs      # itta (said)
+        assert "尋ねた" in profile.speaker_verbs      # tazuneta (asked)
+        assert "ささやいた" in profile.speaker_verbs  # sasayaita
+
+    def test_japanese_chapter_patterns(self):
+        """A 第N章 heading matches one of the profile's patterns.
+
+        Matched, not substring-searched, for the same reason as the Spanish
+        case: ja.py writes the heading characters as ``\\u7b2c``/``\\u7ae0``
+        escapes inside raw strings.
+        """
+        import re
+        profile = get_profile("ja")
+        assert any(
+            re.match(p, "第一章 はじまり")
+            for p in profile.chapter_patterns
+        )
 
 
 # =========================================================================

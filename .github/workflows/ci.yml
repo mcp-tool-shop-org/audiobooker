@@ -96,9 +96,26 @@ jobs:
           print('All imports OK')
           "
 
+      # TEST-A-004: the `--ignore=tests/test_e2e_smoke.py` that used to sit on
+      # this line is gone. Four of that file's six tests are pure
+      # parse/cast/compile/save-load — no TTS, no ffmpeg, no network — and they
+      # hold the only assertions in the suite about the golden book's parsed
+      # title, author and chapter titles, and about the inline [Sarah|worried]
+      # override surviving compile. They were excluded only because --ignore
+      # works on FILES and they shared one with two real-binary tests. Those
+      # two now live in their own class and self-skip here (voice-soundboard
+      # and ffmpeg are not installed on the runner); the other four run.
+      #
+      # Cost: no new job, no new step, no trigger change — so the measured
+      # 5 billable min/push in the header block above is unchanged. GitHub
+      # bills per JOB rounded UP to the minute and these four tests take
+      # <0.3s locally, which cannot move a rounded-up minute. Re-measure from
+      # the first clean all-success run after this merges if you want the
+      # receipt:
+      #   gh api repos/mcp-tool-shop-org/audiobooker/actions/runs/<id>/jobs
       - name: Run tests with coverage
         run: |
-          pytest tests/ -v --tb=short --ignore=tests/test_e2e_smoke.py \
+          pytest tests/ -v --tb=short \
             --cov=audiobooker --cov-report=xml --cov-report=term-missing
 
       - name: Test CLI

@@ -1,13 +1,37 @@
 """
-End-to-end smoke test for audiobooker.
+End-to-end smoke test for audiobooker, against the golden book fixture.
 
-This test verifies the full pipeline:
-1. Parse source file
-2. Compile to utterances
-3. Render via voice-soundboard
-4. Assemble M4B with ffmpeg
+Two tiers, deliberately separated:
 
-Skipped automatically if dependencies are missing.
+``TestEndToEndSmoke``     parse -> cast -> compile -> save/load. No TTS, no
+                          ffmpeg, no network. Runs in EVERY environment,
+                          including CI.
+``TestEndToEndRealAudio`` render through the real voice-soundboard engine and
+                          master a real M4B with the real ffmpeg binary. Skips
+                          where those are absent, which is the point of it:
+                          its value is that it uses the real things.
+
+TEST-A-004. This file used to run in NO environment at all:
+
+  * every test in it was skipped locally (no ffmpeg, no voice-soundboard);
+  * ``ci.yml`` passed ``--ignore=tests/test_e2e_smoke.py`` to pytest;
+  * the only Makefile target that included it, ``test-full``, was invoked by
+    no workflow and no other target.
+
+The two heavy tests genuinely need binaries CI does not have. The other four
+need nothing at all — they were excluded only because ``--ignore`` works on
+files and they happened to share a file with the heavy two. Those four hold the
+ONLY assertions in the suite about the golden book's parsed metadata (title,
+author, chapter count, chapter titles) and about the inline ``[Sarah|worried]``
+override surviving compile, so the gap they left was real. The file-level
+``--ignore`` is gone from ci.yml and from the Makefile, and the tier split
+above is what keeps the heavy pair from dragging the cheap four back out.
+
+Note this is NOT the only proof the render pipeline is wired:
+``tests/test_smoke_render_pipeline.py`` already drives
+parse -> compile -> render_chapter -> render_project -> assemble through
+FakeTTSEngine and FakeAssembler, and has always run in CI. What was missing was
+the parse/compile/persist half above, and the real-binary half below.
 """
 
 import logging
@@ -15,6 +39,8 @@ import pytest
 import subprocess
 import tempfile
 from pathlib import Path
+
+from tests.conftest import GOLDEN_BOOK_PATH
 
 # Use a module-specific logger instead of configuring the root logger,
 # which would pollute other tests' logging state.
@@ -33,7 +59,15 @@ def has_voice_soundboard() -> bool:
 
 
 def has_ffmpeg() -> bool:
-    """Check if ffmpeg is available."""
+    """Check if a working ffmpeg binary is on PATH.
+
+    Catches OSError (missing binary, permission denied, exec format error) and
+    SubprocessError (the 5s timeout) rather than FileNotFoundError alone. This
+    runs at IMPORT time to build the skip markers below, so an unhandled
+    exception here would abort collection of the whole session rather than skip
+    one test — a cheap thing to get wrong now that the module is no longer
+    ``--ignore``d out of every run.
+    """
     try:
         result = subprocess.run(
             ["ffmpeg", "-version"],
@@ -42,26 +76,28 @@ def has_ffmpeg() -> bool:
             timeout=5,
         )
         return result.returncode == 0
-    except FileNotFoundError:
+    except (OSError, subprocess.SubprocessError) as exc:
+        logger.info("ffmpeg not available: %s", exc)
         return False
 
 
-# Skip markers
+# Skip markers — applied ONLY to the real-audio tier below.
 requires_voice_soundboard = pytest.mark.skipif(
     not has_voice_soundboard(),
-    reason="voice-soundboard not installed",
+    reason="voice-soundboard not installed (optional [render] extra)",
 )
 requires_ffmpeg = pytest.mark.skipif(
     not has_ffmpeg(),
-    reason="ffmpeg not installed",
+    reason="ffmpeg binary not on PATH",
 )
 
 
-from tests.conftest import GOLDEN_BOOK_PATH
-
-
 class TestEndToEndSmoke:
-    """End-to-end smoke tests."""
+    """Dependency-free end-to-end: parse -> cast -> compile -> save/load.
+
+    Nothing in this class is skippable. It runs on every machine and on every
+    CI matrix cell.
+    """
 
     def test_golden_book_exists(self):
         """Verify golden book fixture exists."""
@@ -127,6 +163,23 @@ class TestEndToEndSmoke:
 
             # Verify utterances survived roundtrip
             assert len(loaded.chapters[0].utterances) == len(project.chapters[0].utterances)
+
+
+class TestEndToEndRealAudio:
+    """End-to-end through the REAL TTS engine and the REAL ffmpeg binary.
+
+    Deliberately skippable, and deliberately kept in a class of its own so a
+    file-level ``--ignore`` is never again the tool used to exclude it. The
+    equivalent wiring is already proven hermetically in
+    ``tests/test_smoke_render_pipeline.py`` (FakeTTSEngine + FakeAssembler);
+    what only these two can prove is that the real engine and the real muxer
+    accept what the pipeline hands them.
+
+    Not run in CI. Both need the ``[render]`` extra (voice-soundboard, which
+    pulls a TTS model) and ``test_render_full_audiobook`` needs an ffmpeg
+    binary as well, so installing ffmpeg alone in CI would unlock exactly zero
+    of them.
+    """
 
     @requires_voice_soundboard
     def test_render_single_chapter(self):
