@@ -100,6 +100,9 @@ audiobooker new mybook.epub            # parse into chapters (EPUB/PDF/TXT/MD/DO
 audiobooker cast --interactive         # guided per-character casting
 audiobooker audition Sarah --render    # A/B candidate voices for one character
 audiobooker compile                    # detect dialogue, attribute speakers, infer emotion
+audiobooker speakers                   # who did compile find?
+audiobooker speakers --suggest-aliases # Dr. Merrin / Merrin / The Doctor?
+audiobooker speakers merge "Dr. Merrin" Merrin   # fold those slots into one voice
 audiobooker report                     # what's weak? unattributed + guessed rates, top lines
 audiobooker review-export              # human-editable script — fix attributions
 audiobooker review-import mybook_review.txt
@@ -184,7 +187,7 @@ Portanto: `--acx` é sobre o áudio. Se um varejista aceita um título narrado p
 | `export-chapters` · `podcast` | Folha de marcação de capítulos (ffmetadata/cue/json) · feed RSS para podcast |
 | `preview` · `batch` · `diagnose` | Clipe de teste de voz · lote/`--manifest` · verificação do ambiente (encerra com código de erro diferente de zero quando o sistema não consegue renderizar) |
 | `load <file>` | Abre um projeto `.audiobooker` existente |
-| `voices` · `chapters` · `speakers` · `info` · `status` · `cache` · `emotions` · `pronunciation` · `completion` | Inspeciona e gerencia |
+| `voices` · `chapters` · `speakers` · `speakers merge` · `info` · `status` · `cache` · `emotions` · `pronunciation` · `completion` | Inspecione e gerencie (`speakers merge <from> <to>`: agrupa nomes duplicados em um único espaço de atribuição). |
 
 Cada comando suporta `-h/--help`. Flags globais: `--silent`, `--debug`. **Códigos de saída:** `0` ok · `1` erro do usuário (incluindo um livro que não pode ser compilado ou uma renderização recusada porque a atribuição falhou) · `2` erro de execução · `3` parcial (lote).
 

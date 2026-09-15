@@ -15,9 +15,11 @@ and wrong. The upgrade notes in the README list them.
 
 A dogfood swarm in two passes — five health waves, then a feature pass of
 four build agents with disjoint file ownership. 200+ findings, tests
-1468 → 1955. Every CRITICAL/HIGH severity was re-rated by a model family that
-did not author the finding, and the fixes were written test-first with the
-failure observed before the fix.
+1468 → 1955. A confirming re-swarm (2026-09-15) closed remaining sibling
+sites and wired `speakers merge`; tests **1991**. Every CRITICAL/HIGH
+severity was re-rated by a model family that did not author the finding,
+and the fixes were written test-first with the failure observed before
+the fix.
 
 The through-line is worth stating, because it shaped what got found: **defect
 after defect was hiding behind something that reported success.** A quality
@@ -228,6 +230,18 @@ shelf actually does.
 - `--json` now covers the **error** path — structured `code` / `message` /
   `hint` / `retryable` — and five more commands. `errors.structured()`
   existed and had never been called.
+- **`speakers merge <from> <to>`** — `CastingTable.merge_speaker` existed
+  and was tested, with zero production callers. Alias proposals could be
+  listed (`speakers --suggest-aliases`) but not folded, so `Dr. Merrin` /
+  `Merrin` / `The Doctor` stayed three slots. The CLI now applies one fold,
+  recompiles so attribution follows the aliases, and emits JSON under
+  `--json`.
+- Re-swarm (2026-09-15): a `sample` miss no longer overwrites the live
+  chapter WAV and reports Cached on revert; PDF outline prefix pages,
+  DOCX footnotes/endnotes, and unclosed HTML skip-tags no longer vanish
+  from a successful parse; a missing TTS backend is `RENDER_BACKEND_UNAVAILABLE`
+  rather than `UNEXPECTED_ERROR`; a BookNLP chunk failure is not a
+  successful NLP pass.
 
 ### Changed
 

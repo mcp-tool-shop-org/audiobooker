@@ -63,8 +63,9 @@ audiobooker make mybook.epub --acx
 
 # ...or staged, with control at each step:
 audiobooker new mybook.epub
-audiobooker cast --interactive
 audiobooker compile
+audiobooker speakers merge "Dr. Merrin" Merrin
+audiobooker cast --interactive
 audiobooker render --acx
 audiobooker master-check mybook.m4b`,
         },
@@ -110,6 +111,7 @@ project.render("mybook.m4b")`,
         ['audiobooker audition <char>', 'A/B candidate voices for one character'],
         ['audiobooker cast-fill / cast-preset', 'Bulk-assign / reusable cast presets'],
         ['audiobooker compile', 'Detect dialogue, attribute speakers, infer emotion'],
+        ['audiobooker speakers merge <from> <to>', 'Fold duplicate names into one cast slot'],
         ['audiobooker report', 'Compile quality: unattributed rate, guessed speakers, the worst lines'],
         ['audiobooker review-export / -import', 'Human-editable review round-trip'],
         ['audiobooker render --acx', 'Render + master to the ACX audio spec'],

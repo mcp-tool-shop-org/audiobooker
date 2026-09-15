@@ -17,7 +17,7 @@ Every command supports `-h`/`--help`. Global flags (before or after the subcomma
 | `load <project>` | Load and summarize an existing `.audiobooker` project. |
 | `info` · `status` | Project details · render/cache status (`--json`). |
 | `chapters` · `chapters rename\|reorder` | List / rename / reorder chapters. |
-| `speakers` · `speakers --suggest-aliases` | List speakers · propose epithet/honorific aliases (`--apply`). |
+| `speakers` · `speakers --suggest-aliases` · `speakers merge <from> <to>` | List speakers · propose epithet/honorific aliases (`--apply`) · fold a duplicate name into one cast slot. |
 | `voices` | List the engine's voices (`--gender`, `--search`, `--engine`). |
 | `diagnose` | Check Python, dependencies, voice engine, FFmpeg, ffprobe. |
 

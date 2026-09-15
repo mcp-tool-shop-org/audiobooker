@@ -92,6 +92,9 @@ audiobooker new mybook.epub            # parse into chapters (EPUB/PDF/TXT/MD/DO
 audiobooker cast --interactive         # guided per-character casting
 audiobooker audition Sarah --render    # A/B candidate voices for one character
 audiobooker compile                    # detect dialogue, attribute speakers, infer emotion
+audiobooker speakers                   # who did compile find?
+audiobooker speakers --suggest-aliases # Dr. Merrin / Merrin / The Doctor?
+audiobooker speakers merge "Dr. Merrin" Merrin   # fold those slots into one voice
 audiobooker report                     # what's weak? unattributed + guessed rates, top lines
 audiobooker review-export              # human-editable script — fix attributions
 audiobooker review-import mybook_review.txt
@@ -175,7 +178,7 @@ audiobooker sample --duration 180      # a mastered retail sample clip
 | `export-chapters` · `podcast` | 章节提示表（ffmetadata/cue/json）——播客 RSS 订阅源 |
 | `preview` · `batch` · `diagnose` | 角色 QA 剪辑——批量/`--manifest`——环境检查（如果无法渲染，则以非零值退出） |
 | `load <file>` | 打开现有的 `.audiobooker` 项目 |
-| `voices` · `chapters` · `speakers` · `info` · `status` · `cache` · `emotions` · `pronunciation` · `completion` | 检查和管理 |
+| `voices` · `chapters` · `speakers` · `speakers merge` · `info` · `status` · `cache` · `emotions` · `pronunciation` · `completion` | 检查和管理（`speakers merge <from> <to>` 将重复的名称合并到一个角色槽中） |
 
 每个命令都支持 `-h/--help`。全局标志：`--silent`、`--debug`。**退出代码：** `0` 正常 · `1` 用户错误（包括无法编译的书籍，或者由于归属失败而拒绝渲染）· `2` 运行时 · `3` 部分（批量）。
 

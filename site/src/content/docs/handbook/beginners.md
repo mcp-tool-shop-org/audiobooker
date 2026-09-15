@@ -59,6 +59,9 @@ audiobooker compile
 
 # 3. Check what speakers were found
 audiobooker speakers
+# Duplicate names (Dr. Merrin / Merrin)? Fold them before casting:
+# audiobooker speakers --suggest-aliases
+# audiobooker speakers merge "Dr. Merrin" Merrin
 
 # 4. Assign voices to characters
 audiobooker cast narrator bm_george --emotion calm
