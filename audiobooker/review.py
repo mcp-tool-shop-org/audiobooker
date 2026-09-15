@@ -465,25 +465,33 @@ def import_reviewed(project: "AudiobookProject", review_path: Path) -> dict:
             )
             continue
 
-        # REVIEW-A-001: If the block count is unchanged, the user only edited
-        # speakers/emotions/text in place — preserve each original utterance's
-        # UtteranceType by index so PAUSE/DIRECTION/FOOTNOTE don't collapse to
-        # NARRATION on round-trip. If blocks were added/removed, fall back to the
-        # quote heuristic (we can no longer line up types by position).
+        # REVIEW-A-001: preserve UtteranceType only when the text at this
+        # index still matches. Equal block counts are not identity — deleting
+        # one block and adding another with the same count must not keep the
+        # old PAUSE/DIRECTION/FOOTNOTE type. Fall back to the quote heuristic
+        # and record retyped_chapters when identity breaks.
         original_utterances = matching_chapter.utterances
-        preserve_types = len(original_utterances) == len(chapter_data["utterances"])
+        same_block_count = len(original_utterances) == len(chapter_data["utterances"])
+        identity_broke = False
 
         # Rebuild utterances
         new_utterances = []
         for i, utt_data in enumerate(chapter_data["utterances"]):
-            if preserve_types:
-                utterance_type = original_utterances[i].utterance_type
+            prior = (
+                original_utterances[i]
+                if i < len(original_utterances) else None
+            )
+            text_matches = prior is not None and prior.text == utt_data["text"]
+            if text_matches:
+                utterance_type = prior.utterance_type
             else:
                 utterance_type = (
                     UtteranceType.DIALOGUE
                     if utt_data["text"].startswith('"')
                     else UtteranceType.NARRATION
                 )
+                if prior is not None:
+                    identity_broke = True
             # FEAT-CAST-001 provenance. Rebuilding the utterance used to drop
             # attribution_source and confidence, so importing a review erased
             # the provenance from every line in the book — including the ones
@@ -497,8 +505,6 @@ def import_reviewed(project: "AudiobookProject", review_path: Path) -> dict:
             # so importing a review does not relabel the whole book as
             # human-verified — which would be the same lie in the other
             # direction.
-            prior = (original_utterances[i]
-                     if i < len(original_utterances) else None)
             speaker_changed = (
                 prior is not None and prior.speaker != utt_data["speaker"]
             )
@@ -509,16 +515,30 @@ def import_reviewed(project: "AudiobookProject", review_path: Path) -> dict:
             else:
                 source, confidence = None, None
 
-            utterance = Utterance(
+            # Synthesizer inputs the review file does not carry: copy from the
+            # prior utterance at this index unless the reviewer changed that
+            # field (they cannot, so a zero-edit round-trip keeps intensity).
+            intensity = prior.intensity if prior is not None else None
+            start_pos = prior.start_pos if prior is not None else -1
+            end_pos = prior.end_pos if prior is not None else -1
+            utt_id = prior.id if prior is not None else None
+
+            utt_kwargs = dict(
                 speaker=utt_data["speaker"],
                 text=utt_data["text"],
                 utterance_type=utterance_type,
                 emotion=utt_data["emotion"],
+                intensity=intensity,
                 chapter_index=matching_chapter.index,
                 line_index=i,
+                start_pos=start_pos,
+                end_pos=end_pos,
                 attribution_source=source,
                 confidence=confidence,
             )
+            if utt_id is not None:
+                utt_kwargs["id"] = utt_id
+            utterance = Utterance(**utt_kwargs)
             new_utterances.append(utterance)
             stats["speakers_found"].add(utt_data["speaker"])
 
@@ -541,7 +561,9 @@ def import_reviewed(project: "AudiobookProject", review_path: Path) -> dict:
         # could not survive (the heuristic can only ever emit NARRATION or
         # DIALOGUE). An emptied chapter is already reported above and more
         # severe, so it is not double-counted here.
-        if original_utterances and new_utterances and not preserve_types:
+        if original_utterances and new_utterances and (
+            not same_block_count or identity_broke
+        ):
             lost = [
                 t for t in (u.utterance_type for u in original_utterances)
                 if t not in (UtteranceType.NARRATION, UtteranceType.DIALOGUE)
@@ -555,9 +577,9 @@ def import_reviewed(project: "AudiobookProject", review_path: Path) -> dict:
                 "lost_types": sorted({t.value for t in lost}),
             })
             logger.warning(
-                "Chapter %r changed block count (%d -> %d), so every utterance "
-                "type in it was re-derived from a text heuristic; %d marker "
-                "type(s) were lost (%s).",
+                "Chapter %r utterance identity broke (blocks %d -> %d), so "
+                "utterance types were re-derived from a text heuristic; %d "
+                "marker type(s) were lost (%s).",
                 title,
                 len(original_utterances),
                 len(new_utterances),
