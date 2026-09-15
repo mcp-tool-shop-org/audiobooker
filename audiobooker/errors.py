@@ -144,3 +144,61 @@ class CompilationFailedError(AudiobookerError, RuntimeError):
             ),
         )
         self.chapter_count = chapter_count
+
+
+class ProjectSaveLockError(AudiobookerError, ValueError):
+    """save() timed out on the occupancy lock — refuse rather than clobber.
+
+    Fail-closed (Lock B1): a 5s wait that never acquired the exclusive lock
+    must not write. Last-writer-wins after a timeout is the race the lock
+    exists to prevent. Subclasses ``ValueError`` so ``cli.USER_ERROR_TYPES``
+    reports it as a user error with the structured payload, not an unexpected
+    exit 2.
+    """
+
+    def __init__(self, lock_path: str, *, cause: Optional[str] = None) -> None:
+        AudiobookerError.__init__(
+            self,
+            ErrorDetail(
+                code="PROJECT_SAVE_LOCK_TIMEOUT",
+                message=(
+                    f"You asked to save the project; I refused because another "
+                    f"save still holds {lock_path} after 5s. Writing anyway "
+                    f"would clobber concurrent edits (last-writer-wins)."
+                ),
+                hint=(
+                    "Retry in a moment. If the other process died, delete the "
+                    f"stale lock file {lock_path} and save again."
+                ),
+                cause=cause,
+                retryable=True,
+            ),
+        )
+        self.lock_path = lock_path
+
+
+class PronunciationProtectedError(AudiobookerError, ValueError):
+    """A pronunciation override names a cast character and must not be stored.
+
+    Stored-then-refused leftovers rewrite the name on uncast and un-attribute
+    every line. Refuse before mutating ``pronunciation_overrides``.
+    """
+
+    def __init__(self, word: str) -> None:
+        AudiobookerError.__init__(
+            self,
+            ErrorDetail(
+                code="PRONUNCIATION_PROTECTED_NAME",
+                message=(
+                    f"You asked to add a pronunciation override for {word!r}; "
+                    f"I refused because {word!r} is a cast character (or alias) "
+                    f"and rewriting it would un-attribute every line they speak."
+                ),
+                hint=(
+                    "Set the pronunciation on the character instead, or uncast "
+                    f"{word!r} before adding a prose override."
+                ),
+                retryable=False,
+            ),
+        )
+        self.word = word
