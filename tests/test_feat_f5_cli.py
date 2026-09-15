@@ -58,6 +58,12 @@ def _write_project(tmp_path: Path, title: str = "Ecosystem Test") -> Path:
         author="Tester",
     )
     project.cast("narrator", "af_heart")
+    # FEAT-UX-002 (cli-surface wave, out-of-grant declared edit): `render`
+    # now refuses when a NAMED speaker owns dialogue and has no voice — the
+    # shape a typo'd speaker in a review file takes. Alice speaks one line
+    # here and was never cast, so these --engine-routing tests tripped the
+    # new gate on incidental filler. Same remedy as the PH-B-002 note above.
+    project.cast("Alice", "af_bella")
     project.compile()
     path = tmp_path / "ecosystem.audiobooker"
     project.save(path)
