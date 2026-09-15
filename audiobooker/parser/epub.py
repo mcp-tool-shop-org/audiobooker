@@ -65,9 +65,12 @@ _FOOTNOTE_TOKEN_RE = re.compile(r"\x02?FOOTNOTE_(?:START|END)\x02?")
 _ILLEGAL_CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
 # Markup class/epub:type tokens that identify a real footnote element.
+# Bare 'note'/'notes'/'fn' were dropped: class='historical-note' and
+# class='note' hyphen/space-split into those tokens and footnote_behavior=
+# 'skip' deleted narratable callouts (F-8ce20eeb).
 _NOTE_TOKENS = frozenset({
     "noteref", "footnote", "footnotes", "endnote", "endnotes",
-    "rearnote", "rearnotes", "note", "notes", "fn", "fnref",
+    "rearnote", "rearnotes", "fnref",
 })
 
 
@@ -137,7 +140,8 @@ class HTMLTextExtractor(HTMLParser):
     CELL_TAGS = {"td", "th", "dt", "dd"}
     _ROW_END_PUNCT = (".", "!", "?", ":", ";")
 
-    # Tags that always indicate footnote content (FT-CORE-019)
+    # HTML5 <aside> is a sidebar/callout, not an EPUB3 footnote, unless
+    # epub:type/class actually carries a note token (F-8ce20eeb).
     FOOTNOTE_TAGS = {"aside"}
 
     # Tags that are a footnote marker about as often as they are ordinary
@@ -162,6 +166,14 @@ class HTMLTextExtractor(HTMLParser):
         self._pending_cell_sep = False
         self._row_has_cell = False
         self._logged_nav = False
+        # Observability for unclosed skip tags / abandoned footnote spans
+        # (F-1cb270de, F-2f3303fb, F-8ce20eeb).
+        self._skip_discarded_chunks = 0
+        self._skip_discarded_words = 0
+        self._asides_kept = 0
+        self._footnote_spans_closed = 0
+        self._did_force_close_skip = False
+        self._did_abandon_footnote = False
 
     # -- footnote classification -------------------------------------------
 
@@ -174,8 +186,6 @@ class HTMLTextExtractor(HTMLParser):
         blob = f"{attrs_dict.get('epub:type', '')} {attrs_dict.get('class', '')}"
         tokens = {t for t in re.split(r"[\s_\-]+", blob.lower()) if t}
         if tokens & _NOTE_TOKENS:
-            return "explicit"
-        if tag in self.FOOTNOTE_TAGS:
             return "explicit"
         if tag in self.AMBIGUOUS_FOOTNOTE_TAGS:
             return "ambiguous"
@@ -202,6 +212,7 @@ class HTMLTextExtractor(HTMLParser):
             return
         self._parts.insert(start, self.FOOTNOTE_START)
         self._parts.append(self.FOOTNOTE_END)
+        self._footnote_spans_closed += 1
 
     # -- HTMLParser hooks ---------------------------------------------------
 
@@ -243,6 +254,11 @@ class HTMLTextExtractor(HTMLParser):
             self.skip_depth += 1
             return
 
+        # F-1cb270de: nested markup inside an open skip tag must not open
+        # footnote spans / table state. Nested SKIP_TAGS already returned.
+        if self.skip_depth > 0:
+            return
+
         if tag in self.CELL_TAGS:
             if self._pending_cell_sep:
                 self._emit_cell_separator()
@@ -263,6 +279,8 @@ class HTMLTextExtractor(HTMLParser):
             return
 
         kind = self._classify_footnote(tag, attrs)
+        if kind is None and tag in self.FOOTNOTE_TAGS:
+            self._asides_kept += 1
         if kind is not None:
             explicit = kind == "explicit"
             if not self._footnote_stack:
@@ -282,6 +300,8 @@ class HTMLTextExtractor(HTMLParser):
             return
         if tag in self.SKIP_TAGS:
             self.skip_depth = max(0, self.skip_depth - 1)
+            return
+        if self.skip_depth > 0:
             return
 
         if tag in self.CELL_TAGS:
@@ -315,6 +335,10 @@ class HTMLTextExtractor(HTMLParser):
 
     def handle_data(self, data: str) -> None:
         if self.skip_depth > 0:
+            stripped = data.strip()
+            if stripped:
+                self._skip_discarded_chunks += 1
+                self._skip_discarded_words += len(stripped.split())
             return
 
         if not data.strip():
@@ -346,22 +370,38 @@ class HTMLTextExtractor(HTMLParser):
 
     def get_text(self) -> str:
         """Get extracted text with normalized whitespace."""
-        # Force-close a span left open by malformed markup, so an unbalanced
-        # START can never escape (PARSER-AMEND-2).
-        self._footnote_stack.clear()
-        if self._span_start_index is not None:
-            self._close_footnote_span()
+        # F-1cb270de: an unclosed explicit footnote/aside must NOT wrap the
+        # remaining body as a footnote — with footnote_behavior='skip' that
+        # wrapping deleted the rest of the chapter. Abandon the span so the
+        # already-collected prose stays body text.
+        if self._footnote_stack or self._span_start_index is not None:
+            logger.warning(
+                "Unclosed footnote/aside span; abandoning it so remaining "
+                "body is kept (not classified as a footnote). You asked for "
+                "footnote handling on closed notes; this unclosed markup "
+                "would have swallowed the rest of the chapter.",
+            )
+            self._footnote_stack.clear()
+            self._span_start_index = None
+            self._span_explicit = False
+            self._did_abandon_footnote = True
         # Same backstop for skip_depth: an unclosed <script>/<nav>/<style>
-        # must not keep the extractor in skip mode (the already-consumed
-        # inner text of a still-open skip tag is gone, but any caller that
-        # feeds more HTML after get_text, and the trailing-row terminator,
-        # see a clean slate).
+        # must not keep the extractor in skip mode. Already-consumed inner
+        # text of a still-open skip tag is gone; warn at WARNING so a
+        # truncated chapter is not reported as a clean parse.
         if self.skip_depth:
-            logger.debug(
-                "Force-closing skip_depth=%d left open by malformed markup.",
+            logger.warning(
+                "Unclosed skip tag left skip_depth=%d; discarded %d text "
+                "chunk(s) (%d word(s)) after it. You asked to skip "
+                "nav/script/style; the rest of the chapter after the "
+                "unclosed tag was also dropped. Kept the text collected "
+                "before the unclosed tag.",
                 self.skip_depth,
+                self._skip_discarded_chunks,
+                self._skip_discarded_words,
             )
             self.skip_depth = 0
+            self._did_force_close_skip = True
         if self._row_has_cell:
             self._terminate_row()
 
@@ -374,7 +414,11 @@ class HTMLTextExtractor(HTMLParser):
         return text.strip()
 
 
-def process_footnotes(text: str, behavior: str = "inline") -> str:
+def process_footnotes(
+    text: str,
+    behavior: str = "inline",
+    stats: Optional[dict] = None,
+) -> str:
     """
     Process footnote markers in extracted text (FT-CORE-019).
 
@@ -396,7 +440,21 @@ def process_footnotes(text: str, behavior: str = "inline") -> str:
         return text
 
     if behavior == "skip":
-        # Remove all footnote content
+        pieces = re.findall(
+            re.escape(start) + r"(.*?)" + re.escape(end),
+            text,
+            flags=re.DOTALL,
+        )
+        dropped_words = sum(len(p.split()) for p in pieces)
+        if pieces:
+            if stats is not None:
+                stats["footnotes"] = stats.get("footnotes", 0) + dropped_words
+            logger.warning(
+                "footnote_behavior='skip': dropped %d footnote span(s) "
+                "(%d word(s)); kept the surrounding chapter body. Use "
+                "footnote_behavior='inline' to narrate those notes.",
+                len(pieces), dropped_words,
+            )
         result = re.sub(
             re.escape(start) + r"(.*?)" + re.escape(end),
             "",
@@ -432,7 +490,12 @@ def process_footnotes(text: str, behavior: str = "inline") -> str:
     return result
 
 
-def html_to_text(html_content: str, *, footnote_behavior: str = "inline") -> str:
+def html_to_text(
+    html_content: str,
+    *,
+    footnote_behavior: str = "inline",
+    stats: Optional[dict] = None,
+) -> str:
     """
     Convert HTML to plain text.
 
@@ -464,7 +527,21 @@ def html_to_text(html_content: str, *, footnote_behavior: str = "inline") -> str
         text = " ".join(text.split())
         return _strip_sentinels(text)
     text = extractor.get_text()
-    text = process_footnotes(text, footnote_behavior)
+    n_spans = text.count(HTMLTextExtractor.FOOTNOTE_START)
+    text = process_footnotes(text, footnote_behavior, stats=stats)
+    if stats is not None:
+        stats["skip-tag"] = stats.get("skip-tag", 0) + extractor._skip_discarded_words
+        if extractor._did_force_close_skip:
+            stats["unclosed-skip"] = stats.get("unclosed-skip", 0) + 1
+        if extractor._did_abandon_footnote:
+            stats["unclosed-footnote"] = stats.get("unclosed-footnote", 0) + 1
+        stats["asides-kept"] = stats.get("asides-kept", 0) + extractor._asides_kept
+    if footnote_behavior == "skip" and extractor._asides_kept:
+        logger.warning(
+            "footnote_behavior='skip': dropped %d footnote span(s); kept %d "
+            "aside/callout(s) as chapter body (not EPUB3 notes).",
+            n_spans, extractor._asides_kept,
+        )
     return _strip_sentinels(text)
 
 
@@ -635,6 +712,7 @@ def _chapters_from_toc(
     docs_by_name: dict,
     footnote_behavior: str = "inline",
     profile: Optional[LanguageProfile] = None,
+    stats: Optional[dict] = None,
 ) -> Optional[list[Chapter]]:
     """Build chapters from flattened TOC entries (FT-PARSE-003).
 
@@ -730,10 +808,14 @@ def _chapters_from_toc(
         if first_pos > 0:
             prefix_html = content[:first_pos]
             prefix_text = html_to_text(
-                prefix_html, footnote_behavior=footnote_behavior,
+                prefix_html, footnote_behavior=footnote_behavior, stats=stats,
             )
             prefix_words = len(prefix_text.split())
             if prefix_words > 0:
+                if stats is not None:
+                    stats["recovered-prefix"] = (
+                        stats.get("recovered-prefix", 0) + prefix_words
+                    )
                 logger.warning(
                     "EPUB document %r has %d word(s) before the first TOC "
                     "anchor; that preamble is not named in the table of "
@@ -775,7 +857,9 @@ def _chapters_from_toc(
                 )
                 return None
             slice_html = content[start:end]
-            text = html_to_text(slice_html, footnote_behavior=footnote_behavior)
+            text = html_to_text(
+                slice_html, footnote_behavior=footnote_behavior, stats=stats,
+            )
             word_count = len(text.split())
 
             if word_count == 0:
@@ -796,6 +880,10 @@ def _chapters_from_toc(
                         "Skipping short TOC section: %r (%d words < %d)",
                         entry_title or doc_name, word_count, min_chapter_words,
                     )
+                    if stats is not None:
+                        stats["short-section"] = (
+                            stats.get("short-section", 0) + word_count
+                        )
                     continue
 
             chap_title = entry_title or f"Chapter {chapter_index + 1}"
@@ -865,13 +953,14 @@ def _document_chapter(
     keep_titled_short_chapters: bool,
     footnote_behavior: str,
     profile: Optional[LanguageProfile] = None,
+    stats: Optional[dict] = None,
 ) -> Optional[Chapter]:
     """Build one Chapter from a whole spine document, or None if too short."""
     content = item.get_content()
     if isinstance(content, bytes):
         content = _decode_item_content(content, item.get_name())
 
-    text = html_to_text(content, footnote_behavior=footnote_behavior)
+    text = html_to_text(content, footnote_behavior=footnote_behavior, stats=stats)
     word_count = len(text.split())
     title = extract_title_from_html(content, profile=profile)
 
@@ -886,6 +975,8 @@ def _document_chapter(
                 "Skipping short section: %r (%d words < %d threshold)",
                 title or item.get_name(), word_count, min_chapter_words,
             )
+            if stats is not None:
+                stats["short-section"] = stats.get("short-section", 0) + word_count
             return None
 
     return Chapter(
@@ -904,6 +995,7 @@ def _reconcile_toc_with_spine(
     keep_titled_short_chapters: bool,
     footnote_behavior: str,
     profile: Optional[LanguageProfile] = None,
+    stats: Optional[dict] = None,
 ) -> list[Chapter]:
     """Put TOC-derived chapters back in reading order and recover orphans.
 
@@ -975,6 +1067,7 @@ def _reconcile_toc_with_spine(
             keep_titled_short_chapters=keep_titled_short_chapters,
             footnote_behavior=footnote_behavior,
             profile=profile,
+            stats=stats,
         )
         if built is not None:
             recovered.append(name)
@@ -1187,6 +1280,7 @@ def parse_epub(
     # behavior. 'off' skips the TOC entirely.
     chapters: list[Chapter] = []
     split_pattern = "spine/structure"
+    stats: dict = {}
 
     if use_toc in ("auto", "on"):
         toc_entries = _flatten_toc(getattr(book, "toc", None))
@@ -1202,6 +1296,7 @@ def parse_epub(
                 docs_by_name=docs_by_name,
                 footnote_behavior=footnote_behavior,
                 profile=profile,
+                stats=stats,
             )
             if toc_chapters:
                 # FEAT-IN-002: the TOC decides titles and anchor slicing; the
@@ -1213,6 +1308,7 @@ def parse_epub(
                     keep_titled_short_chapters=keep_titled_short_chapters,
                     footnote_behavior=footnote_behavior,
                     profile=profile,
+                    stats=stats,
                 )
                 split_pattern = "toc"
                 logger.info(
@@ -1254,6 +1350,7 @@ def parse_epub(
                 keep_titled_short_chapters=keep_titled_short_chapters,
                 footnote_behavior=footnote_behavior,
                 profile=profile,
+                stats=stats,
             )
             if built is not None:
                 chapters.append(built)
@@ -1279,14 +1376,31 @@ def parse_epub(
             path.name,
         )
 
-    # Parse-observability summary (PARSER-C). EPUB splits on either the table of
-    # contents (pattern=toc) or document/spine structure (pattern=spine/structure),
-    # so the reported pattern reflects which path produced the chapters
-    # (FT-PARSE-003).
+    # Parse-observability summary (PARSER-C / F-2f3303fb). EPUB splits on
+    # either the table of contents (pattern=toc) or document/spine structure
+    # (pattern=spine/structure). words_kept vs words_dropped names what
+    # survived skip_depth / short-section / footnote skip.
+    from audiobooker.parser.text import format_parse_summary
+
     profile_code = profile.code if profile is not None else "en"
+    words_kept = sum(len((c.raw_text or "").split()) for c in chapters)
+    extra = {}
+    recovered = stats.pop("recovered-prefix", 0)
+    asides_kept = stats.pop("asides-kept", 0)
+    unclosed_skip = stats.pop("unclosed-skip", 0)
+    unclosed_fn = stats.pop("unclosed-footnote", 0)
+    if recovered:
+        extra["recovered_prefix"] = recovered
+    if asides_kept:
+        extra["asides_kept"] = asides_kept
+    if unclosed_skip:
+        extra["unclosed_skip"] = unclosed_skip
+    if unclosed_fn:
+        extra["unclosed_footnote"] = unclosed_fn
     logger.info(
-        "Parsed EPUB '%s': %d chapter(s), profile=%s, pattern=%s",
+        "Parsed EPUB '%s': %d chapter(s), profile=%s, pattern=%s, %s",
         path.name, len(chapters), profile_code, split_pattern,
+        format_parse_summary(words_kept, stats, extra),
     )
 
     return metadata, chapters
