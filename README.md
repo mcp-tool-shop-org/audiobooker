@@ -1,12 +1,9 @@
 <p align="center">
-  <a href="https://github.com/mcp-tool-shop-org/audiobooker/blob/main/README.ja.md">日本語</a> | <a href="https://github.com/mcp-tool-shop-org/audiobooker/blob/main/README.zh.md">中文</a> | <a href="https://github.com/mcp-tool-shop-org/audiobooker/blob/main/README.es.md">Español</a> | <a href="https://github.com/mcp-tool-shop-org/audiobooker/blob/main/README.fr.md">Français</a> | <a href="https://github.com/mcp-tool-shop-org/audiobooker/blob/main/README.hi.md">हिन्दी</a> | <a href="https://github.com/mcp-tool-shop-org/audiobooker/blob/main/README.it.md">Italiano</a> | <a href="https://github.com/mcp-tool-shop-org/audiobooker/blob/main/README.pt-BR.md">Português (BR)</a>
+  <a href="README.md">English</a> | <a href="README.ja.md">日本語</a> | <a href="README.zh.md">中文</a> | <a href="README.es.md">Español</a> | <a href="README.fr.md">Français</a> | <a href="README.hi.md">हिन्दी</a> | <a href="README.it.md">Italiano</a> | <a href="README.pt-BR.md">Português (BR)</a>
 </p>
 
 <p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/mcp-tool-shop-org/audiobooker/main/assets/audiobooker-logo-dark.png">
-    <img src="https://raw.githubusercontent.com/mcp-tool-shop-org/audiobooker/main/assets/audiobooker-logo.png" alt="Audiobooker" width="500" />
-  </picture>
+  <img src="https://raw.githubusercontent.com/mcp-tool-shop-org/audiobooker/main/assets/audiobooker-logo.png" alt="Audiobooker" width="480" />
 </p>
 
 <p align="center">
@@ -53,7 +50,7 @@ re-synthesizing the book.
 <details>
 <summary>Container details — tags, the cache, and file ownership</summary>
 
-- Tagged `latest`, `2`, `2.1` and the exact version, pushed to GHCR on every
+- Tagged `latest`, `3`, `3.0` and the exact version, pushed to GHCR on every
   release.
 - The entrypoint **is** `audiobooker`, so pass the subcommand straight after
   the image name — don't repeat the program name.
@@ -80,6 +77,31 @@ pip install -e '.[render]'
 ```
 </details>
 
+<details>
+<summary><strong>Upgrading from 2.x</strong> — five things changed on purpose</summary>
+
+Each of these is a case where 2.x accepted something and did the wrong thing
+quietly. 3.0 refuses instead. Full detail in the [CHANGELOG](CHANGELOG.md).
+
+- **Your first render re-renders every chapter, once.** Three inputs that
+  change the audio — emotion preset, utterance intensity, per-character
+  speed/pitch/emphasis — were missing from the cache key, so switching preset
+  reported "Cached" and returned the old audio. They are in the key now, and a
+  2.x cache entry cannot prove what produced it.
+- **`--format m4a` is no longer a whole-book option.** It always meant one
+  file per chapter; asking for a whole book in `m4a` previously produced a
+  single M4B under an `.m4a` name. It is still valid on `podcast --format`.
+- **`render` refuses a book whose attribution reads `FAILED`** rather than
+  spending a TTS run on it. `--force` overrides. Run `audiobooker report` to
+  see which lines it is objecting to.
+- **`make` refuses when the project file already exists.** It used to
+  overwrite hand-cast voices, pronunciation overrides and edited titles with a
+  fresh auto-cast parse. Pass `--overwrite-project` if that is what you want.
+- **`compile()` raises when every chapter fails** instead of returning `None`
+  the way a clean run does. If you call it from Python, it can now throw.
+
+</details>
+
 ## Quick start
 
 ```bash
@@ -91,7 +113,10 @@ audiobooker new mybook.epub            # parse into chapters (EPUB/PDF/TXT/MD/DO
 audiobooker cast --interactive         # guided per-character casting
 audiobooker audition Sarah --render    # A/B candidate voices for one character
 audiobooker compile                    # detect dialogue, attribute speakers, infer emotion
-audiobooker report                     # what's weak? unknown-attribution rate + top lines
+audiobooker speakers                   # who did compile find?
+audiobooker speakers --suggest-aliases # Dr. Merrin / Merrin / The Doctor?
+audiobooker speakers merge "Dr. Merrin" Merrin   # fold those slots into one voice
+audiobooker report                     # what's weak? unattributed + guessed rates, top lines
 audiobooker review-export              # human-editable script — fix attributions
 audiobooker review-import mybook_review.txt
 audiobooker render --acx               # render + master to ACX spec
@@ -110,12 +135,14 @@ audiobooker master-check mybook.m4b    # PASS/FAIL vs ACX loudness/peak/noise-fl
 - **Multi-voice synthesis** with explainable, ranked voice **suggestions** and an **`audition`** command to A/B candidates per character.
 - **Interactive casting**, **bulk `cast-fill`** by gender/role, **named cast presets** reusable across a series, and **CSV cast sheets** for collaborators.
 - **Dialogue detection + speaker attribution** (optional **BookNLP** co-reference), **alias auto-discovery**, and **emotion inference** with adjustable **intensity**, **scene-level mood**, and genre **preset packs**.
+- **Attribution you can audit.** Every line records *how* its speaker was decided — a speech tag, an inline override, co-reference, your own correction, or a bare alternating-turn guess — and `report` counts the guesses separately from the lines it could not attribute at all. A guess cannot improve the score, so the number goes down when the attribution gets worse, which is the only direction that is useful.
 
 ### Rendering & output
 - **M4B** (chapter markers + embedded cover + series metadata), **MP3**, **Opus**, **FLAC**, **WAV**; per-chapter export; **podcast/RSS** feed export.
   WAV has no chapter atom, so a WAV render says so plainly rather than reporting a failed chapter mux — reach for it when the audio is going into an editor.
 - **ACX-spec mastering** (`--acx`) + a **`master-check`** that reports PASS/FAIL on RMS loudness, peak, and noise floor; retail **`sample`** clips.
 - Parallel rendering, a **persistent render cache** with resume, dynamic progress + ETA, and structured failure reports.
+  The cache key covers everything that changes the audio — text, cast, voices, engine and version, profile, emotion preset and intensity — so a re-render that says "Cached" means it. An opt-in **per-utterance cache** (`utterance_cache`) narrows a re-render to the lines you actually edited.
 
 ### Workflow & ecosystem
 - **`make`** one-shot pipeline · **config file** (`.audiobookerrc` / `[tool.audiobooker]`) · **`--watch`** mode · **manifest-driven batch** · shell completion.
@@ -181,14 +208,14 @@ title is their decision, not a property of the file you just produced.
 | `cast-export` · `cast-import <file>` | Round-trip the cast as JSON/CSV — hand-edit, or reuse across editions |
 | `audition <char>` | A/B ranked candidate voices for one character (`--render`) |
 | `compile` | Detect dialogue, attribute speakers, infer emotion |
-| `report` | Compile quality: unknown rate, top unattributed lines, emotion mix |
+| `report` | Compile quality: unattributed rate, guessed rate, worst lines, emotion mix |
 | `review-export` · `review-import <file>` | Human-editable review round-trip |
 | `render` | Render the audiobook (`--acx`, `--format`, `--split`, `--bitrate`, `--engine`, `--watch`, `--cover`, `-j N`) |
 | `sample` · `master-check <file>` | Mastered retail sample · check against the ACX audio spec |
 | `export-chapters` · `podcast` | Chapter cue sheet (ffmetadata/cue/json) · podcast RSS feed |
 | `preview` · `batch` · `diagnose` | Voice QA clip · batch/`--manifest` · environment check (exits non-zero when the box cannot render) |
 | `load <file>` | Open an existing `.audiobooker` project |
-| `voices` · `chapters` · `speakers` · `info` · `status` · `cache` · `emotions` · `pronunciation` · `completion` | Inspect & manage |
+| `voices` · `chapters` · `speakers` · `speakers merge` · `info` · `status` · `cache` · `emotions` · `pronunciation` · `completion` | Inspect & manage (`speakers merge <from> <to>` folds duplicate names into one cast slot) |
 
 Every command supports `-h/--help`. Global flags: `--silent`, `--debug`. **Exit codes:** `0` ok · `1` user error (including a book that would not compile, or a render refused because attribution failed) · `2` runtime · `3` partial (batch).
 

@@ -57,13 +57,17 @@ def _make_casting() -> CastingTable:
 class TestFakeTTSEngine:
     def test_writes_valid_wav(self, tmp_path: Path):
         engine = FakeTTSEngine()
+        script = "[S1:narrator] Hello"
+        voices = {"narrator": "af_heart"}
         result = engine.synthesize(
-            script="[S1:narrator] Hello",
-            voices={"narrator": "af_heart"},
+            script=script,
+            voices=voices,
             output_path=tmp_path / "out.wav",
         )
         assert result.audio_path.exists()
-        assert result.duration_seconds == 0.25
+        assert result.duration_seconds == pytest.approx(
+            FakeTTSEngine.duration_for(script, voices), abs=0.001
+        )
         assert_wav_header_valid(result.audio_path)
 
     def test_records_calls(self, tmp_path: Path):
@@ -77,6 +81,45 @@ class TestFakeTTSEngine:
         engine = FakeTTSEngine(fail_on_call=0)
         with pytest.raises(RuntimeError, match="Fake TTS failure"):
             engine.synthesize("script", {}, tmp_path / "x.wav")
+
+    def test_different_scripts_are_not_byte_identical(self, tmp_path: Path):
+        """F-fb583507. Restoring write_silence_wav(path, self.duration_per_call)
+        with no marker makes this RED — both clips become the same silence."""
+        engine = FakeTTSEngine()
+        engine.synthesize("alpha script", {"n": "af_heart"}, tmp_path / "a.wav")
+        engine.synthesize("beta script", {"n": "af_heart"}, tmp_path / "b.wav")
+        assert (tmp_path / "a.wav").read_bytes() != (tmp_path / "b.wav").read_bytes()
+
+    def test_different_voices_are_not_byte_identical(self, tmp_path: Path):
+        engine = FakeTTSEngine()
+        script = "same words"
+        engine.synthesize(script, {"n": "af_heart"}, tmp_path / "a.wav")
+        engine.synthesize(script, {"n": "bm_george"}, tmp_path / "b.wav")
+        assert (tmp_path / "a.wav").read_bytes() != (tmp_path / "b.wav").read_bytes()
+
+    def test_ssml_break_grows_the_wav(self, tmp_path: Path):
+        """A baked <break> must be visible in duration, not just in engine.calls."""
+        engine = FakeTTSEngine(duration_per_call=0.5)
+        plain = engine.synthesize("hello", {"n": "v"}, tmp_path / "a.wav")
+        baked = engine.synthesize(
+            'hello <break time="750ms"/>', {"n": "v"}, tmp_path / "b.wav"
+        )
+        assert baked.duration_seconds == pytest.approx(
+            plain.duration_seconds + 0.75, abs=0.02
+        )
+
+    def test_constant_silence_is_the_null_oracle(self, tmp_path: Path):
+        """Characterization: marker=0 + same duration is byte-identical (the bug)."""
+        from tests.fakes.fake_tts import DURATION_PER_CALL, write_silence_wav
+
+        a = tmp_path / "a.wav"
+        b = tmp_path / "b.wav"
+        write_silence_wav(a, DURATION_PER_CALL, marker=1)
+        write_silence_wav(b, DURATION_PER_CALL, marker=2)
+        assert a.read_bytes() != b.read_bytes()
+        write_silence_wav(a, DURATION_PER_CALL, marker=0)
+        write_silence_wav(b, DURATION_PER_CALL, marker=0)
+        assert a.read_bytes() == b.read_bytes()
 
 
 class TestWriteSilenceWav:

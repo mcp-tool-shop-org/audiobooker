@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  Turn <strong>EPUB / TXT / PDF / DOCX</strong> books into professionally narrated, multi-voice audiobooks (<strong>M4B / MP3 / Opus / FLAC</strong>) — from one command.
+  Turn <strong>EPUB / TXT / PDF / DOCX</strong> books into professionally narrated, multi-voice audiobooks (<strong>M4B / MP3 / Opus / FLAC / WAV</strong>) — from one command.
 </p>
 
 This is the **`npx` wrapper** for [`audiobooker-ai`](https://pypi.org/project/audiobooker-ai/) (Python). It bootstraps a private Python environment on first run, installs the pinned version from PyPI, and runs the real CLI — no manual `pip`, no changes to your system Python.
@@ -60,13 +60,14 @@ AUDIOBOOKER_INSTALL_EXTRAS=render npx @mcptoolshop/audiobooker render
 
 ## 機能
 
-- 説明可能でランク付けされた音声候補による**マルチボイスキャスト**。`audiobooker audition <character>`を使用すると、確定する前に候補の音声をA/Bテストできます。
-- **対話検出 + 話者アトリビューション**（オプションのBookNLP共同参照）、感情推論、および再利用可能な発音辞書。
-- **レンダリング前のレビュー**：人間が編集可能なスクリプトをエクスポートし、アトリビューションを修正し、再インポートします。何も変更が自動的に行われることはありません。
-- **ACX仕様のマスターリング**：`render --acx`は、ACXオーディオターゲット（RMSは-23〜-18 dBFS、ピークは-3以下、ノイズフロアは-60以下）にマスターリングし、`master-check`は、これらの3つの測定制限に対してPASS/FAILを報告します。
-ただし、仕様を満たすことは、承認されることと同じではありません。ACXの標準的な提出フローは、人間のナレーション用です。AIナレーションされたオーディオブックが実際に利用できる経路については、[メインのREADME](https://github.com/mcp-tool-shop-org/audiobooker#where-an-ai-narrated-audiobook-can-actually-go)を参照してください。
-- **形式**：M4B（チャプターマーカー + 埋め込みカバー + シリーズメタデータ）、MP3、Opus、FLAC。チャプターごとのエクスポート、小売用のサンプルクリップ。
-- **7つの言語プロファイル**（en/fr/de/es/ja/it/pt）と、設定を一度行えば自動的に適用される、書籍ごとの設定ファイル。
+- **複数音声のキャスティング**: 説明可能な、ランク付けされた音声候補を提示。`audiobooker audition <character>`を使用すると、最終決定前に候補音声をA/Bテストできます。
+- **対話の検出＋話者属性の割り当て**（オプションでBookNLPの共参照を使用）、感情の推論、再利用可能な発音辞書。
+- **レンダリング前のレビュー**: 人間が編集可能なスクリプトをエクスポートし、属性を修正し、再インポートします。変更が自動的に行われることはありません。
+- **ACX仕様に準拠したマスタリング**: `render --acx`は、ACXのオーディオターゲット（RMSは-23～-18 dBFS、ピークは-3以下、ノイズフロアは-60以下）に準拠するようにマスタリングし、`master-check`は、上記の3つの測定基準に対してPASS/FAILの結果を報告します。
+ただし、仕様に準拠することは、承認されることと同じではありません。ACXの標準的な提出プロセスは、人間のナレーションを対象としています。AIによるナレーションのオーディオブックが実際に利用できる経路については、[メインのREADME](https://github.com/mcp-tool-shop-org/audiobooker#where-an-ai-narrated-audiobook-can-actually-go)を参照してください。
+- **監査可能な属性**: 各行には、その話者がどのように決定されたか（音声タグ、ユーザーによる修正、または単純な交互ターン推測）が記録され、`audiobooker report`は、属性を割り当てることができなかった行とは別に、推測の回数をカウントします。推測によってスコアを改善することはできません。
+- **形式**: M4B（チャプターマーカー＋埋め込みカバー＋シリーズメタデータ）、MP3、Opus、FLAC、WAV。チャプターごとのエクスポート、小売用のサンプルクリップ。
+- **7つの言語プロファイル**（英語/フランス語/ドイツ語/スペイン語/日本語/イタリア語/ポルトガル語）と、各書籍用の設定ファイル（設定を一度行えば、その後は自動的に適用されます）。
 
 ## 環境変数
 

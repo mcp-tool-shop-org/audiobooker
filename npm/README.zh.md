@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  Turn <strong>EPUB / TXT / PDF / DOCX</strong> books into professionally narrated, multi-voice audiobooks (<strong>M4B / MP3 / Opus / FLAC</strong>) — from one command.
+  Turn <strong>EPUB / TXT / PDF / DOCX</strong> books into professionally narrated, multi-voice audiobooks (<strong>M4B / MP3 / Opus / FLAC / WAV</strong>) — from one command.
 </p>
 
 This is the **`npx` wrapper** for [`audiobooker-ai`](https://pypi.org/project/audiobooker-ai/) (Python). It bootstraps a private Python environment on first run, installs the pinned version from PyPI, and runs the real CLI — no manual `pip`, no changes to your system Python.
@@ -31,7 +31,7 @@ npx @mcptoolshop/audiobooker --help
 npm install -g @mcptoolshop/audiobooker
 ```
 
-首次运行时，会在您的用户数据目录下设置一个受管理的虚拟环境（`~/.local/share/audiobooker`，或在 Windows 上为 `%LOCALAPPDATA%\audiobooker`），并安装 `audiobooker-ai`。之后每次运行都会立即启动。
+首次运行时，会在您的用户数据目录下（`~/.local/share/audiobooker`，或 Windows 上的 `%LOCALAPPDATA%\audiobooker`）设置一个受管理的虚拟环境，并安装 `audiobooker-ai`。之后每次运行都会立即启动。
 
 **需要在 PATH 中安装 Python 3.10+**（包装器会查找 `python3` / `py`）。如果缺少，包装器会准确地告诉您如何为您的操作系统安装它。
 
@@ -50,7 +50,7 @@ npx @mcptoolshop/audiobooker render --format m4b
 
 ## 音频渲染（语音合成）
 
-解析、转换、编译和审核流程可以直接使用。**渲染音频**需要 TTS 引擎，它会引入更多的依赖项——在您准备好时启用：
+解析、转换、编译和审核流程都可以开箱即用。**渲染音频**需要 TTS 引擎，它会引入更多的依赖项——在您准备好时启用：
 
 ```bash
 AUDIOBOOKER_INSTALL_EXTRAS=render npx @mcptoolshop/audiobooker render
@@ -60,23 +60,24 @@ AUDIOBOOKER_INSTALL_EXTRAS=render npx @mcptoolshop/audiobooker render
 
 ## 它的作用
 
-- **多声音转换**，提供可解释的、排序的语音建议；`audiobooker audition <character>` 允许您在确定之前对候选声音进行 A/B 测试。
-- **对话检测 + 说话者归属**（可选 BookNLP 共同指代）、情感推断和可重用的发音词典。
-- **渲染前审核**：导出可供人工编辑的脚本，修复归属信息，重新导入——没有任何内容会被静默更改。
-- **符合 ACX 规范的母带处理**：`render --acx` 将音频母带处理到 ACX 音频目标——RMS 在 −23 和 −18 dBFS 之间，峰值在或低于 −3，噪声下限在或低于 −60——并且 `master-check` 会报告相对于这三个测量限制的 PASS/FAIL 结果。
-请注意，满足规范并不等同于被接受：ACX 的标准提交流程适用于人工旁白。有关可以接受 AI 旁白音频的途径，请参阅 [主 README](https://github.com/mcp-tool-shop-org/audiobooker#where-an-ai-narrated-audiobook-can-actually-go)。
-- **格式**：M4B（章节标记 + 嵌入式封面 + 系列元数据）、MP3、Opus、FLAC；按章节导出；零售示例片段。
+- **多声音转换**，提供可解释的、排序的语音建议；`audiobooker audition <character>` 允许您在最终确定之前对候选声音进行 A/B 测试。
+- **对话检测 + 说话者归因**（可选 BookNLP 共同指代）、情感推断和可重用的发音词典。
+- **渲染前审核**：导出可供人工编辑的脚本，修复归因，重新导入——没有任何内容会被静默更改。
+- **符合 ACX 规范的母带处理**：`render --acx` 将音频母带处理到 ACX 音频目标——RMS 在 −23 和 −18 dBFS 之间，峰值在或低于 −3，噪声下限在或低于 −60——并且 `master-check` 会报告是否通过这三个测量限制。
+请注意，满足规范并不等同于被接受：ACX 的标准提交流程适用于人工旁白。有关可以接受 AI 旁白作品的途径，请参阅 [主 README](https://github.com/mcp-tool-shop-org/audiobooker#where-an-ai-narrated-audiobook-can-actually-go)。
+- **可审核的归因**：每行记录 *如何* 确定其说话者——语音标签、您自己的更正或简单的交替轮次猜测——并且 `audiobooker report` 会单独计算猜测次数和无法归因的行数。猜测次数不能提高分数。
+- **格式**：M4B（章节标记 + 嵌入式封面 + 系列元数据）、MP3、Opus、FLAC、WAV；按章节导出；零售示例片段。
 - **7 种语言配置文件**（en/fr/de/es/ja/it/pt）和一个用于设置和忘记默认值的每本书配置文件。
 
 ## 环境变量
 
 | 变量 | 效果 |
 |---|---|
-| `AUDIOBOOKER_INSTALL_EXTRAS=render` | **配置**受管理的虚拟环境，使其**包含**语音引擎（用于渲染） |
+| `AUDIOBOOKER_INSTALL_EXTRAS=render` | **配置**受管理的虚拟环境，使其包含语音引擎（用于渲染） |
 | `AUDIOBOOKER_FORCE_REINSTALL=1` | 从头开始重建受管理的虚拟环境 |
 | `AUDIOBOOKER_BOOTSTRAP_ROOT=<dir>` | 覆盖受管理的虚拟环境的存储位置 |
 
-## 是否使用 pip？
+## 是否优先使用 pip？
 
 ```bash
 pipx install audiobooker-ai            # isolated CLI install

@@ -18,11 +18,15 @@ Usage:
     audiobooker cast-preset save mycast    # Save current cast as a preset
     audiobooker cast-preset apply mycast   # Apply a saved casting preset
     audiobooker speakers --suggest-aliases # Propose aliases per character
+    audiobooker speakers merge "Dr. Merrin" Merrin  # Fold duplicate cast slots
     audiobooker emotions presets           # List emotion preset packs + vocab
     audiobooker emotions mood-span 0 0 500 tense  # Mark a chapter span's mood
     audiobooker compile --emotion-preset dramatic # Compile with a preset pack
     audiobooker compile                    # Compile chapters to utterances
     audiobooker compile --dry-run          # Preview speaker/line summary
+    audiobooker compile --json             # Attribution rate as JSON
+    audiobooker cast-apply --auto --dry-run  # Preview the auto-cast
+    audiobooker make book.epub --review    # Stop after compile+cast for review
     audiobooker render                     # Render audiobook
     audiobooker render --engine my-tts     # Render with a pluggable TTS engine
     audiobooker render --dry-run           # Preview render without executing
@@ -71,6 +75,8 @@ from pathlib import Path
 from typing import Optional
 
 from audiobooker import formats as audio_formats
+from audiobooker.labels import chapter_label
+from audiobooker.shell_quote import quote_arg
 from audiobooker.errors import CompilationFailedError
 
 
@@ -102,6 +108,48 @@ USER_ERROR_TYPES = (
 )
 
 
+def _configure_output_encoding() -> None:
+    """Let stdout/stderr DEGRADE, never die, on characters they cannot encode.
+
+    FEAT-IN-001. ``new`` on a book titled in Japanese, Cyrillic or anything
+    accented saved a perfectly valid ``.audiobooker`` file and then died
+    printing its own success message::
+
+        Error: 'charmap' codec can't encode characters in position 9-13
+
+    — exit 1, traceback on ``_out(f"  Title: {project.title}")``. cp1252 is
+    the default Windows console codepage (the same one this suite models in
+    ``_encodable_spinner``'s tests), and ``print`` raises rather than
+    substituting.
+
+    This is the THIRD instance of this bug here. ``_encodable_spinner()``
+    fixed it for rich's braille spinner frames; ``renderer/ffmpeg_runner.py``
+    and ``renderer/output.py`` fixed it for decoding ffmpeg's UTF-8 stderr.
+    Both fixes were local to their call sites, so neither protected
+    ``_out``/``_err`` — the most-used output path in this module, with 60+
+    sites echoing a title, a path or a speaker name. Hence one fix at the
+    primitive rather than a fourth bespoke guard: reconfiguring the streams
+    once at startup covers every current and future call site.
+
+    ``errors="replace"`` and nothing else. Forcing UTF-8 onto a cp1252
+    console would trade a crash for mojibake; a run of ``?`` is the honest
+    degrade, and it is what ``renderer/*`` already chose for the same reason.
+
+    Best effort by design: ``sys.stdout`` may be a pytest capture object, a
+    ``StringIO``, or None under pythonw — none of which need (or support)
+    reconfiguring. A cosmetic encoding tweak must never be the thing that
+    kills the command.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(errors="replace")
+        except Exception:  # pragma: no cover - defensive; see docstring
+            continue
+
+
 def _out(*args, **kwargs) -> None:
     """Print normal (non-error) output unless --silent suppressed it.
 
@@ -110,6 +158,28 @@ def _out(*args, **kwargs) -> None:
     """
     if not _QUIET:
         print(*args, **kwargs)
+
+
+# The quoting rule moved to audiobooker/shell_quote.py. `review` prints the
+# same next-step command in the header of the file it writes, and `cli`
+# imports `review`, so the rule could not stay here without review either
+# importing cli back or keeping a second copy that drifts. Re-exported
+# under the old private name because the call sites and tests use it.
+_quote_arg = quote_arg
+
+
+def _emit_json(payload: dict) -> None:
+    """Write one ``--json`` payload to **stdout**, never suppressed by --silent.
+
+    FEAT-UX-004. stdout is the payload stream — a ``--json`` run's whole
+    product — so it bypasses ``_out``'s ``--silent`` gate for the same reason
+    ``_err`` does: ``--silent`` is about chatter, not about the thing the user
+    asked for. Errors go the other way, as JSON on stderr; see
+    ``_report_error``.
+    """
+    import json as json_mod
+
+    print(json_mod.dumps(payload, indent=2, ensure_ascii=False))
 
 
 def _err(*parts, args: "argparse.Namespace | None" = None, **kwargs) -> None:
@@ -172,6 +242,57 @@ def _resolve_engine(args, project=None):
         return engine_mod.get_default_engine()
 
 
+# Stable machine-readable codes for the plain Python exceptions listed in
+# USER_ERROR_TYPES. Anything carrying its own ``structured()`` (every class in
+# audiobooker/errors.py, plus RenderError/PresetError/VoiceNotFoundError) wins
+# over this table — it is only the fallback for exceptions raised by the
+# standard library, which have no code of their own. Ordered: the first
+# isinstance() match is used, so subclasses must come before their bases.
+_FALLBACK_ERROR_CODES: tuple[tuple[type, str], ...] = (
+    (FileNotFoundError, "FILE_NOT_FOUND"),
+    (IsADirectoryError, "NOT_A_FILE"),
+    (PermissionError, "PERMISSION_DENIED"),
+    (IndexError, "INDEX_OUT_OF_RANGE"),
+    (KeyError, "MISSING_KEY"),
+    (ValueError, "INVALID_VALUE"),
+    (ImportError, "RENDER_BACKEND_UNAVAILABLE"),
+    (OSError, "IO_ERROR"),
+)
+
+
+def _error_payload(e: BaseException) -> dict:
+    """The canonical machine-readable shape for any exception the CLI reports.
+
+    Always ``{code, message, hint, retryable}`` — a caller can rely on all
+    four keys existing whatever went wrong, which is the whole point of a
+    machine-readable error. ``cause`` rides along when the exception carries
+    one.
+    """
+    structured = getattr(e, "structured", None)
+    if callable(structured):
+        try:
+            payload = structured()
+        except Exception:  # pragma: no cover - never fail reporting an error
+            payload = None
+        if isinstance(payload, dict) and payload.get("code"):
+            payload.setdefault("hint", "")
+            payload.setdefault("retryable", False)
+            return payload
+
+    code = "UNEXPECTED_ERROR"
+    for exc_type, fallback in _FALLBACK_ERROR_CODES:
+        if isinstance(e, exc_type):
+            code = fallback
+            break
+
+    return {
+        "code": code,
+        "message": str(e),
+        "hint": str(getattr(e, "hint", "") or ""),
+        "retryable": bool(getattr(e, "retryable", False)),
+    }
+
+
 def _report_error(e: BaseException, args: "argparse.Namespace | None" = None) -> None:
     """Print a structured, user-facing error message.
 
@@ -183,7 +304,29 @@ def _report_error(e: BaseException, args: "argparse.Namespace | None" = None) ->
     CLI-CROSS: ``code`` and ``retryable`` used to be discarded here, so the
     shipcheck-mandated error shape never reached the user — a retryable
     backend blip looked identical to a permanent misconfiguration.
+
+    FEAT-UX-004: under ``--json`` the SAME information is emitted as one JSON
+    object instead of three English lines. errors.py has carried the
+    code/message/hint/retryable shape since it was written and this function
+    never emitted it, so every ``--json`` caller had a machine-readable
+    success path and a prose failure path — "scriptable except when it
+    matters".
+
+    The JSON goes to **stderr**, like the prose it replaces. stdout is the
+    payload stream: an error object printed there would land inside a
+    redirected ``audiobooker status --json > status.json`` and corrupt the
+    file the caller is about to parse. Read errors from stderr (or merge the
+    streams) and the exit code tells you which to parse.
     """
+    if getattr(args, "json_output", False):
+        import json as json_mod
+
+        _err(json_mod.dumps(_error_payload(e), indent=2, ensure_ascii=False))
+        if getattr(args, "debug", False):
+            import traceback
+            traceback.print_exc()
+        return
+
     _err(f"Error: {e}", args=args)
 
     code = getattr(e, "code", None)
@@ -200,6 +343,55 @@ def _report_error(e: BaseException, args: "argparse.Namespace | None" = None) ->
     if getattr(args, "debug", False):
         import traceback
         traceback.print_exc()
+
+
+def _cli_error(
+    code: str,
+    message: str,
+    hint: str = "",
+    *,
+    retryable: bool = False,
+) -> "BaseException":
+    """A structured CLI refusal. Lives here so errors.py stays out of this domain."""
+    from audiobooker.errors import AudiobookerError, ErrorDetail
+
+    return AudiobookerError(
+        ErrorDetail(
+            code=code,
+            message=message,
+            hint=hint,
+            retryable=retryable,
+        )
+    )
+
+
+def _refuse(
+    args: "argparse.Namespace | None",
+    *,
+    code: str,
+    message: str,
+    hint: str = "",
+) -> int:
+    """Pre-spend refusal via ``_report_error``: JSON on stderr under --json.
+
+    Gate helpers used to ``_err`` English and return 1, so ``render --json``
+    on a refused book left stdout empty and stderr unparseable. One chokepoint
+    keeps the four-key object on the JSON path and the prose Error/Hint lines
+    on the human path.
+    """
+    _report_error(_cli_error(code, message, hint), args)
+    return 1
+
+
+def _refuse_chapter_index(args, index: int, total: int) -> int:
+    """Bounds refusal matching ``_check_single_chapter_flags`` (0-based range)."""
+    where = f"0-{total - 1}" if total else "the project has no chapters"
+    return _refuse(
+        args,
+        code="CHAPTER_INDEX_OUT_OF_RANGE",
+        message=f"Chapter index {index} out of range ({where}).",
+        hint="Pass a 0-based chapter index in that range.",
+    )
 
 
 def _audiobooker_file_completer(prefix, **kwargs):
@@ -380,6 +572,9 @@ def create_parser() -> argparse.ArgumentParser:
     suggest_parser.add_argument(
         "-n", "--top", type=int, default=3, help="Show top N suggestions per speaker"
     )
+    suggest_parser.add_argument(
+        "--json", dest="json_output", action="store_true", help="Output as JSON"
+    )
 
     # --- cast-apply ---
     apply_parser = subparsers.add_parser(
@@ -390,6 +585,15 @@ def create_parser() -> argparse.ArgumentParser:
         "--auto",
         action="store_true",
         help="Apply top suggestion for all uncast speakers",
+    )
+    apply_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        dest="dry_run",
+        help="Show what --auto would cast, and change nothing",
+    )
+    apply_parser.add_argument(
+        "--json", dest="json_output", action="store_true", help="Output as JSON"
     )
 
     # --- compile ---
@@ -409,6 +613,12 @@ def create_parser() -> argparse.ArgumentParser:
         default=None,
         dest="emotion_preset",
         help="Emotion preset pack (sets project emotion_preset; default: keep current)",
+    )
+    # FEAT-UX-004: `report --json` existed and `compile --json` did not, so the
+    # unattributed rate that decides whether to proceed was unreachable from
+    # the command that computes it.
+    compile_parser.add_argument(
+        "--json", dest="json_output", action="store_true", help="Output as JSON"
     )
 
     # --- render ---
@@ -453,10 +663,15 @@ def create_parser() -> argparse.ArgumentParser:
     )
     # FT-RENDER-011: Force past casting validation
     # PH-B-002: also bypasses the dialogue-attribution quality gate.
+    # FEAT-UX-002: and the uncast-speaker gate, which is the one this help
+    # text used to promise and no CLI-side check delivered.
     render_parser.add_argument(
         "--force",
         action="store_true",
-        help="Bypass casting-completeness and attribution-quality validation",
+        help=(
+            "Render anyway when a speaker with dialogue is uncast, when "
+            "casting is incomplete, or when attribution quality has failed"
+        ),
     )
     # FT-RENDER-011: Convenience auto-cast before render
     render_parser.add_argument(
@@ -550,6 +765,11 @@ def create_parser() -> argparse.ArgumentParser:
         help="TTS engine to render with (default: voice-soundboard; "
              "overrides AUDIOBOOKER_ENGINE and the project's tts_engine)",
     )
+    # FEAT-UX-004: a render is the expensive step — the one a script most
+    # needs to inspect before and after.
+    render_parser.add_argument(
+        "--json", dest="json_output", action="store_true", help="Output as JSON"
+    )
 
     # --- info ---
     info_parser = subparsers.add_parser("info", help="Show project information")
@@ -578,6 +798,9 @@ def create_parser() -> argparse.ArgumentParser:
     # --- chapters ---
     chapters_parser = subparsers.add_parser("chapters", help="List chapters")
     chapters_parser.add_argument("-p", "--project", help="Project file")
+    chapters_parser.add_argument(
+        "--json", dest="json_output", action="store_true", help="Output as JSON"
+    )
 
     # --- speakers ---
     speakers_parser = subparsers.add_parser("speakers", help="List detected speakers")
@@ -595,6 +818,19 @@ def create_parser() -> argparse.ArgumentParser:
         help="With --suggest-aliases: apply the proposed aliases to the cast",
     )
     speakers_parser.add_argument(
+        "--json", dest="json_output", action="store_true", help="Output as JSON"
+    )
+    speakers_sub = speakers_parser.add_subparsers(
+        dest="speakers_command", help="Speaker management sub-commands"
+    )
+    sp_merge_parser = speakers_sub.add_parser(
+        "merge",
+        help="Fold source speaker into target (duplicate names / alias proposals)",
+    )
+    sp_merge_parser.add_argument("source", help="Cast slot to remove")
+    sp_merge_parser.add_argument("target", help="Cast slot that keeps the voice")
+    sp_merge_parser.add_argument("-p", "--project", help="Project file")
+    sp_merge_parser.add_argument(
         "--json", dest="json_output", action="store_true", help="Output as JSON"
     )
 
@@ -747,6 +983,16 @@ def create_parser() -> argparse.ArgumentParser:
         "--json", dest="json_output", action="store_true",
         help="Emit the per-book results array as JSON",
     )
+    # Same override as `render --force`: batch used to hardcode force=True
+    # and skip the attribution / uncast gates on the one-command spend path.
+    batch_parser.add_argument(
+        "--force",
+        action="store_true",
+        help=(
+            "Render anyway when a speaker with dialogue is uncast or when "
+            "attribution quality has failed (same override as render --force)"
+        ),
+    )
     # FT-ENGINE-001: pluggable TTS engine for every book in the batch.
     batch_parser.add_argument(
         "--engine",
@@ -826,6 +1072,14 @@ def create_parser() -> argparse.ArgumentParser:
         "-o", "--output",
         help="Output file path (default: sample.<ext>)",
     )
+    sample_parser.add_argument(
+        "--force",
+        action="store_true",
+        help=(
+            "Synthesize the sample chapter anyway when attribution quality "
+            "has failed or a speaker with dialogue is uncast"
+        ),
+    )
     # FT-ENGINE-001: render the sample through a specific TTS engine.
     sample_parser.add_argument(
         "--engine",
@@ -899,6 +1153,14 @@ def create_parser() -> argparse.ArgumentParser:
         action="store_true",
         dest="no_render",
         help="Skip rendering; build the feed from already-rendered chapter audio",
+    )
+    podcast_parser.add_argument(
+        "--force",
+        action="store_true",
+        help=(
+            "Render anyway when a speaker with dialogue is uncast or when "
+            "attribution quality has failed (same override as render --force)"
+        ),
     )
     podcast_parser.add_argument(
         "--engine",
@@ -1242,7 +1504,18 @@ def create_parser() -> argparse.ArgumentParser:
         dest="dry_run",
         help=(
             "Show the resolved project path, whether it already exists, the "
-            "cast that would be applied and the output path — then stop"
+            "cast that would be applied and the output path - then stop"
+        ),
+    )
+    # FEAT-UX-003: `make` is the headline command and the one path that could
+    # not review. The choice used to be one command with no review, or nine
+    # commands with it.
+    make_parser.add_argument(
+        "--review",
+        action="store_true",
+        help=(
+            "Stop after compile + auto-cast, write the review file and print "
+            "the import command (renders nothing)"
         ),
     )
     # FT-CLI-008: watch mode also available on make.
@@ -1256,6 +1529,16 @@ def create_parser() -> argparse.ArgumentParser:
         "--engine",
         metavar="NAME",
         help="TTS engine to render with (default: voice-soundboard)",
+    )
+    # Same override as `render --force`. make used to hardcode force=True
+    # after auto-cast, so a guessed-attribution book spent a full TTS run.
+    make_parser.add_argument(
+        "--force",
+        action="store_true",
+        help=(
+            "Render anyway when a speaker with dialogue is uncast or when "
+            "attribution quality has failed (same override as render --force)"
+        ),
     )
 
     # --- FT-CAST-019: audition (rank candidate voices for one speaker) ---
@@ -1726,7 +2009,7 @@ def _warn_unknown_character(project, character: str, args) -> None:
 
     suggestions = difflib.get_close_matches(character, sorted(detected), n=3)
     _err(
-        f"WARNING: unknown character {character!r} — no speaker by that name "
+        f"WARNING: unknown character {character!r} - no speaker by that name "
         "appears in this book.",
         args=args,
     )
@@ -1842,7 +2125,7 @@ def _cast_interactive(args) -> int:
         interactive = sys.stdin.isatty()
         if not interactive:
             _out(
-                "Non-interactive stdin — printing suggestions only "
+                "Non-interactive stdin - printing suggestions only "
                 "(run in a terminal to cast interactively):\n"
             )
 
@@ -2063,7 +2346,7 @@ def cmd_audition(args) -> int:
 
         if failed and not rendered:
             _err(
-                f"Error: all {len(failed)} sample render(s) failed — no audition "
+                f"Error: all {len(failed)} sample render(s) failed - no audition "
                 f"audio was written to {out_dir}/.",
                 args=args,
             )
@@ -2123,6 +2406,8 @@ def cmd_compile(args) -> int:
     """Compile chapters to utterances."""
     from audiobooker import AudiobookProject
 
+    json_output = getattr(args, "json_output", False)
+
     try:
         project_path = find_project_file(args.project)
         project = AudiobookProject.load(project_path)
@@ -2133,13 +2418,22 @@ def cmd_compile(args) -> int:
         emotion_preset = getattr(args, "emotion_preset", None)
         if emotion_preset:
             project.config.emotion_preset = emotion_preset
-            _out(f"Emotion preset: {emotion_preset}")
+            if not json_output:
+                _out(f"Emotion preset: {emotion_preset}")
 
         # --dry-run: compile in dry-run mode, print speaker summary table
         if getattr(args, "dry_run", False):
             dry_result = project.compile(dry_run=True)
             if dry_result is None:
-                _out("No chapters to compile.")
+                if json_output:
+                    _emit_json({
+                        "dry_run": True,
+                        "title": project.title,
+                        "speakers": [],
+                        "utterances": 0,
+                    })
+                else:
+                    _out("No chapters to compile.")
                 return 0
 
             # Gather speaker stats from dry-run result
@@ -2153,7 +2447,23 @@ def cmd_compile(args) -> int:
                     if not speaker_stats[key]["sample"]:
                         speaker_stats[key]["sample"] = utt.text[:60]
 
-            _out(f"\nDRY RUN — Compile preview for {project.title}")
+            if json_output:
+                _emit_json({
+                    "dry_run": True,
+                    "title": project.title,
+                    "utterances": sum(s["lines"] for s in speaker_stats.values()),
+                    "speakers": [
+                        {
+                            "speaker": speaker,
+                            "lines": speaker_stats[speaker]["lines"],
+                            "sample": speaker_stats[speaker]["sample"],
+                        }
+                        for speaker in sorted(speaker_stats)
+                    ],
+                })
+                return 0
+
+            _out(f"\nDRY RUN - Compile preview for {project.title}")
             _out(f"{'='*70}")
             _out(f"  {'Speaker':<20} {'Lines':<8} {'Sample'}")
             _out(f"  {'-'*20} {'-'*8} {'-'*40}")
@@ -2169,10 +2479,12 @@ def cmd_compile(args) -> int:
             _out(f"{'='*70}")
             return 0
 
-        _out(f"Compiling {len(project.chapters)} chapters...")
+        if not json_output:
+            _out(f"Compiling {len(project.chapters)} chapters...")
 
         def progress(current, total, title):
-            _out(f"  [{current}/{total}] {title}")
+            if not json_output:
+                _out(f"  [{current}/{total}] {title}")
 
         project.compile(progress_callback=progress)
         project.save()
@@ -2180,24 +2492,25 @@ def cmd_compile(args) -> int:
         # FT-CORE-022: Surface compile observability summary.
         summary = getattr(project, "compile_summary", {}) or {}
         total_utterances = sum(len(c.utterances) for c in project.chapters)
-        _out(
-            f"\nCompiled {total_utterances} utterances: "
-            f"{summary.get('speakers_resolved', 0)} speakers resolved, "
-            f"{summary.get('low_confidence', 0)} low-confidence, "
-            f"{summary.get('emotions_inferred', 0)} emotions inferred"
-        )
+        if not json_output:
+            _out(
+                f"\nCompiled {total_utterances} utterances: "
+                f"{summary.get('speakers_resolved', 0)} speakers resolved, "
+                f"{summary.get('low_confidence', 0)} low-confidence, "
+                f"{summary.get('emotions_inferred', 0)} emotions inferred"
+            )
 
         near_miss = summary.get("emotions_near_miss", 0)
-        if near_miss:
+        if near_miss and not json_output:
             _out(
                 f"  ({near_miss} more utterance(s) were just below the emotion "
-                "confidence threshold — run 'audiobooker report' to review them.)"
+                "confidence threshold - run 'audiobooker report' to review them.)"
             )
 
         # NLP errors are warnings, not failures — but the user should know
         # which chapters fell back to heuristic attribution.
         nlp_errors = summary.get("nlp_errors") or []
-        if nlp_errors:
+        if nlp_errors and not json_output:
             print(
                 f"WARNING: speaker resolution had problems on "
                 f"{len(nlp_errors)} chapter(s); kept heuristic attribution. "
@@ -2214,6 +2527,40 @@ def cmd_compile(args) -> int:
         from audiobooker.casting import compile_report
         quality_report = compile_report(project.chapters, project.casting)
         quality = quality_report["quality"]
+        # FEAT-CAST-001: `quality` counts only lines the tool ADMITS it could
+        # not attribute. A turn-tracking guess is recorded as a success, so it
+        # LOWERS that number — a chapter whose every speaker was invented
+        # reports 0% unattributed. attribution_quality counts the guesses.
+        attribution_quality = quality_report["attribution_quality"]
+        uncast = project.get_uncast_speakers()
+
+        # FEAT-UX-004: `report --json` existed; `compile --json` did not, so
+        # the numbers that decide "proceed or go back and fix attribution"
+        # were only ever printed as prose by the command that computes them.
+        if json_output:
+            _emit_json({
+                "title": project.title,
+                "chapters": len(project.chapters),
+                "utterances": total_utterances,
+                "speakers_resolved": summary.get("speakers_resolved", 0),
+                "low_confidence": summary.get("low_confidence", 0),
+                "emotions_inferred": summary.get("emotions_inferred", 0),
+                "emotions_near_miss": near_miss,
+                "nlp_errors": list(nlp_errors),
+                "total_dialogue": quality_report["total_dialogue"],
+                "dialogue_unattributed": quality_report["total_dialogue_unknown"],
+                "dialogue_unattributed_rate": quality_report["dialogue_unknown_rate"],
+                "quality": quality,
+                "dialogue_guessed": quality_report["total_low_confidence"],
+                "dialogue_unverified_rate":
+                    quality_report["dialogue_unverified_rate"],
+                "attribution_quality": attribution_quality,
+                "attribution_sources":
+                    quality_report["attribution_source_distribution"],
+                "uncast_speakers": sorted(uncast),
+            })
+            return 0
+
         # A book with no dialogue at all (pure narration) has nothing to
         # attribute — printing "0% unattributed" would just be noise.
         if quality_report["total_dialogue"] > 0:
@@ -2223,24 +2570,42 @@ def cmd_compile(args) -> int:
                 f"{quality_report['total_dialogue']} dialogue lines "
                 f"unattributed ({quality_report['dialogue_unknown_rate']:.0%})"
             )
-        if quality != "ok":
+            guessed = quality_report["total_low_confidence"]
+            if guessed:
+                _out(
+                    f"  ...and {guessed} more guessed by alternating turns "
+                    f"({quality_report['dialogue_unverified_rate']:.0%} of "
+                    "dialogue has no attribution in the text)"
+                )
+        # Warn on the STRICTER of the two. attribution_quality is the one
+        # that can see a guess; quality is the one users already know.
+        verdict = (
+            "failed"
+            if "failed" in (quality, attribution_quality)
+            else "degraded"
+            if "degraded" in (quality, attribution_quality)
+            else "ok"
+        )
+        if verdict != "ok":
             behavior = project.casting.unknown_character_behavior
-            if quality == "failed":
+            if verdict == "failed":
                 urgency = "the book will render as a near-single-voice reading"
             else:
                 urgency = "consider reviewing attribution before rendering"
             _err(
-                f"WARNING: dialogue attribution is {quality.upper()} — "
+                f"WARNING: dialogue attribution is {verdict.upper()} - "
                 f"{urgency} (unknown speakers fall back to {behavior!r}).",
                 args=args,
             )
             _err(
                 "Hint: check --lang, add inline [character] overrides, or "
                 "cast the missing speakers. Run 'audiobooker report' for the "
-                "worst offending lines.",
+                "worst offending lines - including the ones that were "
+                "guessed rather than left unattributed, which the "
+                "unattributed count does not show.",
                 args=args,
             )
-            if quality == "failed":
+            if verdict == "failed":
                 _err(
                     "Hint: 'audiobooker render' will refuse to proceed at "
                     "this quality level unless you pass --force.",
@@ -2248,7 +2613,6 @@ def cmd_compile(args) -> int:
                 )
 
         # Show uncast speakers
-        uncast = project.get_uncast_speakers()
         if uncast:
             _out("\nDetected speakers without voice assignments:")
             for speaker in sorted(uncast):
@@ -2362,12 +2726,7 @@ def _check_single_chapter_flags(args, project) -> Optional[int]:
     # project.render_chapter path had none, and neither rejected negatives).
     total = len(project.chapters)
     if chapter_index < 0 or chapter_index >= total:
-        where = f"0-{total - 1}" if total else "the project has no chapters"
-        _err(
-            f"Error: Chapter index {chapter_index} out of range ({where}).",
-            args=args,
-        )
-        return 1
+        return _refuse_chapter_index(args, chapter_index, total)
 
     # Incompatible flags — fail fast and name them all at once.
     conflicts = [
@@ -2377,17 +2736,18 @@ def _check_single_chapter_flags(args, project) -> Optional[int]:
     if getattr(args, "jobs", 1) and getattr(args, "jobs", 1) > 1:
         conflicts.append("-j/--jobs")
     if conflicts:
-        _err(
-            "Error: these flags apply to a full-book render and cannot be "
-            f"honored with -c/--chapter: {', '.join(conflicts)}",
-            args=args,
+        return _refuse(
+            args,
+            code="SINGLE_CHAPTER_INCOMPATIBLE_FLAGS",
+            message=(
+                "these flags apply to a full-book render and cannot be "
+                f"honored with -c/--chapter: {', '.join(conflicts)}"
+            ),
+            hint=(
+                "drop -c to render the whole book with those options, or "
+                "drop the options to render one chapter to a plain WAV."
+            ),
         )
-        _err(
-            "Hint: drop -c to render the whole book with those options, or "
-            "drop the options to render one chapter to a plain WAV.",
-            args=args,
-        )
-        return 1
 
     for attr, flag in _SINGLE_CHAPTER_NO_OP:
         if getattr(args, attr, False):
@@ -2398,6 +2758,50 @@ def _check_single_chapter_flags(args, project) -> Optional[int]:
             )
 
     return None
+
+
+def _compile_chapters_in_memory(project, chapters) -> None:
+    """Compile chapters for a dry-run preview. Never saves."""
+    for chapter in chapters:
+        if getattr(chapter, "skip", False):
+            continue
+        if getattr(chapter, "is_compiled", False):
+            continue
+        try:
+            project.compile_chapter(chapter.index)
+        except Exception as exc:  # pragma: no cover - preview must not fail
+            _logging_mod.getLogger(__name__).debug(
+                "Dry-run could not compile chapter %s (%s); "
+                "gate preview may be incomplete.",
+                getattr(chapter, "index", "?"),
+                exc,
+            )
+
+
+def _dry_run_gate_preview(args, project, chapters) -> dict:
+    """The two pre-spend gates as a dry-run preview (no TTS spend).
+
+    Shared by full-book and single-chapter ``--dry-run --json`` so
+    ``would_refuse`` cannot drift: live ``render`` / ``render -c N`` compile
+    then run ``_pre_spend_gates``. ``--force`` is the same override.
+    """
+    _compile_chapters_in_memory(project, chapters)
+    from audiobooker.casting import compile_report
+
+    report = compile_report(list(chapters), project.casting)
+    offenders = _uncast_dialogue_speakers(project, chapters)
+    attribution_quality = report.get("attribution_quality") or "ok"
+    force = bool(getattr(args, "force", False))
+    would_refuse = (not force) and (
+        bool(offenders) or attribution_quality == "failed"
+    )
+    return {
+        "uncast_dialogue_speakers": dict(
+            sorted(offenders.items(), key=lambda kv: (-kv[1], kv[0]))
+        ),
+        "attribution_quality": attribution_quality,
+        "would_refuse": would_refuse,
+    }
 
 
 def _dry_run_single_chapter(args, project) -> int:
@@ -2417,18 +2821,153 @@ def _dry_run_single_chapter(args, project) -> int:
         or getattr(getattr(project, "config", None), "tts_engine", None)
         or "voice-soundboard"
     )
+    preview = _dry_run_gate_preview(args, project, [chapter])
     utterances = len(getattr(chapter, "utterances", []) or [])
     utterance_note = (
         f"{utterances} utterance(s)" if utterances
         else "not compiled yet (would compile first)"
     )
 
-    _out("DRY RUN — nothing was rendered.")
-    _out(f"  Chapter:    {chapter_index} — {chapter.title}")
+    if getattr(args, "json_output", False):
+        _emit_json({
+            "dry_run": True,
+            "title": project.title,
+            "chapters": [{
+                "index": chapter.index,
+                "number": chapter.index + 1,
+                "title": chapter.title,
+                "words": chapter.word_count,
+                "utterances": utterances,
+            }],
+            "output": str(Path(output)),
+            "engine": engine_name,
+            "cast": dict(sorted(project.casting.get_voice_mapping().items())),
+            "uncast_dialogue_speakers": preview["uncast_dialogue_speakers"],
+            "attribution_quality": preview["attribution_quality"],
+            "would_refuse": preview["would_refuse"],
+        })
+        return 0
+
+    _out("DRY RUN - nothing was rendered.")
+    _out(f"  Chapter:    {_chapter_label(chapter.index)} {chapter.title}")
     _out(f"  Output:     {Path(output)}")
     _out(f"  Utterances: {utterance_note}")
     _out(f"  Engine:     {engine_name}")
+    if preview["would_refuse"]:
+        bits = []
+        n_uncast = len(preview["uncast_dialogue_speakers"])
+        if n_uncast:
+            bits.append(f"{n_uncast} uncast dialogue speaker(s)")
+        if preview["attribution_quality"] == "failed":
+            bits.append("attribution_quality=failed")
+        _err(
+            f"you asked to preview chapter {chapter.index}; a live render "
+            f"would refuse because {'; '.join(bits)}. Pass --force to override.",
+            args=args,
+        )
     _out("\nRe-run without --dry-run to render this chapter.")
+    return 0
+
+
+def _dry_run_full_book(
+    args, project, *, output, fmt, resume, from_chapter, engine_name
+) -> int:
+    """`render --dry-run` for the whole book: the plan, and the CAST.
+
+    FEAT-UX-002 / FEAT-UX-004 / FEAT-UX-007. The preview used to be
+    ``dry_run_render``'s cached-vs-to-render table and nothing else — it
+    never mentioned who was going to read the book, which is the one thing a
+    mis-cast render gets wrong and the one thing this preview could have
+    caught for free. It also had no ``--json``, so the cheap pre-flight check
+    was unavailable to any script.
+
+    The human path still calls ``dry_run_render`` for the cache breakdown
+    (that lives in the renderer, which owns the cache) and adds the cast
+    report after it. The JSON path reports what this module can state
+    truthfully on its own — chapters in BOTH numbering schemes, the cast, the
+    uncast speakers who own dialogue, and the resolved output — and does not
+    invent cache state it did not compute.
+    """
+    json_output = getattr(args, "json_output", False)
+
+    # The cast report needs utterances. dry_run_render never compiled, and a
+    # preview must not write, so compile in memory and do not save. Shared
+    # with `_dry_run_single_chapter` so would_refuse cannot drift.
+    preview = _dry_run_gate_preview(args, project, project.chapters)
+    offenders = preview["uncast_dialogue_speakers"]
+    mapping = project.casting.get_voice_mapping()
+
+    if json_output:
+        _emit_json({
+            "dry_run": True,
+            "title": project.title,
+            "output": str(output),
+            "format": fmt,
+            "engine": engine_name,
+            "resume": bool(resume),
+            "from_chapter": from_chapter,
+            "chapters": [
+                {
+                    "index": chapter.index,
+                    "number": chapter.index + 1,
+                    "title": chapter.title,
+                    "words": chapter.word_count,
+                    "excluded": bool(chapter.skip),
+                }
+                for chapter in project.chapters
+            ],
+            "cast": dict(sorted(mapping.items())),
+            "uncast_dialogue_speakers": offenders,
+            "attribution_quality": preview["attribution_quality"],
+            "would_refuse": preview["would_refuse"],
+        })
+        return 0
+
+    from audiobooker.renderer.engine import dry_run_render
+    # RH-B-004, second half. dry_run_render GREW `engine` and
+    # output_profile parameters when that bug was fixed — because both are
+    # part of the render-params cache key — and this call site was never
+    # updated to pass them. So the preview hashed engine=None and
+    # output_profile='podcast' while `render --acx` hashes the real engine
+    # and 'acx', and every chapter came back "to render" on a book that
+    # was fully cached. The same drift the docstring warns about, in the
+    # opposite direction: RH-B-004 under-reported, this over-reported.
+    #
+    # render_params_hash accepts an engine NAME, so this costs nothing —
+    # no TTS engine is instantiated for a preview.
+    dry_run_render(
+        project,
+        resume=resume,
+        from_chapter=from_chapter,
+        engine=engine_name,
+        output_profile=(
+            "acx" if getattr(args, "acx", False)
+            else project.config.output_profile
+        ),
+    )
+
+    _out(f"Cast ({len(mapping)} speaker(s)):")
+    if mapping:
+        for speaker, voice in sorted(mapping.items()):
+            _out(f"  {speaker}: {voice}")
+    else:
+        _out("  (nobody is cast - every line would use the fallback voice)")
+
+    if offenders:
+        _err(
+            f"WARNING: {len(offenders)} speaker(s) own dialogue with no voice "
+            "assigned. A real render will refuse unless you pass --force:",
+            args=args,
+        )
+        for speaker, lines in sorted(offenders.items(), key=lambda kv: (-kv[1], kv[0])):
+            _err(f"  {speaker}: {lines} dialogue line(s)", args=args)
+    if preview["attribution_quality"] == "failed" and not getattr(args, "force", False):
+        _err(
+            "you asked for a dry-run; a live render would refuse because "
+            "attribution_quality=failed. Pass --force to override.",
+            args=args,
+        )
+
     return 0
 
 
@@ -2475,7 +3014,7 @@ def _handle_clean_cache(args, project_path: Path) -> Optional[int]:
 
     if getattr(args, "dry_run", False):
         _out(
-            f"DRY RUN — would delete {chapters} cached chapter(s) "
+            f"DRY RUN - would delete {chapters} cached chapter(s) "
             f"({files} file(s), {_format_bytes(size)}) from {cache_dir}"
         )
         return None
@@ -2493,7 +3032,7 @@ def _handle_clean_cache(args, project_path: Path) -> Optional[int]:
 
     shutil.rmtree(cache_dir)
     _out(
-        f"Cache cleared: {cache_dir} — deleted {chapters} cached chapter(s) "
+        f"Cache cleared: {cache_dir} - deleted {chapters} cached chapter(s) "
         f"({files} file(s), {_format_bytes(size)})"
     )
     return None
@@ -2510,8 +3049,9 @@ def _check_dialogue_attribution_quality(args, chapters, casting) -> Optional[int
     place left that can still refuse to spend a TTS run on a book whose
     speakers are mostly wrong.
 
-    Same shape as ``cmd_podcast`` / the ``export-chapters`` guard: an
-    ``_err()`` naming the problem, an ``_err()`` hint, a non-zero return.
+    Same shape as ``cmd_podcast`` / the ``export-chapters`` guard: a
+    structured refusal through ``_report_error`` (JSON on stderr under
+    ``--json``), a hint, a non-zero return.
     ``--force`` — render's existing flag, previously documented as bypassing
     only casting-completeness validation — also bypasses this gate; that is
     the established override convention in this CLI (see also ``cast
@@ -2538,26 +3078,156 @@ def _check_dialogue_attribution_quality(args, chapters, casting) -> Optional[int
     from audiobooker.casting import compile_report
 
     report = compile_report(chapters, casting)
-    if report["quality"] != "failed" or getattr(args, "force", False):
+
+    # FEAT-CAST-001: gate on attribution_quality, not quality.
+    #
+    # `quality` counts only dialogue the tool ADMITS it could not attribute.
+    # Turn-tracking fills every gap by alternation and each guess is recorded
+    # as a successful attribution, so a guess LOWERS that number. The gate was
+    # therefore blind to the exact failure it exists to catch: a chapter where
+    # every line got a confident wrong speaker has nothing `unknown` in it and
+    # sailed straight through. The passage that drove this reads quality "ok"
+    # at 52% hand-scored speaker accuracy.
+    #
+    # `attribution_quality` counts dialogue whose speaker was GUESSED, so it
+    # cannot be improved by guessing harder. Both are reported below, because
+    # the remedies differ: unattributed lines want casting or --lang, guessed
+    # lines want a review pass.
+    if report["attribution_quality"] != "failed" or getattr(
+        args, "force", False
+    ):
         return None
 
-    _err(
-        "Error: dialogue attribution failed the quality gate — "
-        f"{report['total_dialogue_unknown']}/{report['total_dialogue']} "
-        f"dialogue lines ({report['dialogue_unknown_rate']:.0%}) are "
-        "unattributed. Rendering now would pay for a full TTS run of a book "
-        "that comes out as a near-single-voice reading (unknown speakers "
-        f"fall back to {casting.unknown_character_behavior!r}).",
-        args=args,
+    unverified = report["dialogue_unverified_rate"]
+    guessed = report["total_low_confidence"]
+    unknown = report["total_dialogue_unknown"]
+    total = report["total_dialogue"]
+
+    return _refuse(
+        args,
+        code="ATTRIBUTION_QUALITY_FAILED",
+        message=(
+            "dialogue attribution failed the quality gate - "
+            f"{guessed + unknown}/{total} dialogue lines ({unverified:.0%}) have "
+            "no attribution in the text. "
+            f"{guessed} were guessed by alternating turns and {unknown} are "
+            "unattributed. Rendering now would pay for a full TTS run of a book "
+            "whose speakers are largely invented (unknown speakers fall back to "
+            f"{casting.unknown_character_behavior!r})."
+        ),
+        hint=(
+            "a guessed line is not visible in the unattributed count - run "
+            "'audiobooker report' and check the low-confidence lines, or "
+            "'review-export' to fix them by hand. Check --lang if the book is "
+            "not English. Pass --force to render anyway (e.g. the book really is "
+            "mostly narration)."
+        ),
     )
-    _err(
-        "Hint: check --lang, add inline [character] overrides, or cast the "
-        "missing speakers, then re-run. Run 'audiobooker report' for the "
-        "worst offending lines, or pass --force to render anyway (e.g. the "
-        "book really is mostly narration).",
-        args=args,
+
+
+def _uncast_dialogue_speakers(project, chapters) -> dict[str, int]:
+    """Named speakers who OWN DIALOGUE and have no voice: {speaker: lines}.
+
+    FEAT-UX-002. Change one ``@Sarah`` to ``@Sarrah`` in a review file and
+    ``review-import`` exits 0 with no warning, ``speakers`` shows
+    ``Sarrah: [uncast]``, and the render proceeds. ``info`` already notices
+    uncast speakers; it is simply not on the render path.
+
+    ``unknown`` is excluded deliberately. It is not a typo — it is the
+    designed sentinel for a line nobody could attribute, it has its own
+    fallback (``casting.unknown_character_behavior``) and its own gate
+    (``_check_dialogue_attribution_quality``). Counting it here would refuse
+    every book with a single unattributable line, which is every real book.
+
+    Narration is excluded too: a speaker who only narrates is covered by the
+    narrator voice, so an uncast one is not a wrong-voice defect.
+
+    Keys are the speaker names as they appear in the utterances — the names
+    the user would type to fix this — not normalized casting keys.
+    """
+    from audiobooker.models import UtteranceType
+
+    casting = project.casting
+    cast_keys = {
+        key for key, char in casting.characters.items() if getattr(char, "voice", None)
+    }
+
+    counts: dict[str, int] = {}
+    for chapter in chapters:
+        for utt in getattr(chapter, "utterances", None) or []:
+            if utt.utterance_type != UtteranceType.DIALOGUE:
+                continue
+            speaker = (utt.speaker or "").strip()
+            if not speaker:
+                continue
+            key = casting.normalize_key(speaker)
+            if key == "unknown" or key in cast_keys:
+                continue
+            counts[speaker] = counts.get(speaker, 0) + 1
+    return counts
+
+
+def _check_uncast_dialogue_speakers(args, project, chapters) -> Optional[int]:
+    """FEAT-UX-002: refuse to render dialogue in the wrong voice. Or None.
+
+    ``render --force``'s help text has always promised it bypasses
+    "casting-completeness" validation. One did exist — in
+    ``renderer/engine.py`` — but it fires only when uncast speakers own more
+    than 30% of ALL utterances, and only from inside ``render_project``,
+    after the CLI has printed "Rendering audiobook to: ..." and started the
+    progress bar. A typo affecting one secondary character sits far under
+    that threshold, so the book rendered in full, exit 0, with that character
+    read in the fallback voice. That is the expensive failure: you find out
+    by listening.
+
+    This gate is absolute rather than proportional (one uncast speaker with
+    dialogue is already a wrong voice in the finished book), it runs before
+    anything is spent, and it reuses ``--force`` — the established override
+    in this CLI — rather than adding a flag.
+
+    Returns 1 after printing the refusal, or None to proceed.
+    """
+    if getattr(args, "force", False):
+        return None
+
+    offenders = _uncast_dialogue_speakers(project, chapters)
+    if not offenders:
+        return None
+
+    total = sum(offenders.values())
+    listed = "\n".join(
+        f"  {speaker}: {lines} dialogue line(s)"
+        for speaker, lines in sorted(
+            offenders.items(), key=lambda kv: (-kv[1], kv[0])
+        )
     )
-    return 1
+    return _refuse(
+        args,
+        code="UNCAST_DIALOGUE_SPEAKER",
+        message=(
+            f"{len(offenders)} speaker(s) own {total} dialogue line(s) but "
+            "have no voice assigned, so they would be read in the fallback voice "
+            f"({project.casting.unknown_character_behavior!r}):\n{listed}"
+        ),
+        hint=(
+            "cast them (audiobooker cast <speaker> <voice>), auto-cast them "
+            "(audiobooker cast-apply --auto), or pass --force to render anyway. "
+            "A speaker you do not recognise is usually a typo in an imported "
+            "review file - check 'audiobooker speakers'."
+        ),
+    )
+
+
+def _pre_spend_gates(args, project, chapters) -> Optional[int]:
+    """The two CLI gates that must run before any TTS spend. Or None.
+
+    ``cmd_render`` had these; make/batch/podcast/sample did not, so the
+    production sequence that actually burns a book skipped them.
+    """
+    rc = _check_dialogue_attribution_quality(args, chapters, project.casting)
+    if rc is not None:
+        return rc
+    return _check_uncast_dialogue_speakers(args, project, chapters)
 
 
 def _encodable_spinner() -> str:
@@ -2577,10 +3247,30 @@ def _encodable_spinner() -> str:
 
 
 def _cmd_render_once(args) -> int:
-    """Render audiobook (single pass — the body shared by cmd_render/watch)."""
+    """Render audiobook (single pass — the body shared by cmd_render/watch).
+
+    FEAT-UX-004: under ``--json`` the progress chatter is suppressed for the
+    whole pass so stdout carries exactly one JSON object. ``_QUIET`` is the
+    existing mechanism for that (``--silent`` sets it in ``main()``); it is
+    saved and restored so ``--watch``'s next pass, and anything else in the
+    process, sees it unchanged.
+    """
+    global _QUIET
+
     from audiobooker import AudiobookProject
     from audiobooker.renderer.engine import RenderError
 
+    quiet_before = _QUIET
+    if getattr(args, "json_output", False):
+        _QUIET = True
+    try:
+        return _cmd_render_once_inner(args, AudiobookProject, RenderError)
+    finally:
+        _QUIET = quiet_before
+
+
+def _cmd_render_once_inner(args, AudiobookProject, RenderError) -> int:
+    """The render body. See ``_cmd_render_once`` for the --json wrapper."""
     try:
         project_path = find_project_file(args.project)
         project = AudiobookProject.load(project_path)
@@ -2610,15 +3300,11 @@ def _cmd_render_once(args) -> int:
 
         # FT-RENDER-011: Auto-apply voice suggestions if --cast-suggest
         if getattr(args, "cast_suggest", False):
-            from audiobooker.casting.voice_suggester import VoiceSuggester
-
             uncast = project.get_uncast_speakers()
             if uncast:
                 _out(f"Auto-casting {len(uncast)} uncast speakers...")
-                already_cast = project.casting.get_voice_mapping()
-                suggester = VoiceSuggester(max_suggestions=1)
-                results = suggester.suggest_all(sorted(uncast), already_cast=already_cast)
-                for result in results:
+                # Same evidence cast-suggest shows — see _suggest_voices.
+                for result in _suggest_voices(project, uncast, max_suggestions=1):
                     if result.top:
                         project.cast(result.speaker, result.top.voice_id)
                         _out(f"  Cast {result.speaker} as {result.top.voice_id}")
@@ -2628,8 +3314,12 @@ def _cmd_render_once(args) -> int:
         # produce a coverless book.
         cover_flag = getattr(args, "cover", None)
         if cover_flag and not Path(cover_flag).exists():
-            _err(f"Error: Cover art file not found: {cover_flag}")
-            return 1
+            return _refuse(
+                args,
+                code="COVER_NOT_FOUND",
+                message=f"Cover art file not found: {cover_flag}",
+                hint="Pass a path to an existing JPG/PNG, or omit --cover.",
+            )
 
         # CLI-3 / CLI-5: everything below used to live in the `else:` branch of
         # `if args.chapter is not None:`, so `render -c N` ran straight past the
@@ -2669,7 +3359,14 @@ def _cmd_render_once(args) -> int:
                 include_ranges=chapters_flag,
                 exclude_ranges=exclude_chapters_flag,
             )
+            # FEAT-UX-007: name what was selected in BOTH schemes. The
+            # count alone left the user to guess whether "1-2,4" had done
+            # what they meant, and the dry-run table then renumbered the
+            # survivors 0,1,2 — so nothing on screen agreed with the flag
+            # they had just typed.
             _out(f"Chapter selection: {len(project.chapters)} of {original_count} chapters")
+            for chapter in project.chapters:
+                _out(f"  {_chapter_label(chapter.index)} {chapter.title}")
 
         if args.chapter is not None:
             # Render single chapter. Bounds, flag compatibility and --dry-run
@@ -2684,11 +3381,11 @@ def _cmd_render_once(args) -> int:
             if not chapter.is_compiled:
                 project.compile_chapter(args.chapter)
 
-            # PH-B-002: refuse before spending a TTS run if this chapter's
-            # dialogue attribution has collapsed. Scoped to just this
-            # chapter — the rest of the book, compiled or not, has no
-            # bearing on whether THIS render should proceed.
-            rc = _check_dialogue_attribution_quality(args, [chapter], project.casting)
+            # PH-B-002 / FEAT-UX-002: refuse before spending a TTS run if
+            # this chapter's dialogue attribution has collapsed, or a named
+            # speaker owns dialogue with no voice. Scoped to just this
+            # chapter — the rest of the book has no bearing on THIS render.
+            rc = _pre_spend_gates(args, project, [chapter])
             if rc is not None:
                 return rc
 
@@ -2702,7 +3399,22 @@ def _cmd_render_once(args) -> int:
                 )
             else:
                 path = project.render_chapter(args.chapter, output)
-            _out(f"Output: {path}")
+
+            # FEAT-UX-004 sibling: full-book --json emits a payload; the
+            # paid single-chapter branch used to return 0 with empty stdout
+            # because _QUIET swallowed "Output: {path}".
+            if getattr(args, "json_output", False):
+                _emit_json({
+                    "path": str(path),
+                    "output": str(path),
+                    "chapter": {
+                        "index": chapter.index,
+                        "number": chapter.index + 1,
+                    },
+                    "complete": True,
+                })
+            else:
+                _out(f"Output: {path}")
 
             # CLI-5: --notify is advertised on `render` but was read only in
             # the full-book branch, so a single-chapter render never notified.
@@ -2734,9 +3446,19 @@ def _cmd_render_once(args) -> int:
 
             # FT-RENDER-004: Dry-run mode
             if getattr(args, "dry_run", False):
-                from audiobooker.renderer.engine import dry_run_render
-                dry_run_render(project, resume=resume, from_chapter=from_chapter)
-                return 0
+                return _dry_run_full_book(
+                    args,
+                    project,
+                    output=output,
+                    fmt=fmt,
+                    resume=resume,
+                    from_chapter=from_chapter,
+                    engine_name=(
+                        getattr(args, "engine", None)
+                        or project.config.tts_engine
+                        or "voice-soundboard"
+                    ),
+                )
 
             # PH-B-002: ensure compiled, then refuse before spending a TTS run
             # if attribution has collapsed. Must run BEFORE the needs_direct /
@@ -2747,7 +3469,7 @@ def _cmd_render_once(args) -> int:
             if uncompiled:
                 project.compile()
 
-            rc = _check_dialogue_attribution_quality(args, project.chapters, project.casting)
+            rc = _pre_spend_gates(args, project, project.chapters)
             if rc is not None:
                 return rc
 
@@ -2769,7 +3491,7 @@ def _cmd_render_once(args) -> int:
 
             _out(f"Rendering audiobook to: {output}")
             if not resume:
-                _out("  (cache disabled — full re-render)")
+                _out("  (cache disabled - full re-render)")
             if jobs > 1:
                 _out(f"  (parallel rendering: {jobs} workers)")
             if output_profile == "acx":
@@ -2784,9 +3506,15 @@ def _cmd_render_once(args) -> int:
             progress_task = None
 
             def _plain_progress(current, total, status):
+                # --json owns stdout for the payload; rich's bar and these
+                # lines both write there, so neither may run.
+                if getattr(args, "json_output", False):
+                    return
                 print(f"  [{current}/{total}] {status}")
 
             try:
+                if getattr(args, "json_output", False):
+                    raise ImportError("--json: no progress bar on the payload stream")
                 from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TimeRemainingColumn
                 progress_bar = Progress(
                     # rich's default spinner is "dots", drawn with braille
@@ -2910,13 +3638,29 @@ def _cmd_render_once(args) -> int:
             # path and still writes a file; announcing "Audiobook created" for
             # it told the user a 29-of-30-chapter book was finished.
             partial = _render_incompleteness(path)
-            if partial is not None:
+            if getattr(args, "json_output", False):
+                # FEAT-UX-004: a render is the expensive step, so a script
+                # should be able to read its outcome rather than scrape it.
+                _emit_json({
+                    "title": project.title,
+                    "output": str(path),
+                    "complete": partial is None,
+                    "duration_minutes": round(
+                        project.total_duration_seconds / 60, 2
+                    ),
+                    "chapters": len(project.chapters),
+                    "detail": (
+                        _partial_render_message(partial) if partial is not None else ""
+                    ),
+                })
+            elif partial is not None:
                 _err(f"\nAudiobook assembled INCOMPLETE: {path}", args=args)
                 _err(_partial_render_message(partial), args=args)
                 _err(f"Hint: {_PARTIAL_RENDER_HINT}", args=args)
+                _out(f"Duration: {project.total_duration_seconds / 60:.1f} minutes")
             else:
                 _out(f"\nAudiobook created: {path}")
-            _out(f"Duration: {project.total_duration_seconds / 60:.1f} minutes")
+                _out(f"Duration: {project.total_duration_seconds / 60:.1f} minutes")
 
             # FT-RENDER-020: Desktop notification on success
             if notify:
@@ -2936,7 +3680,10 @@ def _cmd_render_once(args) -> int:
         return 0
 
     except RenderError as e:
-        _print_render_failure(e)
+        if getattr(args, "json_output", False):
+            _report_error(e, args)
+        else:
+            _print_render_failure(e)
         # FT-RENDER-020: Desktop notification on failure
         if getattr(args, "notify", False):
             _send_notification(
@@ -2944,6 +3691,17 @@ def _cmd_render_once(args) -> int:
                 message=f"Render FAILED: {e}",
             )
         return 1
+
+    except ImportError as e:
+        return _refuse(
+            args,
+            code="RENDER_BACKEND_UNAVAILABLE",
+            message=(
+                "you asked to render; I could not load the TTS backend "
+                f"({e})."
+            ),
+            hint=VOICE_SOUNDBOARD_INSTALL_HINT,
+        )
 
     except Exception as e:
         _report_error(e, args)
@@ -2997,10 +3755,10 @@ def _partial_render_message(summary) -> str:
     if total:
         included = max(total - len(missing), 0)
         return (
-            f"PARTIAL render — {detail}. "
+            f"PARTIAL render - {detail}. "
             f"The file contains {included} of {total} chapters."
         )
-    return f"PARTIAL render — {detail}."
+    return f"PARTIAL render - {detail}."
 
 
 _PARTIAL_RENDER_HINT = (
@@ -3319,9 +4077,23 @@ def cmd_voices(args) -> int:
                 # Older no-arg signature — resolves the built-in engine.
                 engine_obj = engine_mod.get_default_engine()
         except Exception as e:
-            _err(f"Error: could not load TTS engine {engine_name!r}: {e}", args=args)
-            return 1
+            if callable(getattr(e, "structured", None)):
+                _report_error(e, args)
+                return 1
+            return _refuse(
+                args,
+                code="ENGINE_NOT_FOUND",
+                message=(
+                    f"you asked to list voices for engine {engine_name!r}; "
+                    f"I could not load it ({e})."
+                ),
+                hint=(
+                    "pass a registered --engine name, or omit --engine for "
+                    "the built-in catalog."
+                ),
+            )
 
+    offline = ""
     try:
         # Per contract: get_available_voices(engine=...) uses the engine's
         # list_voices() when present, else the built-in catalog. Call
@@ -3331,10 +4103,32 @@ def cmd_voices(args) -> int:
             voices = get_available_voices(engine=engine_obj)
         except TypeError:
             voices = get_available_voices()
-    except ImportError:
-        _err("Error: voice-soundboard not installed", args=args)
-        _err(VOICE_SOUNDBOARD_INSTALL_HINT, args=args)
-        return 1
+    except ImportError as exc:
+        # `voices` used to stop here with exit 1 — while `cast-suggest` and
+        # `audition`, on the very same machine, happily printed voice IDs.
+        # They go through DefaultVoiceRegistry, which falls back to the
+        # curated catalog when the backend is absent. So you could accept
+        # the machine's casting offline but never override it, which
+        # contradicts the documented offline workflow. Use the same fallback
+        # the suggester uses, and say which catalog this is.
+        from audiobooker.casting.voice_registry import VoiceBackendIncompatibleError
+        from audiobooker.casting.voice_suggester import DefaultVoiceRegistry
+
+        voices = set(DefaultVoiceRegistry().list_voices())
+        offline = (
+            "incompatible" if isinstance(exc, VoiceBackendIncompatibleError)
+            else "missing"
+        )
+        if not voices:  # pragma: no cover - the curated list is never empty
+            return _refuse(
+                args,
+                code="VOICE_BACKEND_MISSING",
+                message=(
+                    "you asked to list voices; I have no catalog "
+                    "(voice-soundboard is not installed)."
+                ),
+                hint=VOICE_SOUNDBOARD_INSTALL_HINT,
+            )
 
     # Normalize whatever get_available_voices returns (a set of ids, or a list
     # of richer voice descriptors) into (voice_id, description) pairs.
@@ -3366,19 +4160,30 @@ def cmd_voices(args) -> int:
     rows.sort(key=lambda r: r[0])
 
     if json_output:
-        import json as json_mod
-        print(json_mod.dumps(
-            {
-                "engine": engine_name or "voice-soundboard",
-                "voices": [
-                    {"voice_id": vid, "description": desc} if desc else {"voice_id": vid}
-                    for vid, desc in rows
-                ],
-            },
-            indent=2,
-            ensure_ascii=False,
-        ))
+        _emit_json({
+            "engine": engine_name or "voice-soundboard",
+            "source": "builtin-catalog" if offline else "engine",
+            "backend": offline or "available",
+            "voices": [
+                {"voice_id": vid, "description": desc} if desc else {"voice_id": vid}
+                for vid, desc in rows
+            ],
+        })
         return 0
+
+    if offline:
+        reason = (
+            "voice-soundboard is installed but its API has drifted"
+            if offline == "incompatible"
+            else "voice-soundboard is not installed"
+        )
+        _err(
+            f"Note: {reason}, so this is the built-in curated catalog - the "
+            "same list cast-suggest and audition rank against. Install (or "
+            "repair) the backend to see the voices it actually ships.",
+            args=args,
+        )
+        _err(VOICE_SOUNDBOARD_INSTALL_HINT, args=args)
 
     label = f" ({engine_name})" if engine_name else ""
     _out(f"Available voices{label}:\n")
@@ -3386,6 +4191,13 @@ def cmd_voices(args) -> int:
         _out(f"  {voice_id}{f'  - {desc}' if desc else ''}")
 
     return 0
+
+
+# Moved to audiobooker/labels.py. `renderer.engine`'s dry-run table prints
+# chapter references too and `cli` imports `engine`, so the rule could not
+# stay here without engine importing cli back. Re-exported under the old
+# private name because the call sites and tests use it.
+_chapter_label = chapter_label
 
 
 def cmd_chapters(args) -> int:
@@ -3401,7 +4213,10 @@ def cmd_chapters(args) -> int:
             project = AudiobookProject.load(project_path)
             merged = project.merge_chapters(args.start, args.end)
             project.save()
-            _out(f"Merged chapters {args.start}-{args.end} into: {merged.title}")
+            _out(
+                f"Merged chapters {_chapter_label(args.start)}-"
+                f"{_chapter_label(args.end)} into: {merged.title}"
+            )
             _out(f"  New chapter count: {len(project.chapters)}")
             return 0
         except USER_ERROR_TYPES as e:
@@ -3414,9 +4229,12 @@ def cmd_chapters(args) -> int:
             project = AudiobookProject.load(project_path)
             first, second = project.split_chapter(args.index, args.paragraph)
             project.save()
-            _out(f"Split chapter {args.index} at paragraph {args.paragraph}:")
-            _out(f"  [{first.index}] {first.title} ({first.word_count} words)")
-            _out(f"  [{second.index}] {second.title} ({second.word_count} words)")
+            _out(
+                f"Split chapter {_chapter_label(args.index)} at paragraph "
+                f"{args.paragraph}:"
+            )
+            _out(f"  {_chapter_label(first.index)} {first.title} ({first.word_count} words)")
+            _out(f"  {_chapter_label(second.index)} {second.title} ({second.word_count} words)")
             _out(f"  New chapter count: {len(project.chapters)}")
             return 0
         except USER_ERROR_TYPES as e:
@@ -3430,7 +4248,7 @@ def cmd_chapters(args) -> int:
             project.exclude_chapter(args.index)
             project.save()
             ch = project.chapters[args.index]
-            _out(f"Excluded chapter {args.index}: {ch.title}")
+            _out(f"Excluded chapter {_chapter_label(args.index)}: {ch.title}")
             return 0
         except USER_ERROR_TYPES as e:
             _report_error(e, args)
@@ -3443,7 +4261,7 @@ def cmd_chapters(args) -> int:
             project.include_chapter(args.index)
             project.save()
             ch = project.chapters[args.index]
-            _out(f"Included chapter {args.index}: {ch.title}")
+            _out(f"Included chapter {_chapter_label(args.index)}: {ch.title}")
             return 0
         except USER_ERROR_TYPES as e:
             _report_error(e, args)
@@ -3457,7 +4275,7 @@ def cmd_chapters(args) -> int:
             old_title = project.chapters[args.index].title if 0 <= args.index < len(project.chapters) else "?"
             project.rename_chapter(args.index, args.title)
             project.save()
-            _out(f"Renamed chapter {args.index}: {old_title!r} -> {args.title!r}")
+            _out(f"Renamed chapter {_chapter_label(args.index)}: {old_title!r} -> {args.title!r}")
             return 0
         except USER_ERROR_TYPES as e:
             _report_error(e, args)
@@ -3483,7 +4301,7 @@ def cmd_chapters(args) -> int:
             project.save()
             _out(f"Reordered {len(project.chapters)} chapters: new order {new_order}")
             for ch in project.chapters:
-                _out(f"  [{ch.index}] {ch.title}")
+                _out(f"  {_chapter_label(ch.index)} {ch.title}")
             return 0
         except USER_ERROR_TYPES as e:
             _report_error(e, args)
@@ -3494,20 +4312,46 @@ def cmd_chapters(args) -> int:
         project_path = find_project_file(args.project)
         project = AudiobookProject.load(project_path)
 
+        rows = [
+            {
+                # FEAT-UX-007: BOTH numbers, always. `-c N` is 0-based,
+                # `--chapters`/`--exclude-chapters` take 1-based ranges, this
+                # listing was 1-based-only and `render --dry-run` printed
+                # selection-relative indices — four schemes, and an off-by-one
+                # here costs a real TTS bill.
+                "index": chapter.index,
+                "number": chapter.index + 1,
+                "title": chapter.title,
+                "words": chapter.word_count,
+                "excluded": bool(chapter.skip),
+                "compiled": bool(chapter.is_compiled),
+                "rendered": bool(chapter.is_rendered),
+            }
+            for chapter in project.chapters
+        ]
+
+        if getattr(args, "json_output", False):
+            _emit_json({"title": project.title, "chapters": rows})
+            return 0
+
         _out(f"Chapters in {project.title}:\n")
 
-        for chapter in project.chapters:
+        for row in rows:
             status = ""
-            if chapter.skip:
+            if row["excluded"]:
                 status = " [excluded]"
-            elif chapter.is_rendered:
+            elif row["rendered"]:
                 status = " [rendered]"
-            elif chapter.is_compiled:
+            elif row["compiled"]:
                 status = " [compiled]"
 
-            _out(
-                f"  {chapter.index + 1}. {chapter.title} ({chapter.word_count} words){status}"
-            )
+            _out(f"  {_chapter_label(row['index'])} {row['title']} "
+                 f"({row['words']} words){status}")
+
+        _out(
+            "\n[idx N] is what -c/--chapter takes (0-based); ch.N is what "
+            "--chapters/--exclude-chapters take (1-based)."
+        )
 
         return 0
 
@@ -3520,13 +4364,20 @@ def cmd_speakers(args) -> int:
     """List detected speakers (or, with --suggest-aliases, propose aliases)."""
     from audiobooker import AudiobookProject
 
+    json_output = getattr(args, "json_output", False)
+
+    if getattr(args, "speakers_command", None) == "merge":
+        return _speakers_merge(args)
+
     try:
         project_path = find_project_file(args.project)
         project = AudiobookProject.load(project_path)
 
         # Compile if needed
         if not any(c.is_compiled for c in project.chapters):
-            _out("Compiling to detect speakers...")
+            # Suppress the prep message under --json so stdout stays pure JSON.
+            if not json_output:
+                _out("Compiling to detect speakers...")
             project.compile()
             project.save()
 
@@ -3537,18 +4388,87 @@ def cmd_speakers(args) -> int:
         speakers = project.get_detected_speakers()
         cast_speakers = set(project.casting.characters.keys())
 
-        _out(f"Speakers in {project.title}:\n")
+        # Everyone showed "(0 lines)". ``Character.line_count`` is written by
+        # compile_chapter with an ASSIGNMENT per chapter, so the last chapter
+        # overwrites the rest, it is never written for a speaker cast AFTER
+        # the compile, and the parallel compile path loses it entirely.
+        # ``report`` has had the real book-wide counts all along, off the same
+        # project — so read them from there instead of from a field that
+        # cannot hold them.
+        from audiobooker.casting import compile_report
+        line_counts = compile_report(project.chapters, project.casting)[
+            "speaker_line_counts"
+        ]
 
+        rows = []
         for speaker in sorted(speakers):
             normalized = project.casting.normalize_key(speaker)
-            if normalized in cast_speakers:
-                char = project.casting.characters[normalized]
-                _out(f"  {speaker}: {char.voice} ({char.line_count} lines)")
-            else:
-                _out(f"  {speaker}: [uncast]")
+            char = project.casting.characters.get(normalized)
+            rows.append({
+                "speaker": speaker,
+                "key": normalized,
+                "voice": char.voice if normalized in cast_speakers else None,
+                "lines": line_counts.get(normalized, 0),
+            })
+
+        # `speakers` has advertised --json since it was written; only the
+        # alias-suggestion branch ever honored it.
+        if json_output:
+            _emit_json({"title": project.title, "speakers": rows})
+            return 0
+
+        _out(f"Speakers in {project.title}:\n")
+
+        for row in rows:
+            voice = row["voice"] or "[uncast]"
+            _out(f"  {row['speaker']}: {voice} ({row['lines']} lines)")
 
         return 0
 
+    except USER_ERROR_TYPES as e:
+        _report_error(e, args)
+        return 1
+
+
+def _speakers_merge(args) -> int:
+    """FEAT-CAST-003: apply CastingTable.merge_speaker from the CLI."""
+    from audiobooker import AudiobookProject
+
+    json_output = getattr(args, "json_output", False)
+    source = args.source
+    target = args.target
+
+    try:
+        project_path = find_project_file(args.project)
+        project = AudiobookProject.load(project_path)
+
+        if not any(c.is_compiled for c in project.chapters):
+            if not json_output:
+                _out("Compiling to detect speakers...")
+            project.compile()
+            project.save()
+
+        merged = project.casting.merge_speaker(source, target)
+        project.compile()
+        project.save()
+
+        payload = {
+            "source": source,
+            "target": merged.name,
+            "aliases": list(merged.aliases),
+            "lines": merged.line_count,
+            "voice": merged.voice,
+        }
+        if json_output:
+            _emit_json(payload)
+            return 0
+
+        _out(
+            f"you asked to fold {source!r} into {target!r}; "
+            f"I kept {merged.name!r} ({merged.line_count} lines, "
+            f"aliases: {', '.join(merged.aliases) or '(none)'})."
+        )
+        return 0
     except USER_ERROR_TYPES as e:
         _report_error(e, args)
         return 1
@@ -3670,6 +4590,15 @@ def cmd_review_export(args) -> int:
         output = args.output
         if output:
             output = Path(output)
+        else:
+            # The library default names the file from the book TITLE and
+            # resolves it against the CWD, so `review-export` on "The
+            # Midnight Garden" wrote "The Midnight Garden_review.txt" into
+            # whatever directory you happened to be in — then printed an
+            # unquoted command to import it. Default to the PROJECT file's
+            # own stem, next to the project: one token, and where the user
+            # will look for it.
+            output = project_path.with_name(f"{project_path.stem}_review.txt")
 
         _out("Exporting review file...")
 
@@ -3688,7 +4617,13 @@ def cmd_review_export(args) -> int:
         _out("  - Change speaker names: @OldName -> @NewName")
         _out("  - Add/change emotions: @Name -> @Name (emotion)")
         _out("  - Delete unwanted lines by removing the block")
-        _out(f"\nThen import: audiobooker review-import {review_path.name}")
+        # Quoted, because the command we print has to RUN when pasted. An
+        # unquoted name with a space made argparse reject it and dump all 34
+        # subcommands at a user who had done nothing wrong. See _quote_arg.
+        _out(
+            "\nThen import: audiobooker review-import "
+            f"{_quote_arg(review_path.name)}"
+        )
 
         return 0
 
@@ -3764,7 +4699,7 @@ def cmd_review_import(args) -> int:
             for title in skipped_titles:
                 _err(f"  - {title}", args=args)
             _err(
-                'Hint: These blocks did not match any chapter by id or title — '
+                'Hint: These blocks did not match any chapter by id or title - '
                 'restore the original "=== Title === [id:...]" header to apply '
                 "your edits.",
                 args=args,
@@ -3831,10 +4766,49 @@ def cmd_review_import(args) -> int:
         return 1
 
 
+def _suggest_voices(project, speakers, *, max_suggestions: int = 1):
+    """The ONE ranking call behind cast-suggest, cast-apply and --cast-suggest.
+
+    ``cmd_cast_suggest`` gathered ``speaker_utterances`` and passed them to
+    ``suggest_all``; ``cmd_cast_apply``, ``render --cast-suggest`` and
+    ``make``/``batch``'s auto-cast step all called the same function WITHOUT
+    them. The suggester reads those sample lines to infer gender, age and
+    archetype, so the commands that ACT ranked on strictly less evidence than
+    the command that EXPLAINS — for a male-cued speaker, ``cast-suggest``
+    showed ``am_eric`` while ``cast-apply --auto`` assigned ``af_jessica``.
+
+    One helper, so the ranking cannot drift apart again.
+    """
+    from audiobooker.casting.voice_suggester import VoiceSuggester
+
+    # ``get_detected_speakers()`` yields the raw names as they appear in the
+    # utterances; ``get_uncast_speakers()`` yields NORMALIZED casting keys.
+    # ``_gather_speaker_utterances`` is keyed by the raw name, so indexing it
+    # only one way would hand the suggester an empty sample list for one of
+    # the two callers — which is exactly the divergence this helper exists to
+    # remove. Index both spellings.
+    samples = _gather_speaker_utterances(project)
+    lookup: dict[str, list[str]] = dict(samples)
+    for raw, lines in samples.items():
+        key = project.casting.normalize_key(raw)
+        if key not in lookup:
+            lookup[key] = list(lines)
+        elif key != raw:
+            lookup[key] = (lookup[key] + list(lines))[:5]
+
+    suggester = VoiceSuggester(max_suggestions=max_suggestions)
+    return suggester.suggest_all(
+        sorted(speakers),
+        lookup,
+        project.casting.get_voice_mapping(),
+    )
+
+
 def cmd_cast_suggest(args) -> int:
     """Suggest voices for uncast speakers."""
     from audiobooker import AudiobookProject
-    from audiobooker.casting.voice_suggester import VoiceSuggester
+
+    json_output = getattr(args, "json_output", False)
 
     try:
         project_path = find_project_file(args.project)
@@ -3842,36 +4816,42 @@ def cmd_cast_suggest(args) -> int:
 
         # Compile if needed
         if not any(c.is_compiled for c in project.chapters):
-            _out("Compiling to detect speakers...")
+            if not json_output:
+                _out("Compiling to detect speakers...")
             project.compile()
             project.save()
 
-        # Get speakers and their utterances
-        speakers = sorted(project.get_detected_speakers())
-        already_cast = project.casting.get_voice_mapping()
+        results = _suggest_voices(
+            project,
+            project.get_detected_speakers(),
+            max_suggestions=getattr(args, "top", 3),
+        )
 
-        # Gather sample utterances per speaker
-        speaker_utterances: dict[str, list[str]] = {}
-        for chapter in project.chapters:
-            for utt in chapter.utterances:
-                key = utt.speaker
-                if key not in speaker_utterances:
-                    speaker_utterances[key] = []
-                if len(speaker_utterances[key]) < 5:
-                    speaker_utterances[key].append(utt.text)
-
-        suggester = VoiceSuggester(max_suggestions=getattr(args, "top", 3))
-        results = suggester.suggest_all(speakers, speaker_utterances, already_cast)
+        if json_output:
+            _emit_json({
+                "title": project.title,
+                "suggestions": [
+                    {
+                        "speaker": result.speaker,
+                        "cast": _cast_voice_for(project, result.speaker),
+                        "candidates": [
+                            {
+                                "voice_id": s.voice_id,
+                                "score": round(s.score, 4),
+                                "reason": s.reason,
+                            }
+                            for s in result.suggestions
+                        ],
+                    }
+                    for result in results
+                ],
+            })
+            return 0
 
         _out(f"Voice suggestions for {project.title}:\n")
         for result in results:
-            cast_key = project.casting.normalize_key(result.speaker)
-            is_cast = cast_key in project.casting.characters
-            status = (
-                f" (cast: {project.casting.characters[cast_key].voice})"
-                if is_cast
-                else " [uncast]"
-            )
+            voice = _cast_voice_for(project, result.speaker)
+            status = f" (cast: {voice})" if voice else " [uncast]"
             _out(f"  {result.speaker}{status}")
             for i, s in enumerate(result.suggestions):
                 marker = ">>>" if i == 0 else "   "
@@ -3885,10 +4865,18 @@ def cmd_cast_suggest(args) -> int:
         return 1
 
 
+def _cast_voice_for(project, speaker: str) -> Optional[str]:
+    """The voice already assigned to ``speaker``, or None when uncast."""
+    character = project.casting.characters.get(project.casting.normalize_key(speaker))
+    return character.voice if character else None
+
+
 def cmd_cast_apply(args) -> int:
     """Auto-apply voice suggestions."""
     from audiobooker import AudiobookProject
-    from audiobooker.casting.voice_suggester import VoiceSuggester
+
+    json_output = getattr(args, "json_output", False)
+    dry_run = getattr(args, "dry_run", False)
 
     try:
         project_path = find_project_file(args.project)
@@ -3900,29 +4888,55 @@ def cmd_cast_apply(args) -> int:
 
         # Compile if needed
         if not any(c.is_compiled for c in project.chapters):
-            _out("Compiling to detect speakers...")
+            if not json_output:
+                _out("Compiling to detect speakers...")
             project.compile()
 
         uncast = project.get_uncast_speakers()
         if not uncast:
-            _out("All speakers are already cast.")
+            if json_output:
+                _emit_json({"dry_run": dry_run, "applied": [], "count": 0})
+            else:
+                _out("All speakers are already cast.")
             return 0
 
-        already_cast = project.casting.get_voice_mapping()
-        suggester = VoiceSuggester(max_suggestions=1)
-        results = suggester.suggest_all(sorted(uncast), already_cast=already_cast)
+        # Same evidence cast-suggest showed you — see _suggest_voices.
+        results = _suggest_voices(project, uncast, max_suggestions=1)
 
-        applied = 0
+        applied = []
         for result in results:
-            if result.top:
+            if not result.top:
+                continue
+            applied.append({
+                "speaker": result.speaker,
+                "voice": result.top.voice_id,
+                "reason": result.top.reason,
+            })
+            if not dry_run:
                 project.cast(result.speaker, result.top.voice_id)
-                _out(
-                    f"  Cast {result.speaker} as {result.top.voice_id} ({result.top.reason})"
-                )
-                applied += 1
 
-        project.save()
-        _out(f"\nApplied {applied} voice assignments.")
+        if not dry_run:
+            project.save()
+
+        if json_output:
+            _emit_json({
+                "dry_run": dry_run,
+                "applied": applied,
+                "count": len(applied),
+            })
+            return 0
+
+        if dry_run:
+            _out("DRY RUN - nothing was cast and the project was not saved.")
+        for row in applied:
+            verb = "Would cast" if dry_run else "Cast"
+            _out(f"  {verb} {row['speaker']} as {row['voice']} ({row['reason']})")
+
+        if dry_run:
+            _out(f"\n{len(applied)} voice assignment(s) would be applied.")
+            _out("Re-run without --dry-run to apply them.")
+        else:
+            _out(f"\nApplied {len(applied)} voice assignments.")
         return 0
 
     except USER_ERROR_TYPES as e:
@@ -4025,7 +5039,7 @@ def _cast_preset_save(args, cast_presets) -> int:
 
     casting_list = project._casting_as_list()
     if not casting_list:
-        _out("No characters to save — the casting table is empty.")
+        _out("No characters to save - the casting table is empty.")
         return 0
 
     cast_presets.save_preset(args.name, casting_list)
@@ -4072,7 +5086,7 @@ def _cast_preset_apply(args, cast_presets) -> int:
 
     entries = cast_presets.load_preset(args.name) or []
     if not entries:
-        _out(f"Preset '{args.name}' is empty — nothing to apply.")
+        _out(f"Preset '{args.name}' is empty - nothing to apply.")
         return 0
 
     # Compile (if needed) so we can report matched-vs-unmatched against the
@@ -4625,7 +5639,7 @@ def cmd_cache(args) -> int:
             )
 
             if getattr(args, "dry_run", False):
-                _out(f"DRY RUN — would delete {at_stake} from {cache_root}")
+                _out(f"DRY RUN - would delete {at_stake} from {cache_root}")
                 _out("Re-run with --yes to delete them.")
                 return 0
 
@@ -4649,7 +5663,7 @@ def cmd_cache(args) -> int:
                 except EOFError:
                     answer = ""
                 if answer not in ("y", "yes"):
-                    _out("Aborted — nothing was deleted.")
+                    _out("Aborted - nothing was deleted.")
                     return 1
 
             # Safety check for lockfile
@@ -4661,7 +5675,7 @@ def cmd_cache(args) -> int:
                 )
                 return 1
             shutil.rmtree(cache_root)
-            _out(f"Cache deleted: {cache_root} — removed {at_stake}")
+            _out(f"Cache deleted: {cache_root} - removed {at_stake}")
             return 0
 
         elif cache_command == "clean-failed":
@@ -4738,11 +5752,58 @@ def cmd_report(args) -> int:
             print(json_mod.dumps(report, indent=2, ensure_ascii=False))
             return 0
 
-        unknown_pct = report["unknown_rate"] * 100
+        # FEAT-CAST-001: `unknown_rate` is the narration-diluted figure the
+        # report dict itself marks secondary -- add narration to a book and
+        # it falls without a single speaker being identified. The primary
+        # signal divides dialogue by dialogue. `compile` was moved to it;
+        # the command actually named `report` was still printing the other.
+        unknown_pct = report["dialogue_unknown_rate"] * 100
         _out(f"Compile report for {project.title}:\n")
         _out(f"  Total utterances:  {report['total_utterances']}")
         _out(f"  Dialogue / narration: {report['total_dialogue']} / {report['total_narration']}")
-        _out(f"  Unattributed rate: {unknown_pct:.1f}%")
+        _out(f"  Unattributed rate: {unknown_pct:.1f}%  (of dialogue)")
+
+        # The other half, and the half a user cannot otherwise discover:
+        # lines that DID get a speaker, chosen by alternating turns rather
+        # than by anything in the text. These never appear in the
+        # unattributed count -- a guess removes a line from it.
+        guessed = report["total_low_confidence"]
+        if guessed:
+            _out(
+                # ASCII on purpose. An earlier version of this comment said
+                # "cp1252, where an em-dash degrades" — wrong, and worth
+                # correcting rather than deleting: cp1252 is the Windows
+                # ANSI codepage and encodes the em-dash fine, at 0x97. The
+                # codepage a bare cmd.exe actually runs is an OEM one (437
+                # in en-US, 850 in western Europe), and neither has it. See
+                # tests/test_cli_output_is_console_safe.py for the measured
+                # table. _out no longer crashes on an unencodable
+                # character, so this now fails silently — which is why the
+                # guard is a test rather than a convention.
+                f"  Guessed speakers:  {guessed} "
+                f"({report['dialogue_low_confidence_rate']:.1%} of dialogue) "
+                "- attributed by alternating turns, not by the text"
+            )
+        _out(
+            f"  Attribution:       {report['attribution_quality'].upper()} "
+            f"({report['dialogue_unverified_rate']:.1%} of dialogue "
+            "unverified)"
+        )
+
+        sources = report.get("attribution_source_distribution") or {}
+        if sources:
+            _SOURCE_LABELS = {
+                "tag": "speech tag",
+                "turn": "alternating turn",
+                "nlp": "co-reference",
+                "inline": "inline override",
+                "user": "your correction",
+            }
+            parts = ", ".join(
+                f"{_SOURCE_LABELS.get(k, k)}: {v}"
+                for k, v in sorted(sources.items(), key=lambda x: -x[1])
+            )
+            _out(f"  Attributed by:     {parts}")
 
         emotion_dist = report.get("emotion_distribution") or {}
         if emotion_dist:
@@ -4763,6 +5824,32 @@ def cmd_report(args) -> int:
                 if item.get("context"):
                     _out(f"    context: {item['context']!r}")
 
+        # compile_report has built this list since FEAT-CAST-001 and nothing
+        # printed it. A rate tells a user they have a problem; these lines
+        # tell them where it is -- and unlike the unattributed ones, they
+        # are invisible in the review export, because they carry a
+        # confident-looking speaker name.
+        guesses = report.get("low_confidence") or []
+        if guesses:
+            _out(
+                "\nTop guessed lines (a speaker was assigned, but nothing "
+                "in the text says so):"
+            )
+            for item in guesses:
+                # No context line here, unlike the unattributed listing
+                # above. These lines sit in an unbroken run of dialogue --
+                # that IS why they were guessed -- so the surrounding text
+                # is the same few quotes every time and reads as noise.
+                # The line and the speaker put on it are the actionable part.
+                _out(
+                    f"  ch{item['chapter_index']} line {item['line_index']}: "
+                    f"{item['text']!r} -> {item['speaker']}"
+                )
+            _out(
+                "\nFix these with 'audiobooker review-export', an inline "
+                "[character] override, or by casting the missing speakers."
+            )
+
         return 0
 
     except USER_ERROR_TYPES as e:
@@ -4770,13 +5857,37 @@ def cmd_report(args) -> int:
         return 1
 
 
+def _import_optional(module_name: str, *, quiet: bool = False) -> bool:
+    """True if ``module_name`` imports. ``quiet`` swallows stdout/warnings.
+
+    ``diagnose --json`` must own stdout: ``import fitz`` on current pymupdf
+    prints a deprecation line before we can dump the payload.
+    """
+    import contextlib
+    import io
+    import warnings
+
+    try:
+        if quiet:
+            sink = io.StringIO()
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                with contextlib.redirect_stdout(sink):
+                    __import__(module_name)
+        else:
+            __import__(module_name)
+        return True
+    except ImportError:
+        return False
+
+
 def cmd_diagnose(args: argparse.Namespace) -> int:
     """Check environment: dependencies, voice engine, ffmpeg."""
-    import json as json_mod
     import shutil
 
     from audiobooker import __version__
 
+    json_output = getattr(args, "json_output", False)
     checks: list[dict[str, str | None]] = []
     all_ok = True
     # CLIUX-H-004: a component the machine CANNOT RENDER without. The voice
@@ -4805,9 +5916,7 @@ def cmd_diagnose(args: argparse.Namespace) -> int:
         missing_required.append("Python 3.10+")
 
     # Core dependency: ebooklib
-    try:
-        import ebooklib  # noqa: F401
-
+    if _import_optional("ebooklib", quiet=json_output):
         checks.append(
             {
                 "check": "dep.ebooklib",
@@ -4816,7 +5925,7 @@ def cmd_diagnose(args: argparse.Namespace) -> int:
                 "hint": None,
             }
         )
-    except ImportError:
+    else:
         checks.append(
             {
                 "check": "dep.ebooklib",
@@ -4828,10 +5937,12 @@ def cmd_diagnose(args: argparse.Namespace) -> int:
         all_ok = False
         missing_required.append("ebooklib")
 
-    # Optional: pymupdf (PDF sources)
-    try:
-        import fitz  # noqa: F401  (pymupdf)
-
+    # Optional: pymupdf (PDF sources). Prefer `pymupdf` over the deprecated
+    # `fitz` alias so a deprecation print cannot prefix --json.
+    if (
+        _import_optional("pymupdf", quiet=True)
+        or _import_optional("fitz", quiet=True)
+    ):
         checks.append(
             {
                 "check": "dep.pymupdf",
@@ -4840,20 +5951,18 @@ def cmd_diagnose(args: argparse.Namespace) -> int:
                 "hint": None,
             }
         )
-    except ImportError:
+    else:
         checks.append(
             {
                 "check": "dep.pymupdf",
                 "status": "info",
                 "value": "not installed",
-                "hint": "pip install pymupdf — required for PDF sources",
+                "hint": "pip install pymupdf - required for PDF sources",
             }
         )
 
     # Optional: python-docx (DOCX sources)
-    try:
-        import docx  # noqa: F401  (python-docx)
-
+    if _import_optional("docx", quiet=json_output):
         checks.append(
             {
                 "check": "dep.python-docx",
@@ -4862,13 +5971,13 @@ def cmd_diagnose(args: argparse.Namespace) -> int:
                 "hint": None,
             }
         )
-    except ImportError:
+    else:
         checks.append(
             {
                 "check": "dep.python-docx",
                 "status": "info",
                 "value": "not installed",
-                "hint": "pip install python-docx — required for DOCX sources "
+                "hint": "pip install python-docx - required for DOCX sources "
                         "(or: pip install 'audiobooker-ai[docx]')",
             }
         )
@@ -4878,9 +5987,19 @@ def cmd_diagnose(args: argparse.Namespace) -> int:
     # error (broken install, model load failure) should report the ACTUAL
     # error rather than masquerading as "not installed".
     try:
-        from audiobooker.casting.voice_registry import get_available_voices
+        import contextlib
+        import io
 
-        voices = get_available_voices()
+        _voice_sink = io.StringIO()
+        _voice_ctx = (
+            contextlib.redirect_stdout(_voice_sink)
+            if json_output
+            else contextlib.nullcontext()
+        )
+        with _voice_ctx:
+            from audiobooker.casting.voice_registry import get_available_voices
+
+            voices = get_available_voices()
         checks.append(
             {
                 "check": "voice_engine",
@@ -4976,19 +6095,16 @@ def cmd_diagnose(args: argparse.Namespace) -> int:
 
     ready = not missing_required
 
-    if getattr(args, "json_output", False):
-        print(json_mod.dumps(
-            {
-                "ok": all_ok,
-                "ready": ready,
-                "missing_required": missing_required,
-                "reachable_formats": reachable_formats,
-                "checks": checks,
-            },
-            indent=2,
-        ))
+    if json_output:
+        _emit_json({
+            "ok": all_ok,
+            "ready": ready,
+            "missing_required": missing_required,
+            "reachable_formats": reachable_formats,
+            "checks": checks,
+        })
     else:
-        print(f"audiobooker v{__version__} — environment diagnostics\n")
+        print(f"audiobooker v{__version__} - environment diagnostics\n")
         for c in checks:
             icon = (
                 "OK"
@@ -5004,7 +6120,7 @@ def cmd_diagnose(args: argparse.Namespace) -> int:
             print(f"  Output formats available: {', '.join(reachable_formats)}")
         else:
             print(
-                f"NOT ready to render — {len(missing_required)} required "
+                f"NOT ready to render - {len(missing_required)} required "
                 f"component(s) missing: {', '.join(missing_required)}"
             )
             if reachable_formats:
@@ -5013,12 +6129,12 @@ def cmd_diagnose(args: argparse.Namespace) -> int:
                 )
             elif voice_engine_ok:
                 print(
-                    "  Output formats available: none — 'render -c N' can still "
+                    "  Output formats available: none - 'render -c N' can still "
                     "write a single-chapter WAV, but no book can be assembled."
                 )
             else:
                 print(
-                    "  Output formats available: none — no audio can be "
+                    "  Output formats available: none - no audio can be "
                     "synthesized at all."
                 )
             print("  See the hints above for each missing component.")
@@ -5051,7 +6167,7 @@ def _project_at_risk(path: Path) -> str:
 
         data = _json.loads(path.read_text(encoding="utf-8"))
     except Exception:
-        return "an existing project file (unreadable — inspect it before overwriting)"
+        return "an existing project file (unreadable - inspect it before overwriting)"
 
     config = data.get("config") or {}
     characters = (data.get("casting") or {}).get("characters") or {}
@@ -5059,7 +6175,7 @@ def _project_at_risk(path: Path) -> str:
     phonemes = config.get("phoneme_overrides") or {}
     title = data.get("title") or "(untitled)"
     return (
-        f'"{title}" — {len(characters)} cast voice(s), '
+        f'"{title}" - {len(characters)} cast voice(s), '
         f"{len(lexicon) + len(phonemes)} pronunciation override(s), "
         f"{len(data.get('chapters') or [])} chapter(s)"
     )
@@ -5102,7 +6218,11 @@ def _process_book(
     force_text: bool = False,
     overwrite_project: bool = False,
     dry_run: bool = False,
+    review: bool = False,
+    phase_log: bool = True,
     label: str = "make",
+    force: bool = False,
+    args=None,
 ) -> dict:
     """Create + compile + auto-cast + render a single source file.
 
@@ -5138,13 +6258,27 @@ def _process_book(
             only moved into place once the render returns.
         dry_run: CLIUX-C-001 — resolve everything (project path, cast,
             output) and report it without writing or rendering anything.
+        review: FEAT-UX-003 — stop after compile + auto-cast, save the
+            project, write the review file and report the import command.
+            `make` was the one path in the CLI that could not review, so the
+            choice was one command with no review or nine commands with it.
+        phase_log: FEAT-UX-003 — narrate each phase. On a 40-chapter novel
+            `make` printed TWO lines before ffmpeg — no parse, no chapter
+            count, no compile, no attribution rate, no cast — while the
+            staged commands print all of it for the same work. `batch
+            --json` passes False so the phase lines cannot land in the
+            payload stream.
         label: the command name to quote back in the refusal message.
+        force: user --force. Previously hardcoded True at render_project so
+            make/batch skipped both CLI gates and engine casting validation.
+        args: the parsed CLI namespace when called from make/batch, so
+            --json refusals go through _report_error.
 
     Returns:
         A result dict: {file, name, status, output, error, duration_s}.
         ``status`` is one of success / partial / failed / error / skipped /
-        refused / dry_run. Never raises — render/parse errors are captured
-        into the dict.
+        refused / dry_run / review. Never raises — render/parse errors are
+        captured into the dict.
     """
     import os as _os
     import time as _time
@@ -5154,6 +6288,15 @@ def _process_book(
 
     overrides = overrides or {}
     render_overrides = render_overrides or {}
+
+    # --review stops after the save, so it has four phases, not five.
+    total_phases = 4 if review else 5
+
+    def _phase(step: Optional[int], message: str) -> None:
+        """FEAT-UX-003: narrate one phase of the sequence (or a detail line)."""
+        if not phase_log:
+            return
+        _out(f"[{step}/{total_phases}] {message}" if step else f"      {message}")
 
     book_start = _time.time()
     book_result = {
@@ -5236,22 +6379,44 @@ def _process_book(
 
         book_result["name"] = project.title
 
+        _phase(
+            1,
+            f"Parsed {project.title!r} - {len(project.chapters)} chapter(s), "
+            f"~{project.total_words:,} words",
+        )
+
         # Step 2: Compile
+        _phase(2, f"Compiling {len(project.chapters)} chapter(s)...")
         project.compile()
+
+        total_utterances = sum(len(c.utterances) for c in project.chapters)
+        from audiobooker.casting import compile_report
+        quality_report = compile_report(project.chapters, project.casting)
+        if quality_report["total_dialogue"] > 0:
+            _phase(
+                None,
+                f"Compiled {total_utterances} utterance(s); dialogue "
+                f"attribution {quality_report['total_dialogue_unknown']}/"
+                f"{quality_report['total_dialogue']} unattributed "
+                f"({quality_report['dialogue_unknown_rate']:.0%}, "
+                f"{quality_report['quality']}; "
+                f"attribution_quality {quality_report['attribution_quality']}, "
+                f"unverified {quality_report['dialogue_unverified_rate']:.0%})",
+            )
+        else:
+            _phase(None, f"Compiled {total_utterances} utterance(s) (no dialogue)")
 
         # Step 3: Auto-cast with suggestions
         uncast = project.get_uncast_speakers()
+        _phase(3, f"Auto-casting {len(uncast)} uncast speaker(s)...")
         if uncast:
             try:
-                from audiobooker.casting.voice_suggester import VoiceSuggester
-                already_cast = project.casting.get_voice_mapping()
-                suggester = VoiceSuggester(max_suggestions=1)
-                suggest_results = suggester.suggest_all(
-                    sorted(uncast), already_cast=already_cast
-                )
-                for sr in suggest_results:
+                # FEAT-UX-002 sibling fix: the same evidence cast-suggest
+                # shows. This call omitted speaker_utterances too.
+                for sr in _suggest_voices(project, uncast, max_suggestions=1):
                     if sr.top:
                         project.cast(sr.speaker, sr.top.voice_id)
+                        _phase(None, f"Cast {sr.speaker} as {sr.top.voice_id}")
             except Exception as cast_err:
                 _out(f"  Warning: Auto-cast failed ({cast_err}), using fallback voices")
 
@@ -5269,17 +6434,17 @@ def _process_book(
         # before the first write. `batch`, `compile` and `render` all had one;
         # `make` — the command that silently destroyed projects — did not.
         if dry_run:
-            _out(f"DRY RUN — nothing written, nothing rendered ({label}).")
+            _out(f"DRY RUN - nothing written, nothing rendered ({label}).")
             _out(f"  Source:       {source}")
             _out(f"  Project file: {project_path}")
             if project_path.exists():
-                _out(f"                EXISTS — {_project_at_risk(project_path)}")
+                _out(f"                EXISTS - {_project_at_risk(project_path)}")
                 _out(
                     "                It would be REPLACED (only with "
                     "--overwrite-project)."
                 )
             else:
-                _out("                does not exist yet — would be created")
+                _out("                does not exist yet - would be created")
             _out(f"  Output:       {final_output}")
             _out(f"  Format:       {out_fmt}")
             mapping = project.casting.get_voice_mapping()
@@ -5294,6 +6459,52 @@ def _process_book(
             book_result["duration_s"] = _time.time() - book_start
             return book_result
 
+        # FEAT-UX-003: --review stops here. There is no render to protect
+        # the project from, so it is committed straight to project_path
+        # (the overwrite guard at the top of this function has already
+        # decided whether that is allowed) and the review file goes beside
+        # it under the project's own stem — the same default `review-export`
+        # uses, so the printed import command is one pasteable token.
+        if review:
+            _phase(4, f"Saving project to {project_path}...")
+            project.save(project_path)
+            review_path = project.export_for_review(
+                project_path.with_name(f"{project_path.stem}_review.txt")
+            )
+            project.save(project_path)
+            _phase(None, f"Review file written (nothing rendered): {review_path}")
+            _out(
+                "\nEdit the speakers and emotions, then import and render:\n"
+                f"  audiobooker review-import {_quote_arg(review_path.name)} "
+                f"-p {_quote_arg(project_path)}\n"
+                f"  audiobooker render -p {_quote_arg(project_path)}"
+            )
+            book_result["status"] = "review"
+            book_result["output"] = str(review_path)
+            book_result["duration_s"] = _time.time() - book_start
+            return book_result
+
+        # Pre-spend gates AFTER auto-cast (uncast is what would actually
+        # render) and AFTER --dry-run/--review (those do not spend TTS).
+        # Restoring force=True-unconditional at render_project must fail
+        # the planted-RED make test: a guessed-dialogue book must not
+        # reach render_project without --force.
+        effective_force = bool(force or getattr(args, "force", False))
+        gate_args = argparse.Namespace(
+            force=effective_force,
+            json_output=bool(getattr(args, "json_output", False)),
+            debug=bool(getattr(args, "debug", False)),
+        )
+        rc = _pre_spend_gates(gate_args, project, project.chapters)
+        if rc is not None:
+            book_result["status"] = "refused"
+            book_result["error"] = (
+                "attribution or uncast-dialogue gate refused the render "
+                "(pass --force to override)"
+            )
+            book_result["duration_s"] = _time.time() - book_start
+            return book_result
+
         # Step 4: Save project.
         #
         # CLIUX-C-001: the ORDERING is the finding. Save was step 4 and render
@@ -5302,6 +6513,7 @@ def _process_book(
         # is therefore written BESIDE the original and only moved into place
         # once render_project has returned. If nothing is there to lose, write
         # straight to the destination.
+        _phase(4, "Saving project...")
         if project_path.exists():
             staged_path = project_path.with_name(project_path.name + ".new")
             _discard_staged_project(staged_path)
@@ -5310,6 +6522,7 @@ def _process_book(
             project.save(project_path)
 
         # Step 5: Render.
+        _phase(5, f"Rendering {len(project.chapters)} chapter(s) to {final_output}...")
 
         # FT-RENDER-M-002: pass cover art + metadata through. render_project
         # auto-defaults cover_art from project.metadata.cover_art_path when None.
@@ -5318,7 +6531,7 @@ def _process_book(
             md_cover = str(project.metadata.cover_art_path)
         render_kwargs = dict(
             jobs=jobs,
-            force=True,  # skip casting validation in batch/make
+            force=effective_force,
             output_format=out_fmt,
             cover_art=md_cover,
             output_profile=project.config.output_profile,
@@ -5547,19 +6760,36 @@ def cmd_batch(args) -> int:
         for f in source_files:
             book_specs.append((f, {}))
 
+    json_output = getattr(args, "json_output", False)
+
     if not book_specs:
         if manifest_file:
-            print("Manifest contained no usable book entries.")
-        else:
-            print("No supported source files found (EPUB/DOCX/TXT/MD/PDF or a chapter folder).")
-        return 1
-
-    json_output = getattr(args, "json_output", False)
+            return _refuse(
+                args,
+                code="BATCH_NO_SOURCES",
+                message=(
+                    "you asked to batch-process a manifest; "
+                    "I found no usable book entries."
+                ),
+                hint="each manifest entry needs a 'source' path that exists.",
+            )
+        return _refuse(
+            args,
+            code="BATCH_NO_SOURCES",
+            message=(
+                "you asked to batch-process source files; I found no "
+                "supported EPUB/DOCX/TXT/MD/PDF or chapter folder."
+            ),
+            hint="pass existing source files or a glob that matches them.",
+        )
 
     # --dry-run: show what would be processed without rendering
     dry_run = getattr(args, "dry_run", False)
+    if json_output:
+        global _QUIET
+        _QUIET = True
     if dry_run:
-        _out(f"DRY RUN — {len(book_specs)} book(s) would be processed:\n")
+        _out(f"DRY RUN - {len(book_specs)} book(s) would be processed:\n")
         for i, (source, ov) in enumerate(book_specs, 1):
             label = ov.get("title") or source.name
             _out(f"  [{i}/{len(book_specs)}] {label} ({source})")
@@ -5568,13 +6798,34 @@ def cmd_batch(args) -> int:
             # never mentioned the file `batch` was about to overwrite.
             target = _resolve_project_path(source)
             if target.exists():
-                _out(f"        project: {target} — EXISTS, would be REFUSED")
+                _out(f"        project: {target} - EXISTS, would be REFUSED")
                 _out(f"                 {_project_at_risk(target)}")
             else:
                 _out(f"        project: {target} (new)")
         _out(f"\nFormat: {fmt or 'from config (default m4b)'}")
         _out(f"Language: {lang}")
         _out(f"Workers: {jobs}")
+        if json_output:
+            import json as json_mod
+            print(json_mod.dumps(
+                {
+                    "dry_run": True,
+                    "format": fmt or "m4b",
+                    "language": lang,
+                    "workers": jobs,
+                    "books": [
+                        {
+                            "source": str(source),
+                            "title": ov.get("title") or source.name,
+                            "project": str(_resolve_project_path(source)),
+                            "project_exists": _resolve_project_path(source).exists(),
+                        }
+                        for source, ov in book_specs
+                    ],
+                },
+                indent=2,
+                ensure_ascii=False,
+            ))
         return 0
 
     _out(f"Batch processing {len(book_specs)} book(s)...\n")
@@ -5618,7 +6869,12 @@ def cmd_batch(args) -> int:
             # CLIUX-C-001: `batch *.epub` overwrote EVERY project in the
             # directory. Refuse by default here too.
             overwrite_project=bool(getattr(args, "overwrite_project", False)),
+            # FEAT-UX-003: phase lines are stdout chatter, and under --json
+            # stdout is the payload stream.
+            phase_log=not json_output,
             label="batch",
+            force=bool(getattr(args, "force", False)),
+            args=args,
         )
         status = book_result["status"]
         if status == "success":
@@ -5626,13 +6882,15 @@ def cmd_batch(args) -> int:
         elif status == "partial":
             _out(
                 f"  PARTIAL: {book_result['output']} "
-                f"({book_result['duration_s']:.1f}s) — {book_result['error']}"
+                f"({book_result['duration_s']:.1f}s) - {book_result['error']}"
             )
         elif status == "failed":
             _out(f"  FAILED: {book_result['error']}")
         elif status == "refused":
-            # The refusal detail was already printed by _process_book.
-            _out("  REFUSED: existing project left untouched")
+            # Overwrite, attribution, or uncast — detail already printed.
+            _out(
+                f"  REFUSED: {book_result.get('error') or 'stopped before render'}"
+            )
         elif status == "skipped":
             _out(f"  Skipped: {book_result['error']}")
         else:
@@ -5680,7 +6938,7 @@ def cmd_batch(args) -> int:
 
     _out(f"\n{'='*72}")
     _out(
-        f"  BATCH SUMMARY — {success} succeeded, {partial} partial, "
+        f"  BATCH SUMMARY - {success} succeeded, {partial} partial, "
         f"{failed} failed ({refused} refused), {skipped} skipped"
     )
     _out(f"  Total elapsed: {_fmt_duration(total_elapsed)}")
@@ -5751,7 +7009,11 @@ def _run_make_once(args) -> dict:
         # CLIUX-C-001: refuse by default, stage the replacement when allowed.
         overwrite_project=bool(getattr(args, "overwrite_project", False)),
         dry_run=bool(getattr(args, "dry_run", False)),
+        # FEAT-UX-003: stop after compile + cast and write the review file.
+        review=bool(getattr(args, "review", False)),
         label="make",
+        force=bool(getattr(args, "force", False)),
+        args=args,
     )
 
 
@@ -5766,8 +7028,12 @@ def cmd_make(args) -> int:
     """
     source = Path(args.source)
     if not source.exists():
-        _err(f"Error: Source file not found: {source}")
-        return 1
+        return _refuse(
+            args,
+            code="FILE_NOT_FOUND",
+            message=f"Source file not found: {source}",
+            hint="Pass a path to an existing EPUB/DOCX/TXT/MD/PDF or a chapter folder.",
+        )
 
     # FT-CLI-008: watch mode — re-run make whenever the source mtime changes.
     if getattr(args, "watch", False):
@@ -5781,6 +7047,10 @@ def _make_summary(book_result: dict) -> int:
     status = book_result["status"]
     if status == "dry_run":
         # CLIUX-C-001: _process_book already printed the whole plan.
+        return 0
+    if status == "review":
+        # FEAT-UX-003: _process_book already printed the review file path
+        # and the two commands that follow it.
         return 0
     if status == "refused":
         # CLIUX-C-001: _process_book already printed the refusal and both
@@ -5844,7 +7114,7 @@ def _watch_loop(source: Path, run_once) -> int:
                     # Still being written — pick it up on the next poll.
                     last_mtime = current
                     continue
-                _out(f"\nChange detected in {source.name} — re-rendering...")
+                _out(f"\nChange detected in {source.name} - re-rendering...")
                 run_once()
                 last_mtime = _mtime()
     except KeyboardInterrupt:
@@ -5869,9 +7139,9 @@ def cmd_preview(args) -> int:
         chapter_idx = args.chapter
         target_seconds = args.seconds
 
-        if chapter_idx >= len(project.chapters):
-            _err(f"Error: Chapter {chapter_idx} not found (only {len(project.chapters)} chapters)")
-            return 1
+        total = len(project.chapters)
+        if chapter_idx < 0 or chapter_idx >= total:
+            return _refuse_chapter_index(args, chapter_idx, total)
 
         chapter = project.chapters[chapter_idx]
 
@@ -5883,8 +7153,12 @@ def cmd_preview(args) -> int:
             chapter = project.chapters[chapter_idx]
 
         if not chapter.utterances:
-            _err(f"Error: Chapter {chapter_idx} has no utterances after compilation")
-            return 1
+            return _refuse(
+                args,
+                code="CHAPTER_EMPTY",
+                message=f"Chapter {chapter_idx} has no utterances after compilation",
+                hint="Compile the project first, or pick a chapter that has text.",
+            )
 
         # Estimate how many utterances fit in target_seconds
         # Rough heuristic: 150 words per minute, ~5 chars per word
@@ -5964,14 +7238,29 @@ def cmd_sample(args) -> int:
         output = getattr(args, "output", None)
 
         if from_chapter < 0 or from_chapter >= len(project.chapters):
-            # Residual 4: an error line printed with a bare print() bypasses
-            # the _err chokepoint and lands in a piped stdout.
-            _err(
-                f"Error: Chapter {from_chapter} not found "
-                f"(project has {len(project.chapters)} chapters)",
-                args=args,
+            # Keep "not found" in the message — existing tests match it —
+            # but route through _report_error so --json is parseable.
+            return _refuse(
+                args,
+                code="CHAPTER_INDEX_OUT_OF_RANGE",
+                message=(
+                    f"Chapter {from_chapter} not found "
+                    f"(project has {len(project.chapters)} chapters)"
+                ),
+                hint="Pass a 0-based --from-chapter index in range.",
             )
-            return 1
+
+        chapter = project.chapters[from_chapter]
+        if not chapter.is_compiled:
+            project.compile_chapter(from_chapter)
+            chapter = project.chapters[from_chapter]
+
+        # Cache-miss sample synthesizes a whole chapter. Gate it the same
+        # way as render; --force is the override. A cache hit of guessed
+        # audio is still guessed audio, so the gate is not cache-conditional.
+        rc = _pre_spend_gates(args, project, [chapter])
+        if rc is not None:
+            return rc
 
         _out(f"Rendering sample from chapter {from_chapter}...")
         _out(f"  Start: {start_seconds:.0f}s  Duration: {duration:.0f}s  Profile: {output_profile}")
@@ -6019,8 +7308,15 @@ def cmd_master_check(args) -> int:
     try:
         file_path = Path(args.file)
         if not file_path.exists():
-            _err(f"Error: Audio file not found: {file_path}", args=args)
-            return 1
+            return _refuse(
+                args,
+                code="FILE_NOT_FOUND",
+                message=(
+                    f"you asked to master-check {file_path}; "
+                    "that audio file was not found."
+                ),
+                hint="pass a path to an existing WAV/M4B/MP3.",
+            )
 
         result = master_check(file_path)
 
@@ -6038,7 +7334,7 @@ def cmd_master_check(args) -> int:
         failures = result.get("failures") or []
         if passes:
             _out(
-                "\nResult: PASS — meets ACX's measurable loudness, peak, and "
+                "\nResult: PASS - meets ACX's measurable loudness, peak, and "
                 "noise-floor limits.\n"
                 "(ACX also has subjective/quality criteria this check can't verify.)"
             )
@@ -6088,7 +7384,7 @@ def cmd_export_chapters(args) -> int:
         unrendered = [title for title, duration in chapters_data if not (duration or 0) > 0]
         if chapters_data and len(unrendered) == len(chapters_data):
             _err(
-                "Error: no chapter has rendered audio — every duration is 0, so "
+                "Error: no chapter has rendered audio - every duration is 0, so "
                 "every marker would land on the same timestamp.",
                 args=args,
             )
@@ -6148,7 +7444,8 @@ def cmd_podcast(args) -> int:
          the iTunes RSS 2.0 XML to podcast.xml (or -o).
 
     Flags: --base-url (prepended to each enclosure URL), -o (output XML path),
-    --format (per-chapter audio format), -j/--jobs, --no-render, --engine.
+    --format (per-chapter audio format), -j/--jobs, --no-render, --force,
+    --engine.
     """
     from audiobooker import AudiobookProject
     from audiobooker.renderer.engine import RenderError
@@ -6174,11 +7471,15 @@ def cmd_podcast(args) -> int:
                 project.compile()
                 project.save()
 
+            rc = _pre_spend_gates(args, project, project.chapters)
+            if rc is not None:
+                return rc
+
             _out(f"Rendering {len(project.chapters)} chapter file(s) ({fmt})...")
             render_kwargs = dict(
                 resume=True,
                 jobs=getattr(args, "jobs", 1),
-                force=True,
+                force=bool(getattr(args, "force", False)),
                 output_format=fmt,
                 split=True,
             )
@@ -6188,25 +7489,39 @@ def cmd_podcast(args) -> int:
             project.save()
 
         # Build per-chapter feed items from rendered chapter audio.
+        # Drop chapters with no audio_path: an empty filename becomes an
+        # <enclosure url=base_url> with no file, while "Episodes: N" used
+        # to count occupancy of filenames — a 10-chapter --no-render with
+        # one WAV wrote a 10-item feed, claimed 1 episode, and exited 0.
         items = []
+        skipped_no_audio: list[str] = []
         for ch in project.chapters:
             if getattr(ch, "skip", False):
                 continue
             audio = getattr(ch, "audio_path", None)
-            filename = Path(audio).name if audio else ""
+            if not audio:
+                skipped_no_audio.append(ch.title or f"chapter {ch.index}")
+                continue
             items.append({
                 "index": ch.index,
                 "title": ch.title,
-                "filename": filename,
+                "filename": Path(audio).name,
                 "duration_seconds": ch.duration_seconds,
             })
 
-        if not any(item["filename"] for item in items):
-            print(
-                "Error: no rendered chapter audio found. Run the podcast command "
-                "without --no-render, or render the chapters first."
+        if not items:
+            return _refuse(
+                args,
+                code="PODCAST_NO_AUDIO",
+                message=(
+                    "you asked for a podcast feed; I found no rendered "
+                    "chapter audio, so I wrote nothing."
+                ),
+                hint=(
+                    "run the podcast command without --no-render, or "
+                    "render the chapters first."
+                ),
             )
-            return 1
 
         # output.export_podcast_rss is a pure string builder (renderer-owned).
         rss = export_podcast_rss(project, items, base_url=base_url)
@@ -6214,9 +7529,16 @@ def cmd_podcast(args) -> int:
         out_path = Path(getattr(args, "output", None) or "podcast.xml")
         out_path.write_text(rss, encoding="utf-8")
 
-        episode_count = sum(1 for item in items if item["filename"])
+        episode_count = len(items)
         _out(f"\nPodcast feed written: {out_path}")
         _out(f"  Episodes: {episode_count}")
+        if skipped_no_audio:
+            _err(
+                f"you asked for a {episode_count + len(skipped_no_audio)}-chapter "
+                f"feed; I wrote {episode_count} episode(s) because "
+                f"{len(skipped_no_audio)} chapter(s) have no rendered audio.",
+                args=args,
+            )
         if base_url:
             _out(f"  Base URL: {base_url}")
         return 0
@@ -6232,6 +7554,11 @@ def cmd_podcast(args) -> int:
 
 def main(argv: Optional[list[str]] = None) -> int:
     """Main entry point."""
+    # FEAT-IN-001: first thing, before anything can print. A book title the
+    # console cannot encode must not be able to kill the command that just
+    # succeeded. See _configure_output_encoding().
+    _configure_output_encoding()
+
     parser = create_parser()
     args = parser.parse_args(argv)
 

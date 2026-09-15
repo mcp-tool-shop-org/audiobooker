@@ -51,6 +51,36 @@ Fixes:
 - Use `review-export` and patch attributions manually
 - Add inline overrides for tricky passages: `[Alice|angry] "How dare you!"`
 
+## The voices are wrong, but `report` says 0% unattributed
+
+This is the opposite problem and it looks like success. In an unbroken run of
+dialogue with no speech tags, Audiobooker attributes each line by alternating
+between the last two speakers it saw. That is a guess, and in a three-hander
+or after an interruption it is frequently wrong — but the line *has* a
+speaker, so it is not unattributed, and an unattributed rate cannot see it.
+
+Read the **Attribution** verdict and the **Guessed speakers** count instead:
+
+```bash
+audiobooker report
+```
+
+```
+  Unattributed rate: 0.0%  (of dialogue)
+  Guessed speakers:  6 (75.0% of dialogue) - attributed by alternating turns, not by the text
+  Attribution:       FAILED (75.0% of dialogue unverified)
+  Attributed by:     alternating turn: 6, speech tag: 2
+```
+
+`report` then lists the guessed lines with the speaker it assigned each one.
+Fix them with `review-export`, an inline `[Character]` override, or by naming
+the speaker in the source text. `render` refuses a book whose attribution
+reads `FAILED` before spending a TTS run; `--force` overrides it.
+
+Note that these lines are **not** visible as problems in the review export —
+they carry a confident-looking speaker name. The `report` listing is the only
+place they surface.
+
 ## Chapters missing from EPUB
 
 If EPUB sections are very short, Audiobooker may drop them based on `min_chapter_words`.

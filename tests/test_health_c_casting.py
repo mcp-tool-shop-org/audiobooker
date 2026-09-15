@@ -272,14 +272,14 @@ class TestResolutionStatsLowConfidence:
         assert low.speaker == "Marcus"
         assert low.chapter_index == 2
         assert low.line_index == 7
-        assert resolver.FUZZY_THRESHOLD <= low.confidence < resolver.LOW_CONFIDENCE_BAND
+        assert low.confidence == resolver.NLP_FUZZY_CONFIDENCE
 
     def test_exact_match_not_low_confidence(self):
         """A clean exact match (confidence 1.0) is not flagged low-confidence."""
         from audiobooker.nlp.booknlp_adapter import QuoteAttribution
 
         fake = _make_fake_adapter(
-            [QuoteAttribution(quote_text="Hello there", speaker="Marcus", start=0, end=11, confidence=0.9)]
+            [QuoteAttribution(quote_text="Hello there", speaker="Marcus", start=0, end=11, confidence=1.0)]
         )
         resolver = SpeakerResolver(mode="on", adapter=fake)
 

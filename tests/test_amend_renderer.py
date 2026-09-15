@@ -43,6 +43,7 @@ from audiobooker.renderer import engine as engine_mod
 from audiobooker.renderer import ffmpeg_runner as ffmpeg_runner_mod
 from audiobooker.renderer.cache_manifest import (
     ChapterCacheEntry,
+    UtteranceCacheEntry,
     get_chapter_wav_path,
     get_manifest_path,
     load_manifest,
@@ -376,7 +377,13 @@ class TestSampleStaleWav:
     def test_unverified_disk_fallback_warns(
         self, tmp_path: Path, monkeypatch, caplog, ffmpeg_available
     ):
-        """A WAV with no manifest entry may be reused, but never silently."""
+        """A WAV with no manifest entry must not be reused as the sample.
+
+        F-fa847627: occupancy (file exists) is not identity. Re-synthesis
+        (engine.calls) is the spend lock; a WARNING that names the
+        no-manifest / unverified WAV is the log that distinguishes a miss
+        from a silent occupancy reuse.
+        """
         project = _make_project()
         cache_root = tmp_path / "cache"
         wav = get_chapter_wav_path(cache_root, 0)
@@ -398,11 +405,31 @@ class TestSampleStaleWav:
                 cache_root=cache_root,
             )
 
-        assert not engine.calls, "an unverified but present WAV should still be reused"
-        warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
-        assert any("verif" in r.getMessage().lower() for r in warnings), (
-            "the unverified fallback was logged at INFO — the user never sees it"
+        assert engine.calls, (
+            "render_sample reused a no-manifest truncated/unverified WAV "
+            "as the retail sample (F-12572710)"
         )
+        warnings = [
+            r.getMessage()
+            for r in caplog.records
+            if r.levelno >= logging.WARNING
+        ]
+        blob = " ".join(warnings).lower()
+        assert warnings, (
+            "no-manifest occupancy reuse was silent — Cached-wrong is "
+            "indistinguishable from a miss (F-12572710 / F-fa847627)"
+        )
+        assert any(
+            token in blob
+            for token in (
+                "manifest",
+                "unverified",
+                "not reused",
+                "no-manifest",
+                "occupancy",
+                "truncated",
+            )
+        ), warnings
 
 
 # ---------------------------------------------------------------------------
@@ -706,12 +733,31 @@ class TestRenderLock:
     def test_stale_lock_from_a_dead_process_is_reclaimed(self, tmp_path: Path):
         cache_root = tmp_path / "cache"
         cache_root.mkdir(parents=True)
+        planted_token = "dead-process-token"
         (cache_root / engine_mod.LOCKFILE_NAME).write_text(
-            json.dumps({"pid": 999999, "started_at": "2020-01-01T00:00:00+00:00"}),
+            json.dumps({
+                "pid": 999999,
+                "token": planted_token,
+                "started_at": "2020-01-01T00:00:00+00:00",
+            }),
             encoding="utf-8",
         )
         lock = engine_mod._acquire_render_lock(cache_root)
-        engine_mod._release_render_lock(lock)
+        try:
+            assert lock.exists(), "reclaim returned a path that is not on disk"
+            data = json.loads(lock.read_text(encoding="utf-8"))
+            assert data.get("pid") == os.getpid(), (
+                "reclaim left the dead pid in place — a no-op that returned "
+                "the stale path would also have 'succeeded'"
+            )
+            token = data.get("token")
+            assert token, "reclaimed lock has no process identity token"
+            assert token != planted_token, (
+                "reclaim kept the planted token; the lock was unlinked or "
+                "returned without rewriting pid+token"
+            )
+        finally:
+            engine_mod._release_render_lock(lock)
 
     def test_lock_carries_a_process_identity_token(self, tmp_path: Path):
         cache_root = tmp_path / "cache"
@@ -767,6 +813,28 @@ class TestCacheEntryIntegrity:
         assert not entry.is_valid("t", "c", "p"), (
             "a truncated WAV passed validation because the only check was "
             "'file is non-empty'"
+        )
+
+    def test_truncated_utterance_wav_is_not_valid(self, tmp_path: Path):
+        """F-2d778457 / F-f0dd9a89: UtteranceCacheEntry must miss a truncated WAV.
+
+        ChapterCacheEntry already pins size_bytes. Mutating utterance is_valid
+        back to occupancy (exists and st_size>0) must go RED here.
+        """
+        wav = tmp_path / "utt.wav"
+        write_silence_wav(wav, duration_s=1.0)
+        entry = UtteranceCacheEntry(
+            utterance_hash="h",
+            wav_path=str(wav),
+            duration_s=1.0,
+            size_bytes=wav.stat().st_size,
+        )
+        assert entry.is_valid()
+
+        wav.write_bytes(b"RIFF" + b"\x00" * 64)
+        assert not entry.is_valid(), (
+            "a truncated utterance WAV passed validation because the only "
+            "check was 'file is non-empty' (F-2d778457)"
         )
 
     def test_legacy_entry_without_size_still_validates(self, tmp_path: Path):

@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  Turn <strong>EPUB / TXT / PDF / DOCX</strong> books into professionally narrated, multi-voice audiobooks (<strong>M4B / MP3 / Opus / FLAC</strong>) — from one command.
+  Turn <strong>EPUB / TXT / PDF / DOCX</strong> books into professionally narrated, multi-voice audiobooks (<strong>M4B / MP3 / Opus / FLAC / WAV</strong>) — from one command.
 </p>
 
 Questa è la **`npx` wrapper** per [`audiobooker-ai`](https://pypi.org/project/audiobooker-ai/) (Python). Alla prima esecuzione, crea un ambiente Python privato, installa la versione specifica da PyPI ed esegue la vera CLI: niente configurazioni manuali `pip`, nessuna modifica al tuo Python di sistema.
@@ -60,13 +60,14 @@ L'elaborazione richiede anche **FFmpeg** nel PATH per l'assemblaggio in formato 
 
 ## Cosa fa
 
-- **Selezione di voci multiple** con suggerimenti di voci classificati e spiegabili; `audiobooker audition <character>` ti consente di confrontare le voci candidate prima di scegliere.
-- **Rilevamento dei dialoghi + attribuzione del parlante** (opzionale co-riferimento BookNLP), inferenza delle emozioni e lessici di pronuncia riutilizzabili.
-- **Revisione prima dell'elaborazione**: esporta uno script modificabile manualmente, correggi le attribuzioni, reimporta: nulla viene modificato in silenzio.
-- **Mastering conforme alle specifiche ACX**: `render --acx` esegue il mastering per raggiungere i parametri audio di ACX: RMS tra −23 e −18 dBFS, picco a o inferiore a −3, livello di rumore a o inferiore a −60; `master-check` segnala PASS/FAIL rispetto a questi tre limiti misurati.
-Tieni presente che il rispetto delle specifiche non è la stessa cosa dell'essere accettati: il flusso di invio standard di ACX è per la narrazione umana. Consulta il [README principale](https://github.com/mcp-tool-shop-org/audiobooker#where-an-ai-narrated-audiobook-can-actually-go) per le opzioni che accettano titoli narrati dall'IA.
-- **Formati**: M4B (marcatori di capitolo + copertina incorporata + metadati della serie), MP3, Opus, FLAC; esportazione per capitolo; clip di esempio per la vendita al dettaglio.
-- **7 profili linguistici** (en/fr/de/es/ja/it/pt) e un file di configurazione per libro per impostare valori predefiniti che non richiedono ulteriori modifiche.
+- **Assegnazione di voci multiple** con suggerimenti di voci classificati e spiegati; `audiobooker audition <character>` consente di confrontare diverse voci candidate prima di prendere una decisione definitiva.
+- **Rilevamento dei dialoghi + attribuzione del parlante** (opzionale, con co-riferimento BookNLP), inferenza delle emozioni e lessici di pronuncia riutilizzabili.
+- **Revisione prima del rendering**: esporta uno script modificabile manualmente, correggi le attribuzioni, reimporta: nulla viene modificato in modo silenzioso.
+- **Mastering conforme alle specifiche ACX**: `render --acx` esegue il mastering per raggiungere gli standard audio ACX: RMS tra −23 e −18 dBFS, picco a o inferiore a −3, livello di rumore a o inferiore a −60; `master-check` segnala se il risultato è ACCETTABILE/NON ACCETTABILE rispetto a questi tre limiti misurati.
+Si noti che il rispetto delle specifiche non è la stessa cosa dell'essere accettati: il flusso di invio standard di ACX è per le narrazioni umane. Consultare il [file README principale](https://github.com/mcp-tool-shop-org/audiobooker#where-an-ai-narrated-audiobook-can-actually-go) per le opzioni che accettano titoli narrati dall'IA.
+- **Attribuzione verificabile**: ogni riga registra *come* è stato deciso il parlante: un tag vocale, la tua correzione o una semplice ipotesi a turno alternato; `audiobooker report` conta le ipotesi separatamente dalle righe a cui non è stato possibile attribuire un parlante. Un'ipotesi non può migliorare il punteggio.
+- **Formati**: M4B (marcatori di capitolo + copertina incorporata + metadati della serie), MP3, Opus, FLAC, WAV; esportazione per capitolo; clip di esempio per la vendita al dettaglio.
+- **7 profili linguistici** (en/fr/de/es/ja/it/pt) e un file di configurazione per libro per impostare valori predefiniti da utilizzare in modo permanente.
 
 ## Variabili d'ambiente
 

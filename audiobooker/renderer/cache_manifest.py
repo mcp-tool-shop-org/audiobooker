@@ -23,7 +23,25 @@ logger = logging.getLogger("audiobooker.cache")
 # Every v1 entry therefore misses on the hash comparison and re-renders once;
 # the bump additionally stops an OLDER audiobooker from trusting a v2 manifest
 # whose key schema it cannot reproduce (load_manifest refuses future versions).
-MANIFEST_VERSION = 2
+#
+# v3 (FEAT-PROD-003, phase 7): three audio-affecting inputs joined the keys.
+#   chapter_text_hash    + utterance intensity (picks the SSML emphasis band)
+#   render_params_hash   + emotion_preset (picks the emphasis MAP)
+#                        + utterance_cache (picks per-utterance vs per-chapter
+#                          synthesis, which is not the same waveform)
+#   casting_hash         + speed / pitch_shift / emphasis per character, and
+#                          per-chapter speaker scoping (FEAT-OUT-001)
+# A v2 entry was written without them, so it cannot prove its WAV matches the
+# render about to run. Every v2 entry misses once and re-renders — that cost
+# is the correct one to pay: the alternative is what shipped before this
+# bump, where switching to the 'literary' preset reported "Cached" on every
+# chapter and handed back the 'neutral' audio.
+#
+# v4 (wave-5 amend): dropped narrator_pause_ms, dialogue_pause_ms, and
+# sample_rate from render_params_hash (F-495d9640 / F-5055b6b8). They were
+# inverse-Vary members — hashed but never consumed by TTS. v3 entries were
+# written with the old formula, so they miss once.
+MANIFEST_VERSION = 4
 MANIFEST_FILENAME = "render_v1.json"
 
 # FT-RENDER-P-004: the utterance-level incremental cache lives in its OWN
@@ -32,7 +50,14 @@ MANIFEST_FILENAME = "render_v1.json"
 # manifests therefore continue to load byte-identically — bumping the chapter
 # MANIFEST_VERSION was deliberately avoided. The utterance manifest carries its
 # own independent version line.
-UTTERANCE_MANIFEST_VERSION = 1
+# v2 (wave-2 amend): utterance_hash now keys utterance_type and the
+# per-speaker delivery knobs (speed / pitch_shift / emphasis), and
+# UtteranceCacheEntry records size_bytes so a truncated WAV cannot be
+# stitched back into a chapter. v1 entries were written without those, so
+# they cannot prove their WAVs match the render about to run; every v1
+# entry misses once. The bump also stops an older audiobooker from
+# trusting a v2 manifest whose key schema it cannot reproduce.
+UTTERANCE_MANIFEST_VERSION = 2
 UTTERANCE_MANIFEST_FILENAME = "render_v2_utterance.json"
 
 
@@ -175,17 +200,39 @@ class UtteranceCacheEntry:
     wav_path: str
     duration_s: float = 0.0
     created_at: str = ""
+    # Byte size recorded at write time. 0 means "not recorded" (a v1
+    # manifest written before this field existed), which falls back to the
+    # old non-empty-only check rather than invalidating every legacy entry.
+    size_bytes: int = 0
 
     def is_valid(self) -> bool:
-        """Valid when the WAV still exists on disk and is non-empty."""
+        """Valid when the WAV still exists on disk and matches size_bytes."""
         wav = Path(self.wav_path)
         # No separate exists() call — see ChapterCacheEntry.is_valid above:
         # exists() stats, so a guard before the try lets the very errors this
         # block catches escape. stat() covers absence via FileNotFoundError.
         try:
-            return wav.stat().st_size > 0
-        except OSError:
+            actual_size = wav.stat().st_size
+        except FileNotFoundError:
             return False
+        except OSError as e:
+            logger.warning(f"Cached utterance WAV could not be stat'd ({e}): {self.wav_path}")
+            return False
+        if actual_size == 0:
+            logger.warning(f"Cached utterance WAV is empty (0 bytes): {self.wav_path}")
+            return False
+        # F-f0dd9a89: "non-empty" does not mean "complete". A kill mid-write
+        # leaves a truncated WAV that the next incremental render would
+        # stitch into the chapter. Compare against the size recorded when
+        # the file was written, matching ChapterCacheEntry.
+        if self.size_bytes and actual_size != self.size_bytes:
+            logger.warning(
+                f"Cached utterance WAV size changed since render "
+                f"({actual_size} bytes on disk, {self.size_bytes} recorded) — "
+                f"treating as truncated/corrupt: {self.wav_path}"
+            )
+            return False
+        return True
 
 
 @dataclass
@@ -261,8 +308,11 @@ def load_utterance_manifest(manifest_path: Path) -> Optional[UtteranceCacheManif
 
     A future-version manifest (version > UTTERANCE_MANIFEST_VERSION) is ignored
     rather than mis-read, mirroring the chapter loader's policy.
+
+    A missing live file is recovered from ``<name>.json.bak`` when present
+    (F-77b04dca — same interrupted-save shape as load_manifest / CACHE-A-003).
     """
-    if not manifest_path.exists():
+    if not _recover_live_from_bak(manifest_path):
         return None
     try:
         data = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -308,25 +358,37 @@ def save_utterance_manifest(
 # Atomic I/O
 # ---------------------------------------------------------------------------
 
+def _recover_live_from_bak(manifest_path: Path) -> bool:
+    """Restore ``manifest_path`` from ``.json.bak`` after an interrupted save.
+
+    ``save_manifest`` / ``save_utterance_manifest`` rename live → bak before
+    tmp → live. A crash between those two leaves no live file. Returns True
+    iff a live file exists after the attempt (already present, or recovered).
+    """
+    if manifest_path.exists():
+        return True
+    bak_path = manifest_path.with_suffix(".json.bak")
+    if not bak_path.exists():
+        return False
+    try:
+        os.rename(str(bak_path), str(manifest_path))
+        logger.warning(
+            f"Recovered manifest from backup after interrupted save: {bak_path}"
+        )
+        return True
+    except OSError as e:
+        logger.warning(f"Failed to recover manifest from {bak_path}: {e}")
+        return False
+
+
 def load_manifest(manifest_path: Path) -> Optional[CacheManifest]:
     """Load manifest from disk. Returns None if missing or corrupt."""
-    if not manifest_path.exists():
-        # CACHE-A-003: save_manifest moves the live manifest to <name>.json.bak
-        # before renaming the new tmp into place. A hard crash between those two
-        # renames leaves the live manifest missing but the .bak intact. Recover
-        # from it so the whole cache isn't orphaned.
-        bak_path = manifest_path.with_suffix(".json.bak")
-        if bak_path.exists():
-            try:
-                os.rename(str(bak_path), str(manifest_path))
-                logger.warning(
-                    f"Recovered manifest from backup after interrupted save: {bak_path}"
-                )
-            except OSError as e:
-                logger.warning(f"Failed to recover manifest from {bak_path}: {e}")
-                return None
-        else:
-            return None
+    # CACHE-A-003: save_manifest moves the live manifest to <name>.json.bak
+    # before renaming the new tmp into place. A hard crash between those two
+    # renames leaves the live manifest missing but the .bak intact. Recover
+    # from it so the whole cache isn't orphaned.
+    if not _recover_live_from_bak(manifest_path):
+        return None
     try:
         data = json.loads(manifest_path.read_text(encoding="utf-8"))
         manifest = CacheManifest.from_dict(data)

@@ -17,13 +17,14 @@ import time
 import uuid
 from xml.sax.saxutils import escape as _xml_escape
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass, asdict, field
+from dataclasses import dataclass, asdict, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Callable, TYPE_CHECKING
 
 from audiobooker.errors import AudiobookerError, ErrorDetail
 from audiobooker import formats as audio_formats
+from audiobooker.labels import chapter_label
 from audiobooker.renderer.protocols import TTSEngine, SynthesisResult
 
 if TYPE_CHECKING:
@@ -127,6 +128,12 @@ _INTENSITY_MID_BAND = 0.67
 _NARRATOR_RATE = "medium"
 _DIALOGUE_RATE = "105%"
 
+# FEAT-PROD-011: the air between two speakers. This used to be a literal
+# inside preprocess_ssml, which is why the incremental path could lose it
+# without anything noticing -- there was nothing to share. Both paths now
+# read this, so the pause cannot differ by which cache mode you chose.
+SPEAKER_CHANGE_BREAK_MS = 750
+
 
 def _emphasis_for(
     emotion: str,
@@ -166,9 +173,55 @@ def _emphasis_for(
     return full_level
 
 
+def _pause_break_ms(text: str) -> int:
+    """Parse a PAUSE utterance's text (``pause:1000ms`` / ``pause:2s``) to ms.
+
+    Compile stores pauses as ``pause:{duration_ms}ms``. Unknown shapes fall
+    back to ``SPEAKER_CHANGE_BREAK_MS`` rather than speaking the marker.
+    """
+    raw = (text or "").strip().lower()
+    if raw.startswith("pause:"):
+        raw = raw[len("pause:"):]
+    if raw.endswith("ms"):
+        try:
+            return max(0, int(float(raw[:-2])))
+        except ValueError:
+            return SPEAKER_CHANGE_BREAK_MS
+    if raw.endswith("s"):
+        try:
+            return max(0, int(float(raw[:-1]) * 1000))
+        except ValueError:
+            return SPEAKER_CHANGE_BREAK_MS
+    try:
+        return max(0, int(float(raw)))
+    except ValueError:
+        return SPEAKER_CHANGE_BREAK_MS
+
+
+def _utterance_type_name(utt: object) -> str:
+    """``UtteranceType.value`` or empty for duck-typed / legacy utterances."""
+    ut = getattr(utt, "utterance_type", None)
+    if ut is None:
+        return ""
+    return getattr(ut, "value", ut) or ""
+
+
+def _ssml_voice_id(
+    speaker: str, voices: Optional[dict[str, str]]
+) -> Optional[str]:
+    """Resolve a <voice name> from a speaker→voice mapping."""
+    if not voices:
+        return None
+    if speaker in voices:
+        return voices[speaker]
+    from audiobooker.models import CastingTable
+    return voices.get(CastingTable.normalize_key(speaker))
+
+
 def preprocess_ssml(
     utterances: list["Utterance"],
     emotion_preset: str = "neutral",
+    voices: Optional[dict[str, str]] = None,
 ) -> str:
     """
     Transform utterances into an SSML document.
@@ -176,6 +229,9 @@ def preprocess_ssml(
     Inserts:
     - <speak> wrapper
     - <break> tags at paragraph boundaries (between utterances)
+    - <break> for UtteranceType.PAUSE (from ``pause:1000ms`` text)
+    - skipped DIRECTION / SFX (non-speech, matching utterances_to_script)
+    - <voice name> from the resolved voice id when ``voices`` is provided
     - <emphasis> for emotion-tagged text (FT-CAST-023: emphasis level scales
       with the utterance's intensity; FT-CAST-026: the base emphasis map is
       selected by ``emotion_preset``)
@@ -183,11 +239,15 @@ def preprocess_ssml(
 
     Regression contract: with ``emotion_preset='neutral'`` (default) and
     utterances whose ``intensity`` is None (or absent on legacy models), the
-    emphasis levels are byte-identical to the historical engine.
+    emphasis levels are byte-identical to the historical engine. Voice tags
+    are added only when ``voices`` is passed, so callers that omit it keep
+    the historical SSML.
 
     Args:
         utterances: List of Utterance objects to convert.
         emotion_preset: Emotion preset selecting the emphasis map (FT-CAST-026).
+        voices: Optional speaker→voice-id mapping. When given, each spoken
+            utterance is wrapped in ``<voice name="...">``.
 
     Returns:
         SSML string wrapped in <speak> tags.
@@ -199,9 +259,19 @@ def preprocess_ssml(
     prev_speaker: str | None = None
 
     for utt in utterances:
+        utt_type = _utterance_type_name(utt)
+
+        # F-82d65329: PAUSE must emit <break>, not spoken "pause:1000ms".
+        # DIRECTION is non-speech ([SFX] on the tagged-line path).
+        if utt_type == "pause":
+            parts.append(f'<break time="{_pause_break_ms(utt.text)}ms"/>')
+            continue
+        if utt_type == "direction":
+            continue
+
         # Insert paragraph break between speaker changes
         if prev_speaker is not None and utt.speaker != prev_speaker:
-            parts.append('<break time="750ms"/>')
+            parts.append(f'<break time="{SPEAKER_CHANGE_BREAK_MS}ms"/>')
 
         # Determine prosody rate: narrator = medium, dialogue = slightly faster
         is_narrator = utt.speaker.lower() in ("narrator", "narration")
@@ -218,8 +288,11 @@ def preprocess_ssml(
             level = _emphasis_for(utt.emotion, intensity, emotion_preset)
             text = f'<emphasis level="{level}">{text}</emphasis>'
 
-        # Wrap in prosody
-        parts.append(f'<prosody rate="{rate}">{text}</prosody>')
+        inner = f'<prosody rate="{rate}">{text}</prosody>'
+        voice_id = _ssml_voice_id(utt.speaker, voices)
+        if voice_id:
+            inner = f'<voice name="{_xml_escape(voice_id)}">{inner}</voice>'
+        parts.append(inner)
 
         prev_speaker = utt.speaker
 
@@ -281,7 +354,17 @@ def filter_chapters_by_selection(
     """
     if include_ranges:
         include_set = parse_chapter_ranges(include_ranges)
-        chapters = [ch for i, ch in enumerate(chapters) if i in include_set]
+        # F-0b11d4e5: filter by chapter.index, matching exclude_ranges.
+        # Enumerate position disagrees with chapter.index on a gapped or
+        # already-filtered list, so `--chapters 4` kept the wrong chapter
+        # while `--exclude-chapters 4` dropped the right one.
+        if any(getattr(ch, "index", None) is not None for ch in chapters):
+            chapters = [
+                ch for ch in chapters
+                if getattr(ch, "index", None) is not None and ch.index in include_set
+            ]
+        else:
+            chapters = [ch for i, ch in enumerate(chapters) if i in include_set]
 
     if exclude_ranges:
         exclude_set = parse_chapter_ranges(exclude_ranges)
@@ -643,17 +726,34 @@ def render_chapter(
         if engine is None:
             engine = get_default_engine()
 
+        voice_mapping = casting.get_voice_mapping()
+
         # FT-RENDER-015: Use SSML preprocessing if engine supports it
         if should_use_ssml(engine):
             # FT-CAST-026: select the emphasis map by the active emotion preset.
             # Defaults to 'neutral', which reproduces the historical emphasis
             # levels exactly (regression-critical).
-            script = preprocess_ssml(chapter.utterances, emotion_preset)
+            script = preprocess_ssml(
+                chapter.utterances, emotion_preset, voices=voice_mapping
+            )
             logger.info(f"RENDER_SSML: chapter={chapter.index} using SSML preprocessing")
         else:
-            script = utterances_to_script(chapter.utterances)
-
-        voice_mapping = casting.get_voice_mapping()
+            # FEAT-PROD-003 (adjacent find): `casting` used to be omitted here.
+            # utterances_to_script only emits the per-character {speed:1.4}
+            # {pitch:-0.3} {emphasis:1.7} hints when it is given a casting
+            # table, so Character.speed / pitch_shift / emphasis — validated in
+            # models.py, round-tripped through casting JSON and CSV, and
+            # emitted by the utterance-level incremental path, which DOES pass
+            # casting — reached synthesis from nowhere on the default render
+            # path. The two paths also disagreed about it, so opting into the
+            # utterance cache silently changed the audio.
+            #
+            # Byte-identical for a default cast: the hint is only emitted when
+            # a value differs from its default (speed != 1.0, pitch_shift !=
+            # 0.0, emphasis != 1.0). casting_hash now keys all three, so a
+            # character whose delivery is retuned invalidates rather than
+            # re-serving the old performance.
+            script = utterances_to_script(chapter.utterances, casting)
 
         output_path = Path(output_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -746,6 +846,7 @@ def render_chapter_incremental(
     render_params_hash: str,
     runner: Optional[Callable] = None,
     progress_callback: Optional[Callable[[int, int], None]] = None,
+    emotion_preset: str = "neutral",
 ) -> IncrementalRenderResult:
     """
     FT-RENDER-P-004: Render a chapter utterance-by-utterance with a sub-cache.
@@ -770,6 +871,10 @@ def render_chapter_incremental(
         runner: Injected FFmpegRunner-like callable holder for the concat step
             (defaults to RealFFmpegRunner). Tests pass a fake.
         progress_callback: Callback(current_utterance, total_utterances).
+        emotion_preset: FT-CAST-026 emotion preset selecting the SSML emphasis
+            map, mirroring ``render_chapter``. FEAT-PROD-009: without this the
+            opt-in path silently dropped the project's preset, so turning the
+            cache on quietly reverted every emphasis level to 'neutral'.
 
     Returns:
         IncrementalRenderResult with the stitched WAV path, duration, and
@@ -855,10 +960,29 @@ def render_chapter_incremental(
     reused = 0
     total_duration = 0.0
     ordered_wavs: list[Path] = []
+    # FEAT-PROD-011: gap_before[i] is the silence, in ms, that belongs
+    # between utterance i-1 and utterance i. preprocess_ssml emits its
+    # <break> only when it can see a PREVIOUS speaker, and this path hands
+    # it one utterance at a time -- so prev_speaker is None on the only
+    # iteration, every time, and the break was never emitted. Opting into
+    # the cache silently removed every pause in the book.
+    #
+    # The pause is inserted at stitch time rather than prepended to a
+    # neighbour's script: baking it into utterance i's WAV would make those
+    # bytes depend on utterance i-1, so editing one line would invalidate
+    # the line after it too. That coupling is the thing a per-utterance
+    # cache exists to avoid.
+    gap_before: list[int] = []
 
     for idx, utt in enumerate(chapter.utterances):
+        prev = chapter.utterances[idx - 1] if idx else None
+        gap_before.append(
+            SPEAKER_CHANGE_BREAK_MS
+            if prev is not None and prev.speaker != utt.speaker
+            else 0
+        )
         voice, _emotion = casting.get_voice(utt.speaker)
-        uhash = _utterance_hash(utt, voice, render_params_hash)
+        uhash = _utterance_hash(utt, voice, render_params_hash, casting=casting)
         # COORD-B-002 (wave 5): the ON-DISK filename only needs enough of the
         # hash to make a same-directory collision negligible -- it does NOT
         # need cache-key-grade uniqueness, because the cache key IS the full
@@ -903,8 +1027,20 @@ def render_chapter_incremental(
             # Synthesize just this utterance. A single-utterance script keeps the
             # engine contract identical to the chapter path (same tagged-line
             # format), only narrower in scope.
+            #
+            # FEAT-PROD-009: "identical to the chapter path" has to include
+            # WHICH format. render_chapter picks SSML for an SSML-capable
+            # engine and the tagged-line script otherwise; this path always
+            # chose the tagged-line script, so opting into the cache changed
+            # the markup handed to the engine — and dropped the emotion preset
+            # and intensity grading that only live in the SSML branch.
             from audiobooker.casting.dialogue import utterances_to_script
-            script = utterances_to_script([utt], casting)
+            if should_use_ssml(engine):
+                script = preprocess_ssml(
+                    [utt], emotion_preset, voices=voice_mapping
+                )
+            else:
+                script = utterances_to_script([utt], casting)
             tmp = _chapter_tmp_path(target)
             try:
                 result = engine.synthesize(
@@ -952,12 +1088,17 @@ def render_chapter_incremental(
             total_duration += result.duration_seconds
             ordered_wavs.append(target)
 
+            try:
+                utt_size = target.stat().st_size
+            except OSError:
+                utt_size = 0
             manifest.set_entry(
                 UtteranceCacheEntry(
                     utterance_hash=uhash,
                     wav_path=str(target),
                     duration_s=result.duration_seconds,
                     created_at=datetime.now(timezone.utc).isoformat(),
+                    size_bytes=utt_size,
                 )
             )
             save_utterance_manifest(manifest, manifest_path)
@@ -965,8 +1106,15 @@ def render_chapter_incremental(
         if progress_callback:
             progress_callback(idx + 1, total)
 
-    # Stitch the per-utterance WAVs into the chapter WAV (cheap concat copy).
-    _stitch_utterance_wavs(ordered_wavs, output_path, runner=runner)
+    # Stitch the per-utterance WAVs into the chapter WAV (cheap concat copy),
+    # with the speaker-change silences spliced back in between them.
+    _stitch_utterance_wavs(
+        ordered_wavs, output_path, gap_before_ms=gap_before, runner=runner
+    )
+    # FEAT-PROD-011: the gaps are real audio in the file, so the reported
+    # duration has to include them -- chapter marks are placed from these
+    # numbers, and an under-report walks every later mark forward.
+    total_duration += sum(gap_before) / 1000.0
 
     chapter.audio_path = output_path
     chapter.duration_seconds = total_duration
@@ -986,22 +1134,61 @@ def render_chapter_incremental(
     )
 
 
+def _write_silence_wav(path: Path, duration_ms: int, like: Path) -> Path:
+    """Write ``duration_ms`` of silence matching ``like``'s WAV format.
+
+    FEAT-PROD-011 / F-671abba9. Canonical implementation lives in output.py
+    so chapter-concat silence and utterance-stitch silence cannot drift.
+    """
+    from audiobooker.renderer.output import _write_silence_wav as _impl
+    return _impl(path, duration_ms, like)
+
+
 def _stitch_utterance_wavs(
     wavs: list[Path],
     output_path: Path,
     *,
+    gap_before_ms: Optional[list[int]] = None,
     runner: Optional[Callable] = None,
 ) -> Path:
     """Concatenate per-utterance WAVs into one chapter WAV via ffmpeg concat.
 
     Uses ``-c copy`` (no re-encode) — the utterance WAVs share the engine's
-    sample format, so this is a cheap remux. A single WAV is just copied.
+    sample format, so this is a cheap remux.
+
+    ``gap_before_ms[i]`` is silence to splice in *before* ``wavs[i]``; the
+    first entry is ignored (nothing precedes it). Omitting the argument
+    concatenates the WAVs back to back, which is the historical behaviour.
     """
     if not wavs:
         raise RenderError(
             "Cannot stitch an empty utterance list into a chapter WAV.",
             code="RUNTIME_RENDER",
         )
+
+    if gap_before_ms is None:
+        gap_before_ms = [0] * len(wavs)
+    elif len(gap_before_ms) != len(wavs):
+        raise RenderError(
+            f"gap_before_ms has {len(gap_before_ms)} entries for "
+            f"{len(wavs)} utterance WAVs.",
+            code="RUNTIME_RENDER",
+        )
+
+    # Interleave the silences. Written before the single-WAV shortcut below
+    # so that shortcut stays correct: one WAV can have no gaps by
+    # construction, and a lone segment needs no concat at all.
+    segments: list[Path] = []
+    gap_dir = output_path.parent / "_gaps"
+    for i, wav in enumerate(wavs):
+        if i and gap_before_ms[i] > 0:
+            segments.append(_write_silence_wav(
+                gap_dir / f"gap_{i:04d}_{gap_before_ms[i]}ms.wav",
+                gap_before_ms[i],
+                like=wav,
+            ))
+        segments.append(wav)
+    wavs = segments
 
     if runner is None:
         from audiobooker.renderer.ffmpeg_runner import RealFFmpegRunner
@@ -1029,6 +1216,18 @@ def _stitch_utterance_wavs(
             "-safe", "0",
             "-i", str(concat_file),
             "-c", "copy",
+            # FEAT-PROD-009: name the output format explicitly. ffmpeg infers
+            # it from the output EXTENSION, and the render path hands this
+            # function a per-process scratch name ending in ".wav.tmp"
+            # (_chapter_tmp_path) — ".tmp" is not a format ffmpeg knows, so
+            # every real stitch would have died on "Unable to find a suitable
+            # output format". It never surfaced because nothing called this
+            # function outside tests, and the tests inject a fake runner that
+            # writes the file itself. The output is a WAV by construction
+            # (these are the engine's own per-utterance WAVs, concatenated
+            # with -c copy), so stating it costs nothing and removes the
+            # dependency on how the caller spells its temp file.
+            "-f", "wav",
             str(output_path),
         ])
         if result.returncode != 0:
@@ -1318,6 +1517,132 @@ def _validate_project_voices(project: "AudiobookProject", engine=None) -> None:
     validator(engine=engine)
 
 
+# FEAT-PROD-004: the output destination is the one preflight nobody wrote.
+# The gauntlet above this checks casting completeness, every voice ID, the
+# ffmpeg binary, dialogue-attribution quality and even that --cover exists --
+# and then synthesizes the entire book before discovering it cannot write the
+# file. Measured on a 6-chapter book: all three unwritable-destination cases
+# (missing parent directory, destination is a directory, parent path is a
+# file) synthesized 6/6 chapters first and escaped as a bare FileNotFoundError
+# or PermissionError with no code, no hint, and nothing saying the chapters
+# are cached and a corrected re-run is nearly free.
+_WRITE_PROBE_NAME = ".audiobooker-write-probe"
+
+
+def _preflight_output_destination(output_path: Path, *, split: bool = False) -> None:
+    """Fail fast when the finished book could not be written where it is going.
+
+    Runs BEFORE the render loop, so a typo'd path costs nothing instead of a
+    whole book's synthesis. Deliberately non-destructive: an existing output
+    file is opened for append and closed, never truncated, and the writability
+    probe is a uniquely-named temp file in the parent directory that is
+    removed again. A missing parent directory is CREATED rather than rejected
+    -- ffmpeg cannot create one, and refusing a path the user obviously meant
+    would be worse than making it.
+
+    Args:
+        output_path: The final output path the assembler will be handed.
+        split: True when the AAC split assembler is used, which treats
+            ``output_path`` as a base name and writes a DIRECTORY from its
+            stem. The thing that must be writable is then the parent and the
+            stem-directory, not a file at ``output_path``.
+
+    Raises:
+        RenderError: code ``OUTPUT_UNWRITABLE``, naming the destination and
+            the specific reason, with a hint that says the cached chapters
+            survive a corrected re-run.
+    """
+    output_path = Path(output_path)
+    target = output_path.parent / output_path.stem if split else output_path
+    parent = target.parent if not split else output_path.parent
+
+    def _fail(reason: str, cause: Optional[BaseException] = None) -> None:
+        raise RenderError(
+            f"Cannot write the audiobook to {output_path}: {reason}",
+            code="OUTPUT_UNWRITABLE",
+            retryable=True,
+            hint=(
+                "Fix the --output path (or the directory it lives in) and "
+                "re-run. Nothing has been synthesized yet; any chapters "
+                "already in the render cache are reused, so a corrected "
+                "re-run costs almost nothing."
+            ),
+            cause=str(cause) if cause is not None else None,
+        ) from cause
+
+    # 1. The parent directory must exist, or be creatable.
+    #
+    # Creating it beats rejecting it: no assembler in renderer/output.py does
+    # (grep for parent.mkdir there — nothing), so a missing directory is
+    # today a hard failure at the very end, and the path the user typed is
+    # almost always the path they meant. But creating a directory tree from a
+    # TYPO silently is its own trap, so the recovery is logged at WARNING
+    # rather than INFO: the CLI configures logging at WARNING by default, so
+    # this is the one level where "I made a directory for you" actually
+    # reaches the person who can tell a typo from an intention.
+    if not parent.exists():
+        try:
+            parent.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            path_diagnosis = _diagnose_windows_path_length(e)
+            if path_diagnosis:
+                _fail(path_diagnosis, e)
+            _fail(
+                f"its directory {parent} does not exist and could not be "
+                f"created ({e.strerror or e})",
+                e,
+            )
+        logger.warning(
+            f"RENDER_OUTPUT_DIR_CREATED: {parent} did not exist and was "
+            f"created for the output {output_path.name!r}. If that is not "
+            f"where you meant the book to go, stop now — nothing has been "
+            f"synthesized yet."
+        )
+    elif not parent.is_dir():
+        # A FILE sits where the directory should be. mkdir would raise
+        # FileExistsError, which reads as "already there" -- say what is
+        # actually wrong instead.
+        _fail(f"{parent} is a file, not a directory")
+
+    # 2. The destination itself must not already be a directory. ffmpeg's
+    #    error for this is a bare PermissionError on Windows, which sends the
+    #    user looking for an ACL problem that does not exist.
+    if not split and target.is_dir():
+        _fail(f"{target} is an existing directory, not a file")
+
+    # 3. The parent must actually accept a new file. os.access() is advisory
+    #    on Windows (it reports the read-only ATTRIBUTE, not the ACL), so
+    #    probe by creating and removing a real file.
+    probe = parent / f"{_WRITE_PROBE_NAME}-{uuid.uuid4().hex[:8]}"
+    try:
+        probe.touch()
+    except OSError as e:
+        path_diagnosis = _diagnose_windows_path_length(e)
+        if path_diagnosis:
+            _fail(path_diagnosis, e)
+        _fail(f"its directory {parent} is not writable ({e.strerror or e})", e)
+    finally:
+        try:
+            probe.unlink(missing_ok=True)
+        except OSError:  # pragma: no cover - best effort cleanup
+            logger.debug(f"Could not remove write probe {probe}")
+
+    # 4. An EXISTING output file must be replaceable. Append mode neither
+    #    truncates nor changes the file; it just proves the handle can be had
+    #    (a read-only file, or one held open by a player, fails here).
+    if not split and target.exists():
+        try:
+            with open(target, "ab"):
+                pass
+        except OSError as e:
+            _fail(
+                f"the existing file cannot be overwritten ({e.strerror or e})",
+                e,
+            )
+
+    logger.debug(f"RENDER_PREFLIGHT_OUTPUT_OK: {output_path}")
+
+
 # ---------------------------------------------------------------------------
 # Render summary (returned to caller for user-facing messages)
 # ---------------------------------------------------------------------------
@@ -1450,6 +1775,8 @@ def _render_project_impl(
     output_profile: str = "podcast",
     split: bool = False,
     validate_voices: bool = True,
+    utterance_cache: Optional[bool] = None,
+    stitch_runner: Optional[Callable] = None,
     **kwargs,
 ) -> "RenderSummary":
     """
@@ -1490,6 +1817,19 @@ def _render_project_impl(
             already ran the gate pass False (``Project.render`` does) so the
             registry is not queried twice. NOT the same knob as ``force``,
             which only bypasses casting *completeness*.
+        utterance_cache: FEAT-PROD-009 / FT-RENDER-P-004 — synthesize one
+            utterance at a time and sub-cache each one, so editing a single
+            line of dialogue in chapter 30 re-synthesizes that line instead of
+            3,000 words. ``None`` (the default) reads
+            ``project.config.utterance_cache``, which is the documented opt-in
+            and defaults to False; pass True/False to override it for one
+            render. Before this wave nothing read the flag and nothing called
+            ``render_chapter_incremental`` — the feature was complete, tested,
+            listed in CHANGELOG 2.1.0 and advertised in the README, and
+            unreachable.
+        stitch_runner: Injected FFmpegRunner-like holder used for the
+            utterance concat step when ``utterance_cache`` is on. Tests pass a
+            fake; None uses the real ffmpeg.
 
     Returns:
         RenderSummary with the output path and per-chapter accounting.
@@ -1507,7 +1847,7 @@ def _render_project_impl(
         assemble_wav as _wav_assembler,
     )
     from audiobooker.renderer.cache_manifest import (
-        CacheManifest, ChapterCacheEntry,
+        CacheManifest, ChapterCacheEntry, MANIFEST_VERSION,
         load_manifest, save_manifest,
         get_cache_root, get_chapter_wav_path, get_manifest_path,
     )
@@ -1583,6 +1923,12 @@ def _render_project_impl(
 
     output_path = Path(output_path)
 
+    # FEAT-PROD-004: the destination gate. Placed with the other cheap,
+    # local preflights and BEFORE the lockfile and the render loop, for the
+    # same reason they are: a book costs hours and (against a paid TTS API)
+    # money, and "where does this go" is answerable in microseconds.
+    _preflight_output_destination(output_path, split=split)
+
     # FT-RENDER-M-002: Auto-cover. When no cover was supplied, fall back to the
     # project's metadata cover_art_path if that file exists, and log which
     # source we used so it's never a silent surprise.
@@ -1629,13 +1975,48 @@ def _render_project_impl(
         f"cache={cache_root} resume={resume} jobs={jobs} format={fmt}"
     )
 
+    # FEAT-PROD-009: resolve the utterance-cache opt-in BEFORE the params
+    # hash, because the hash keys it — the two synthesis strategies do not
+    # produce the same waveform, so toggling the flag must miss.
+    if utterance_cache is None:
+        utterance_cache = bool(getattr(project.config, "utterance_cache", False))
+    effective_config = project.config
+    if utterance_cache != bool(getattr(project.config, "utterance_cache", False)):
+        # An explicit kwarg override must reach the hash too, without
+        # mutating the caller's config object.
+        effective_config = replace(project.config, utterance_cache=utterance_cache)
+
+    if engine is None:
+        # Hash and synthesize must share one engine. get_default_engine()
+        # without a name ignores config.tts_engine (env/default only), so a
+        # None-engine render stored WAVs under a piper digest then later
+        # CLI piper renders HIT the soundboard audio (F-9f81fbf2).
+        engine = get_default_engine(getattr(effective_config, "tts_engine", None))
+
     # Compute current hashes. The engine and the effective output profile are
     # part of the render-params key — rendering the same text with a different
     # TTS engine or a different mastering profile must not hit the cache.
-    current_casting_hash = casting_hash(project.casting)
+    #
+    # FEAT-OUT-001: the casting digest is computed PER CHAPTER (see
+    # _chapter_casting_hash below), scoped to the speakers that chapter
+    # actually contains. There is deliberately no whole-table value cached
+    # here any more: keeping one invites exactly the bug this fixes — a
+    # later edit reaching for the convenient module-level name and writing a
+    # book-wide digest into a per-chapter cache entry.
     current_params_hash = render_params_hash(
-        project.config, engine=engine, output_profile=output_profile
+        effective_config, engine=engine, output_profile=output_profile
     )
+
+    def _chapter_casting_hash(chapter: "Chapter") -> str:
+        """Per-chapter casting digest (FEAT-OUT-001).
+
+        Recasting one character used to re-render the whole book: measured on
+        a two-chapter book where Bob speaks in one, changing only Bob's voice
+        re-synthesized both. Scoping the digest to the chapter's own speakers
+        (plus the narrator and fallback, which any uncast speaker resolves
+        through) makes that one chapter.
+        """
+        return casting_hash(project.casting, chapter=chapter)
 
     # RH-B-003: --jobs N used to call synthesize() on ONE shared engine
     # instance from N pool workers with no thread-safety contract anywhere.
@@ -1670,6 +2051,19 @@ def _render_project_impl(
     manifest = load_manifest(manifest_path) if resume else None
     if manifest is None:
         manifest = CacheManifest(book_title=project.title)
+    elif manifest.version < MANIFEST_VERSION:
+        # A pre-v3 manifest still LOADS (load_manifest only refuses FUTURE
+        # versions) and every one of its entries misses on the new hashes, so
+        # the cache self-heals. But entries written from here on are v3-keyed,
+        # and leaving the file stamped v2 would advertise a schema it no
+        # longer holds — the "an older audiobooker refuses a manifest it
+        # cannot reproduce" guarantee only works if the stamp is honest.
+        logger.info(
+            f"RENDER_CACHE_UPGRADE: manifest v{manifest.version} -> "
+            f"v{MANIFEST_VERSION}; entries keyed under the old schema "
+            f"re-render once."
+        )
+        manifest.version = MANIFEST_VERSION
 
     summary = RenderSummary(
         output_path=output_path,
@@ -1709,23 +2103,55 @@ def _render_project_impl(
 
     try:
         # ---- Phase 1: Identify chapters to render vs skip ----
-        chapters_to_render = []  # (index, chapter)
+        # FEAT-PROD-012: two different numbers, and they are only equal
+        # when the whole book is being rendered.
+        #
+        #   i             -- position in THIS run. `--chapters 1-2,4` hands
+        #                    us a filtered project.chapters, so i runs
+        #                    0,1,2 over three chapters of a four-chapter
+        #                    book. It belongs to the progress bar and the
+        #                    "[n/total]" display, which are about the run.
+        #   chapter.index -- which chapter this IS, in the book. It belongs
+        #                    to anything that identifies the chapter across
+        #                    runs: the manifest key, the cache WAV
+        #                    filename, the cache entry, the failure report,
+        #                    and any log line that names a chapter.
+        #
+        # Using the position for identity meant `--chapters 4` wrote
+        # chapter 4's audio to chapter_0000.wav -- chapter 1's cached file
+        # -- and recorded it at manifest key 0. The hash check in
+        # is_valid() kept that from ever being served AS chapter 1, so it
+        # was never wrong audio; it destroyed the cache and re-charged the
+        # user for TTS instead, on exactly the long books where anyone
+        # reaches for a selection.
+        #
+        # The utterance-level cache in this same module already keyed off
+        # chapter.index (get_utterance_wav_dir), so the two caches
+        # disagreed with each other under a selection.
+        chapters_to_render = []  # (position, chapter, hashes)
         for i, chapter in enumerate(project.chapters):
-            if from_chapter is not None and i < from_chapter:
+            # --from-chapter N is documented as a chapter number, so it is
+            # compared against the chapter, not against our position in a
+            # possibly-filtered list.
+            if from_chapter is not None and chapter.index < from_chapter:
                 if progress_callback:
                     progress_callback(i + 1, len(project.chapters), f"Skipping: {chapter.title}")
                 continue
 
             current_text_hash = chapter_text_hash(chapter)
+            chapter_casting_hash = _chapter_casting_hash(chapter)
 
             # Check cache
             if resume:
-                existing = manifest.get_entry(i)
-                if existing and existing.is_valid(current_text_hash, current_casting_hash, current_params_hash):
+                existing = manifest.get_entry(chapter.index)
+                if existing and existing.is_valid(current_text_hash, chapter_casting_hash, current_params_hash):
                     chapter.audio_path = Path(existing.wav_path)
                     chapter.duration_seconds = existing.duration_s
                     tracker.mark_cached(i, chapter.title, existing.duration_s)
-                    logger.info(f"RENDER_CACHE_HIT: chapter={i} title={chapter.title!r}")
+                    logger.info(
+                        f"RENDER_CACHE_HIT: chapter={chapter.index} "
+                        f"title={chapter.title!r}"
+                    )
                     summary.skipped_cached += 1
 
                     if progress_callback:
@@ -1733,11 +2159,15 @@ def _render_project_impl(
                         progress_callback(i + 1, len(project.chapters), status)
                     continue
 
-            chapters_to_render.append((i, chapter, current_text_hash))
+            chapters_to_render.append(
+                (i, chapter, current_text_hash, chapter_casting_hash)
+            )
 
         # ---- Phase 2: Render chapters (sequential or parallel) ----
 
-        def _render_one_chapter(i: int, chapter: "Chapter", text_hash: str) -> None:
+        def _render_one_chapter(
+            i: int, chapter: "Chapter", text_hash: str, chapter_casting_hash: str
+        ) -> None:
             """Render a single chapter, updating shared state thread-safely."""
             tracker.start_chapter(i, chapter.title, word_count=chapter.word_count)
 
@@ -1750,15 +2180,36 @@ def _render_project_impl(
                 status = tracker.format_chapter_status(i, f"Rendering: {chapter.title}")
                 progress_callback(done_count, len(project.chapters), status)
 
-            target_path = get_chapter_wav_path(cache_root, i)
+            # Identity, not position -- see the note in phase 1.
+            target_path = get_chapter_wav_path(cache_root, chapter.index)
             tmp_path = _chapter_tmp_path(target_path)
 
             start = time.time()
             try:
-                render_chapter(
-                    chapter, project.casting, tmp_path,
-                    engine=render_engine, emotion_preset=emotion_preset,
-                )
+                if utterance_cache:
+                    # FEAT-PROD-009: the opt-in utterance-level path. It keeps
+                    # its own namespaced manifest (render_v2_utterance.json)
+                    # per chapter, so the chapter cache below is written
+                    # exactly as it always was and a project that turns the
+                    # flag back off resumes from it unchanged.
+                    inc = render_chapter_incremental(
+                        chapter, project.casting, tmp_path,
+                        engine=render_engine,
+                        cache_root=cache_root,
+                        render_params_hash=current_params_hash,
+                        runner=stitch_runner,
+                        emotion_preset=emotion_preset,
+                    )
+                    logger.info(
+                        f"RENDER_UTTERANCE_CACHE: chapter={chapter.index} "
+                        f"synthesized={inc.utterances_synthesized} "
+                        f"reused={inc.utterances_reused}/{inc.utterances_total}"
+                    )
+                else:
+                    render_chapter(
+                        chapter, project.casting, tmp_path,
+                        engine=render_engine, emotion_preset=emotion_preset,
+                    )
 
                 try:
                     os.replace(str(tmp_path), str(target_path))
@@ -1769,8 +2220,9 @@ def _render_project_impl(
                 if file_size < 1024:
                     target_path.unlink(missing_ok=True)
                     raise RenderError(
-                        f"Chapter {i} audio file is empty ({file_size} bytes) "
-                        f"— TTS may have failed or disk may be full"
+                        f"Chapter {chapter.index} audio file is empty "
+                        f"({file_size} bytes) - TTS may have failed or the "
+                        "disk may be full"
                     )
 
                 chapter.audio_path = target_path
@@ -1779,9 +2231,9 @@ def _render_project_impl(
                 tracker.finish_chapter(i, render_elapsed_s=elapsed)
 
                 entry = ChapterCacheEntry(
-                    chapter_index=i,
+                    chapter_index=chapter.index,
                     text_hash=text_hash,
-                    casting_hash=current_casting_hash,
+                    casting_hash=chapter_casting_hash,
                     render_params_hash=current_params_hash,
                     wav_path=str(target_path),
                     duration_s=chapter.duration_seconds,
@@ -1809,18 +2261,21 @@ def _render_project_impl(
                     progress_callback(done_count, len(project.chapters), status)
 
                 logger.info(
-                    f"RENDER_OK: chapter={i} title={chapter.title!r} "
+                    f"RENDER_OK: chapter={chapter.index} title={chapter.title!r} "
                     f"elapsed={elapsed:.1f}s duration={chapter.duration_seconds:.1f}s"
                 )
 
             except OSError as e:
                 if e.errno in (28, 39, 112):
-                    logger.error(f"RENDER_DISK_FULL: chapter={i} — {e}")
+                    logger.error(
+                        f"RENDER_DISK_FULL: chapter={chapter.index} - {e}"
+                    )
                     # ENGINE-A-007: don't leave the partial .wav.tmp behind on a
                     # disk-full abort — it wastes the little space that remains.
                     tmp_path.unlink(missing_ok=True)
                     raise RenderError(
-                        f"Disk full while rendering chapter {i} ({chapter.title!r}). "
+                        f"Disk full while rendering chapter {chapter.index} "
+                        f"({chapter.title!r}). "
                         f"Free up space and re-run with: audiobooker render",
                         summary=summary,
                     ) from e
@@ -1828,7 +2283,7 @@ def _render_project_impl(
                     i, chapter, e, text_hash,
                     tmp_path, tracker, manifest, manifest_path,
                     manifest_lock, failure_report, summary,
-                    current_casting_hash, current_params_hash,
+                    chapter_casting_hash, current_params_hash,
                     allow_partial,
                 )
 
@@ -1837,7 +2292,7 @@ def _render_project_impl(
                     i, chapter, e, text_hash,
                     tmp_path, tracker, manifest, manifest_path,
                     manifest_lock, failure_report, summary,
-                    current_casting_hash, current_params_hash,
+                    chapter_casting_hash, current_params_hash,
                     allow_partial,
                 )
 
@@ -1846,8 +2301,8 @@ def _render_project_impl(
             logger.info(f"RENDER_PARALLEL: {jobs} workers for {len(chapters_to_render)} chapters")
             with ThreadPoolExecutor(max_workers=jobs) as pool:
                 futures = {
-                    pool.submit(_render_one_chapter, i, ch, th): i
-                    for i, ch, th in chapters_to_render
+                    pool.submit(_render_one_chapter, i, ch, th, chash): i
+                    for i, ch, th, chash in chapters_to_render
                 }
                 try:
                     for future in as_completed(futures):
@@ -1883,8 +2338,8 @@ def _render_project_impl(
                     raise
         else:
             # Sequential rendering (default)
-            for i, chapter, text_hash in chapters_to_render:
-                _render_one_chapter(i, chapter, text_hash)
+            for i, chapter, text_hash, chapter_chash in chapters_to_render:
+                _render_one_chapter(i, chapter, text_hash, chapter_chash)
 
         # Verify all chapters are ready for assembly
         ok_paths = []
@@ -1894,12 +2349,18 @@ def _render_project_impl(
                 ok_paths.append((chapter.audio_path, chapter.title, chapter.duration_seconds))
             elif not allow_partial:
                 raise RenderError(
-                    f"Chapter {i} ({chapter.title!r}) has no audio — "
-                    f"cannot assemble. Use --allow-partial or fix and --resume.",
+                    f"Chapter {chapter.index} ({chapter.title!r}) has no "
+                    "audio - cannot assemble. Use --allow-partial or fix "
+                    "and --resume.",
                     summary=summary,
                 )
             else:
-                missing_indices.append(i)
+                # FEAT-PROD-012: chapter.index, not the loop position. The
+                # CLI prints this list back to the user as the chapters
+                # that are missing from their audiobook, so under
+                # `--chapters` a position would name chapters that are
+                # fine and stay silent about the ones that are not.
+                missing_indices.append(chapter.index)
 
         if not ok_paths:
             raise RenderError("No chapters rendered successfully.", summary=summary)
@@ -2228,11 +2689,16 @@ def render_sample(
     Trims ``duration`` seconds (starting at ``start_seconds``) from a single
     chapter and masters it with the chosen profile/bitrate, tagging it as a
     "Retail Sample". The chapter's rendered WAV is reused from the render
-    cache when present; otherwise the chapter is rendered on the fly.
+    cache when present; otherwise the chapter is synthesized into a
+    per-process tmp (same ``_chapter_tmp_path`` contract as
+    ``render_project``) and the live ``chapter_NNNN.wav`` plus its
+    ``ChapterCacheEntry`` are rewritten only after success (F-ff5a0ed1).
 
     Args:
         project: AudiobookProject (chapters should be compiled).
-        from_chapter: Chapter index (0-based) to sample from.
+        from_chapter: Chapter identity (``chapter.index``, 0-based) to sample
+            from — not a list subscript. Matches ``render_project`` /
+            ``--from-chapter``.
         start_seconds: Offset into the chapter to start the sample.
         duration: Sample length in seconds (ACX retail samples are ~1-5 min).
         output_path: Output file path. Defaults to ``<title>_sample.<ext>``
@@ -2256,7 +2722,9 @@ def render_sample(
         _sanitize_metadata_value,
     )
     from audiobooker.renderer.cache_manifest import (
-        load_manifest, get_cache_root, get_manifest_path, get_chapter_wav_path,
+        CacheManifest, ChapterCacheEntry,
+        load_manifest, save_manifest,
+        get_cache_root, get_manifest_path, get_chapter_wav_path,
     )
     from audiobooker.renderer.hash_utils import (
         chapter_text_hash, casting_hash, render_params_hash,
@@ -2264,10 +2732,18 @@ def render_sample(
 
     if duration <= 0:
         raise ValueError(f"Sample duration must be positive, got {duration}.")
-    if from_chapter < 0 or from_chapter >= len(project.chapters):
+    # F-813e9865: from_chapter is chapter.index, not a list subscript.
+    # On a filtered/gapped list, project.chapters[from_chapter] would pick
+    # the wrong chapter (or IndexError) and then write chapter_0000.wav.
+    chapter = next(
+        (c for c in project.chapters if getattr(c, "index", None) == from_chapter),
+        None,
+    )
+    if chapter is None:
+        available = [getattr(c, "index", i) for i, c in enumerate(project.chapters)]
         raise RenderError(
-            f"Sample chapter index {from_chapter} out of range "
-            f"(0-{len(project.chapters) - 1}).",
+            f"Sample chapter index {from_chapter} not found "
+            f"(available: {available}).",
             code="SAMPLE_BAD_CHAPTER",
             retryable=False,
         )
@@ -2289,87 +2765,135 @@ def render_sample(
     sample_rate = profile["sample_rate"]
     loudnorm_filter = profile["loudnorm"]
 
-    chapter = project.chapters[from_chapter]
-
     # Resolve cache root for cache reuse.
     if cache_root is None:
         project_dir = _resolve_project_dir(project)
         cache_root = get_cache_root(project_dir)
 
     # --- Locate the chapter WAV: reuse cache when valid, else render fresh ---
-    chapter_wav: Optional[Path] = None
-    cached_path = get_chapter_wav_path(cache_root, from_chapter)
+    # Identity is chapter.index (FEAT-PROD-012), never the list position.
+    chapter_index = chapter.index
+    cached_path = get_chapter_wav_path(cache_root, chapter_index)
     manifest_path = get_manifest_path(cache_root)
     manifest = load_manifest(manifest_path)
-    # Tracks whether the cache had an OPINION about this chapter. An entry that
-    # exists and failed validation is a positive REJECTION, not an absence.
-    entry_rejected = False
+    text_hash = chapter_text_hash(chapter)
+    # FEAT-OUT-001: the render wrote this entry with a chapter-scoped
+    # casting digest, so the sample has to read it with one. Comparing
+    # against the whole-table hash rejected every entry the renderer
+    # had just written, and re-synthesized a chapter that was sitting
+    # in the cache.
+    chapter_casting_hash = casting_hash(project.casting, chapter=chapter)
+    params_hash = render_params_hash(
+        project.config, engine=engine, output_profile=output_profile
+    )
+
+    chapter_wav: Optional[Path] = None
     if manifest is not None:
-        entry = manifest.get_entry(from_chapter)
+        entry = manifest.get_entry(chapter_index)
         if entry is not None:
             try:
                 valid = entry.is_valid(
-                    chapter_text_hash(chapter),
-                    casting_hash(project.casting),
-                    render_params_hash(
-                        project.config, engine=engine, output_profile=output_profile
-                    ),
+                    text_hash, chapter_casting_hash, params_hash,
                 )
             except Exception:
                 valid = False
             if valid:
                 chapter_wav = Path(entry.wav_path)
                 logger.info(
-                    f"SAMPLE_CACHE_HIT: chapter={from_chapter} reusing {chapter_wav}"
+                    f"SAMPLE_CACHE_HIT: chapter={chapter_index} reusing {chapter_wav}"
                 )
             else:
-                entry_rejected = True
                 logger.info(
-                    f"SAMPLE_CACHE_STALE: chapter={from_chapter} manifest entry "
+                    f"SAMPLE_CACHE_STALE: chapter={chapter_index} manifest entry "
                     f"failed validation — re-rendering instead of reusing "
                     f"{entry.wav_path!r}"
                 )
 
-    if (
-        chapter_wav is None
-        and not entry_rejected
-        and cached_path.exists()
-        and cached_path.stat().st_size > 1024
-    ):
-        # WAV on disk with NO manifest entry: nothing claims it is stale, so
-        # reuse it rather than re-rendering a whole chapter for a 3-minute
-        # sample — but say out loud that it could not be verified.
-        #
-        # The `not entry_rejected` guard is the fix: this branch used to run
-        # even when the hash check above had just REJECTED that exact file, so
-        # `audiobooker sample` re-served pre-edit audio as the retail sample.
-        chapter_wav = cached_path
-        logger.warning(
-            f"SAMPLE_CACHE_UNVERIFIED: reusing on-disk chapter WAV "
-            f"{chapter_wav} — there is no cache manifest entry for chapter "
-            f"{from_chapter}, so it could not be verified against the current "
-            f"text/casting. Run 'audiobooker render' if the sample sounds stale."
-        )
+    # Do not reuse a chapter WAV that has no size_bytes-backed manifest
+    # entry. A kill mid-sample leaves a non-empty partial at cached_path;
+    # st_size > 1024 used to serve that truncated file as the retail sample
+    # (F-12572710). Miss and re-render instead.
 
     if chapter_wav is None:
-        # Render the chapter fresh into the cache location.
+        # Occupancy of a chapter WAV without a validating manifest is not a
+        # hit (F-12572710 / F-fa847627). Name the leftover so a miss is not
+        # silent success-looking reuse.
+        if cached_path.exists():
+            logger.warning(
+                "SAMPLE_CACHE_UNVERIFIED: chapter=%s no-manifest or stale WAV "
+                "at %s is not reused — occupancy is not identity",
+                chapter_index, cached_path,
+            )
+        # F-ff5a0ed1: a miss used to call render_chapter(..., cached_path)
+        # straight into the identity-keyed chapter_NNNN.wav and leave the
+        # ChapterCacheEntry's hashes/size_bytes untouched. Revert then
+        # reported Cached on the sample audio whenever size_bytes collided.
+        # Synthesize into the same per-process tmp as render_project, promote
+        # with os.replace, and rewrite the manifest so occupancy matches
+        # identity.
         if not chapter.is_compiled:
             raise RenderError(
-                f"Chapter {from_chapter} ({chapter.title!r}) is not compiled — "
+                f"Chapter {chapter_index} ({chapter.title!r}) is not compiled — "
                 f"compile the project before sampling.",
                 code="SAMPLE_NOT_COMPILED",
                 retryable=False,
             )
         cached_path.parent.mkdir(parents=True, exist_ok=True)
-        logger.info(f"SAMPLE_RENDER: rendering chapter {from_chapter} for sample")
-        render_chapter(
-            chapter, project.casting, cached_path,
-            engine=engine,
-            # FT-CAST-026: the sample must use the same emphasis preset the
-            # book renders with, or the retail sample misrepresents the book.
-            emotion_preset=getattr(project.config, "emotion_preset", "neutral"),
-        )
+        tmp_path = _chapter_tmp_path(cached_path)
+        promoted = False
+        file_size = 0
+        logger.info(f"SAMPLE_RENDER: rendering chapter {chapter_index} for sample")
+        try:
+            render_chapter(
+                chapter, project.casting, tmp_path,
+                engine=engine,
+                # FT-CAST-026: the sample must use the same emphasis preset the
+                # book renders with, or the retail sample misrepresents the book.
+                emotion_preset=getattr(project.config, "emotion_preset", "neutral"),
+            )
+            try:
+                file_size = tmp_path.stat().st_size
+            except OSError:
+                file_size = 0
+            if file_size < 1024:
+                raise RenderError(
+                    f"Chapter {chapter_index} audio file is empty "
+                    f"({file_size} bytes) - TTS may have failed or the "
+                    "disk may be full"
+                )
+            try:
+                os.replace(str(tmp_path), str(cached_path))
+            except OSError:
+                shutil.move(str(tmp_path), str(cached_path))
+            promoted = True
+        finally:
+            if not promoted:
+                tmp_path.unlink(missing_ok=True)
+
+        chapter.audio_path = cached_path
+        if manifest is None:
+            manifest = CacheManifest(book_title=project.title)
+        try:
+            size_bytes = cached_path.stat().st_size
+        except OSError:
+            size_bytes = file_size
+        manifest.set_entry(ChapterCacheEntry(
+            chapter_index=chapter_index,
+            text_hash=text_hash,
+            casting_hash=chapter_casting_hash,
+            render_params_hash=params_hash,
+            wav_path=str(cached_path),
+            duration_s=chapter.duration_seconds,
+            status="ok",
+            created_at=datetime.now(timezone.utc).isoformat(),
+            size_bytes=size_bytes,
+        ))
+        save_manifest(manifest, manifest_path)
         chapter_wav = cached_path
+        logger.info(
+            f"SAMPLE_CACHE_WRITE: chapter={chapter_index} "
+            f"wrote {cached_path} size_bytes={size_bytes}"
+        )
 
     # --- Output path / extension ---
     if output_path is None:
@@ -2408,7 +2932,7 @@ def render_sample(
         )
 
     logger.info(
-        f"SAMPLE_COMPLETE: output={output_path} chapter={from_chapter} "
+        f"SAMPLE_COMPLETE: output={output_path} chapter={chapter_index} "
         f"start={start_seconds:.1f}s duration={duration:.1f}s profile={output_profile}"
     )
     return output_path
@@ -2430,7 +2954,15 @@ def _handle_chapter_failure(
     current_params_hash: str,
     allow_partial: bool,
 ) -> None:
-    """Handle a chapter render failure (shared between sequential and parallel paths)."""
+    """Handle a chapter render failure (shared between sequential and parallel paths).
+
+    FEAT-PROD-012: ``i`` is this run's position and is only the tracker's
+    display slot. Everything that says WHICH chapter failed -- the cache
+    entry, the failure report, the summary list the CLI prints, the log
+    line and the raised error -- uses ``chapter.index``, because under
+    ``--chapters`` the two differ and a report naming the wrong chapter
+    sends someone to debug one that rendered fine.
+    """
     from audiobooker.renderer.cache_manifest import ChapterCacheEntry
 
     if tmp_path.exists():
@@ -2439,7 +2971,7 @@ def _handle_chapter_failure(
     tracker.mark_failed(i, chapter.title)
 
     entry = ChapterCacheEntry(
-        chapter_index=i,
+        chapter_index=chapter.index,
         text_hash=text_hash,
         casting_hash=current_casting_hash,
         render_params_hash=current_params_hash,
@@ -2457,19 +2989,21 @@ def _handle_chapter_failure(
         save_manifest(manifest, manifest_path)
 
         failure_report.add_failure(
-            chapter_index=i,
+            chapter_index=chapter.index,
             chapter_title=chapter.title,
             error=error,
         )
 
         summary.failed += 1
         summary.failed_chapters.append({
-            "index": i,
+            "index": chapter.index,
             "title": chapter.title,
             "error": str(error),
         })
 
-    logger.error(f"RENDER_CHAPTER_FAIL: chapter={i} error={error}")
+    logger.error(
+        f"RENDER_CHAPTER_FAIL: chapter={chapter.index} error={error}"
+    )
 
     if not allow_partial:
         failure_report.rendered_ok = summary.rendered
@@ -2477,7 +3011,7 @@ def _handle_chapter_failure(
         failure_report.save()
 
         raise RenderError(
-            f"Chapter {i} ({chapter.title!r}) failed: {error}",
+            f"Chapter {chapter.index} ({chapter.title!r}) failed: {error}",
             summary=summary,
         ) from error
 
@@ -2722,8 +3256,11 @@ def dry_run_render(
     cache_root = get_cache_root(project_dir)
     manifest_path = get_manifest_path(cache_root)
 
-    current_casting_hash = casting_hash(project.casting)
     # RH-B-004: same arguments as the real render, or the preview lies.
+    # FEAT-OUT-001: which means the casting digest must be scoped per chapter
+    # here too — a dry run that used the whole-table hash would predict a full
+    # re-render after a single recast while the real render only touched the
+    # chapters that character speaks in.
     current_params_hash = render_params_hash(
         project.config, engine=engine, output_profile=output_profile
     )
@@ -2735,25 +3272,48 @@ def dry_run_render(
     skipped = []
 
     for i, chapter in enumerate(project.chapters):
-        if from_chapter is not None and i < from_chapter:
-            skipped.append((i, chapter.title, chapter.word_count))
+        if from_chapter is not None and chapter.index < from_chapter:
+            skipped.append((chapter.index, chapter.title, chapter.word_count))
             continue
 
         current_text_hash = chapter_text_hash(chapter)
 
         if resume and manifest:
-            existing = manifest.get_entry(i)
-            if existing and existing.is_valid(current_text_hash, current_casting_hash, current_params_hash):
-                cached.append((i, chapter.title, chapter.word_count))
+            # FEAT-PROD-012: chapter.index, matching the real render.
+            #
+            # This line said `i` for one commit, with a comment arguing
+            # that a preview must predict what the render actually does
+            # even when that is wrong. The argument was sound and the
+            # premise is now gone: the real render keys the manifest off
+            # chapter.index, so this does too. They move together or the
+            # preview lies — RH-B-004 above is the previous time these
+            # two drifted, and it made `--acx --dry-run` report a fully
+            # cached book that then re-rendered from scratch.
+            existing = manifest.get_entry(chapter.index)
+            if existing and existing.is_valid(
+                current_text_hash,
+                casting_hash(project.casting, chapter=chapter),
+                current_params_hash,
+            ):
+                cached.append(
+                    (chapter.index, chapter.title, chapter.word_count)
+                )
                 continue
 
-        to_render.append((i, chapter.title, chapter.word_count))
+        # chapter.index is the chapter's own place in the BOOK. Under a
+        # selection the enumerate position is its place in the subset, so
+        # printing `i` renumbered the survivors 0,1,2 and put "ch.3" beside
+        # a chapter titled "Chapter 4".
+        to_render.append((chapter.index, chapter.title, chapter.word_count))
 
     total_words_render = sum(wc for _, _, wc in to_render)
     wpm = project.config.estimated_wpm or 150
 
     print(f"\n{'='*60}")
-    print(f"DRY RUN — {project.title}")
+    # ASCII: printed text, and a legacy Windows console (cp437/cp850,
+    # what a bare cmd.exe runs) has no em-dash. See
+    # tests/test_cli_output_is_console_safe.py.
+    print(f"DRY RUN - {project.title}")
     print(f"{'='*60}")
     print(f"Total chapters: {len(project.chapters)}")
     print(f"  To render:  {len(to_render)}")
@@ -2765,7 +3325,11 @@ def dry_run_render(
     if to_render:
         print("Chapters to render:")
         for idx, title, wc in to_render:
-            print(f"  [{idx}] {title} ({wc:,} words)")
+            # FEAT-UX-007: both numbering schemes. This table is the command
+            # you run in order to decide what to pass NEXT, so a bare "[3]"
+            # is the worst place in the CLI to leave the reader guessing
+            # whether the follow-up is `-c 3` or `-c 4`.
+            print(f"  {chapter_label(idx)} {title} ({wc:,} words)")
         print()
 
     est_minutes = total_words_render / wpm

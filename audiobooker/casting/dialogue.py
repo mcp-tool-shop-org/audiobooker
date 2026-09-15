@@ -20,6 +20,7 @@ are drawn from a LanguageProfile.  Default is English.
 
 import logging
 import re
+from functools import lru_cache
 from typing import Optional
 
 from audiobooker.models import Chapter, Utterance, UtteranceType, CastingTable
@@ -53,12 +54,12 @@ def _dash_dialogue_markers(profile: LanguageProfile) -> tuple[str, ...]:
 
     Profile-driven, in priority order:
 
-    1. an explicit ``dash_dialogue_markers`` field, when the profile grows one;
+    1. ``LanguageProfile.dash_dialogue_markers`` when the profile sets it;
     2. any ``dialogue_quotes`` pair whose CLOSE is a newline — that pair shape is
        already how pt.py declares "this language opens speech with a dash";
     3. the default raya markers, for languages known to use the convention.
     """
-    explicit = getattr(profile, "dash_dialogue_markers", None)
+    explicit = profile.dash_dialogue_markers
     if explicit:
         return tuple(explicit)
 
@@ -73,6 +74,110 @@ def _dash_dialogue_markers(profile: LanguageProfile) -> tuple[str, ...]:
         return _DEFAULT_RAYA_MARKERS
 
     return ()
+
+
+# FEAT-CAST-006: what a raya may legitimately be followed by when it OPENS a
+# line of speech. A letter, or one of the marks a sentence of speech can start
+# with — the inverted Spanish interrogative/exclamative, a nested quote. A raya
+# followed by a comma or a full stop is the CLOSING raya of an interposed
+# attribution tag ("—dijo Petrov—,"), which opens nothing.
+_SPEECH_OPENER_RE = re.compile(r'^[ \t]*[^\W\d_¿¡]|^[ \t]*[¿¡«"“]')
+
+# FEAT-CAST-004: punctuation that may sit between the closing raya of an
+# interposed comment and the speech resuming after it. Per the RAE's raya
+# convention the CLOSING raya is itself the signal that the comment has ended
+# and the character is speaking again — "—Sí —respondió él—. Vamos ahora
+# mismo." is all one person — so a full stop here ends a SENTENCE, not the
+# speech, and is skipped rather than treated as a terminator.
+_RAYA_RESUME_PUNCT = ",;:.!?…"
+
+# Sentence-final punctuation immediately BEFORE a raya means that raya opens a
+# new turn ("—dijo ella. —No quiero"), not that it closes a comment.
+_RAYA_PRECEDED_BY_SENTENCE_END = frozenset(".!?…")
+
+
+def _opens_speech(body: str) -> bool:
+    """True when ``body`` (the text right after a raya) can begin speech."""
+    return bool(_SPEECH_OPENER_RE.match(body))
+
+
+@lru_cache(maxsize=16)
+def _tag_opener_re(profile_code: str, verbs: frozenset[str]) -> Optional[re.Pattern]:
+    """A speech verb sitting immediately after a raya, e.g. ``—dijo ella``.
+
+    The profile's own ``said_patterns`` are not enough for this job: they
+    require a capitalized NAME after the verb, and the commonest attributive
+    tag in Spanish prose puts a pronoun there (``—dijo ella``). Matching the
+    bare verb is what distinguishes "this raya introduces the tag" from "this
+    raya opens speech".
+    """
+    if not verbs:
+        return None
+    alt = "|".join(re.escape(v) for v in sorted(verbs))
+    return re.compile(rf'^[ \t]*(?i:{alt})\b')
+
+
+def _raya_resumption(
+    body: str,
+    inner: "re.Match",
+    inner_marker_re: "re.Pattern",
+) -> Optional[tuple[int, str]]:
+    """
+    FEAT-CAST-004: the tail of a raya line that resumes the same speech.
+
+    ``body`` is the text after the opening raya; ``inner`` is the raya that
+    introduced the attribution tag. If a further raya CLOSES that tag, return
+    the ``(offset_into_body, text)`` of the speech resuming after it —
+
+        —Kessler —dijo Petrov con cuidado—, está en el manifiesto.
+        —Sí —respondió él—. Vamos ahora mismo.
+        —Ese hombre —el que viste ayer— vino otra vez.
+
+    all of which are one person speaking one sentence. Return None when the
+    comment is never closed (``—Vamos —insistió Marta, y salió.``, where the
+    tail really is narration) or when the line ends with the comment.
+
+    The trap this has to avoid: on a line carrying TWO turns
+    (``—Vete —dijo ella. —No quiero —respondió él.``) the next raya found is
+    not a closing raya at all, it opens the second turn. Sentence-final
+    punctuation directly before the raya is what tells them apart, and the
+    mid-line opener pass already claims that raya for the second speaker.
+    """
+    close = inner_marker_re.search(body, inner.end())
+    if close is None:
+        return None
+
+    before = body[inner.end():close.start()].rstrip()
+    if before and before[-1] in _RAYA_PRECEDED_BY_SENTENCE_END:
+        return None
+
+    rest = body[close.end():]
+    lead = len(rest) - len(rest.lstrip())
+    rest = rest.lstrip()
+    if not rest:
+        return None
+
+    if rest[0] in _RAYA_RESUME_PUNCT:
+        offset = close.end() + lead + 1
+    elif rest[0].isalpha():
+        offset = close.end() + lead
+    else:
+        return None
+
+    resumed = body[offset:]
+    # The resumed speech ends where the NEXT raya starts — otherwise a line
+    # carrying both a parenthetical and a trailing tag ("—Ese hombre —el que
+    # viste ayer— vino otra vez —dijo Elena.") swallows "—dijo Elena." into
+    # the speech and reads the attribution out loud.
+    next_marker = inner_marker_re.search(resumed)
+    if next_marker is not None:
+        resumed = resumed[:next_marker.start()]
+
+    stripped = resumed.strip()
+    if not stripped:
+        return None
+    offset += len(resumed) - len(resumed.lstrip())
+    return offset, stripped
 
 
 def _paired_quotes(
@@ -132,9 +237,12 @@ def _build_quote_patterns(
 
 
 # Inline override pattern: [Character|emotion] or [Character]
-# Name part must contain at least one letter to reject e.g. [123|sad]
+# Name part must contain at least one Unicode letter (class L / [^\W\d_])
+# to reject e.g. [123|sad] while accepting [太郎] and [Иван] (F-40078542).
+# [a-zA-Z] was an ASCII gate on a public compile feature, not a CJK-regex
+# console-safety table.
 INLINE_OVERRIDE_PATTERN = re.compile(
-    r'\[([^\]|]*[a-zA-Z][^\]|]*)(?:\|([^\]]+))?\]\s*',
+    r'\[([^\]|]*[^\W\d_][^\]|]*)(?:\|([^\]]+))?\]\s*',
 )
 
 
@@ -387,7 +495,21 @@ def detect_dialogue(
     markers = _dash_dialogue_markers(profile)
     if markers:
         marker_alt = "|".join(re.escape(m) for m in markers)
-        line_open_re = re.compile(rf'(?m)^[ \t]*(?:{marker_alt})[ \t]*')
+        # FEAT-CAST-006: the raya is no longer anchored to line start alone.
+        #
+        # `^[ \t]*(?:marker)` missed every mid-paragraph turn — "Ella dejó la
+        # pluma. —La balanza está mal." — and the miss was INVISIBLE to every
+        # quality metric, because undetected speech becomes NARRATION and
+        # narration counts as correctly attributed. It did not raise the
+        # unknown rate; it LOWERED it, the same compounding as the alternation
+        # guess. The second alternative admits a raya that follows
+        # sentence-final punctuation and horizontal whitespace; `[ \t]` never
+        # matches a newline, so the line-initial case still goes through the
+        # first alternative and is untouched.
+        line_open_re = re.compile(
+            rf'(?m)(?:^[ \t]*|(?<=[.!?…])[ \t]+)(?:{marker_alt})[ \t]*'
+        )
+        line_start_re = re.compile(rf'(?m)^[ \t]*(?:{marker_alt})')
         inner_marker_re = re.compile(rf'(?:{marker_alt})')
         said_patterns = profile.build_said_patterns()
 
@@ -403,6 +525,29 @@ def detect_dialogue(
                 continue
 
             body = text[body_start:line_end]
+
+            # FEAT-CAST-006 guard. Mid-line, a raya is ambiguous: it opens
+            # speech, but it also INTRODUCES and CLOSES the attributive tag
+            # ("—Vete. —dijo ella." / "—dijo Petrov—,"). Only the line-initial
+            # raya is unambiguous, so the two tag shapes are excluded here and
+            # nowhere else.
+            if not line_start_re.match(text, m.start()):
+                if not _opens_speech(body):
+                    logger.debug(
+                        "FEAT-CAST-006: mid-line raya at %d is punctuation, "
+                        "not a speech opener", span_start,
+                    )
+                    continue
+                tag_opener = _tag_opener_re(profile.code, profile.speaker_verbs)
+                if (
+                    (tag_opener is not None and tag_opener.match(body))
+                    or any(pattern.match(body) for pattern in said_patterns)
+                ):
+                    logger.debug(
+                        "FEAT-CAST-006: mid-line raya at %d introduces an "
+                        "attribution tag, not speech", span_start,
+                    )
+                    continue
 
             # The speech ends at a second marker when the line uses the full
             # convention (—speech —tag), otherwise at a trailing
@@ -426,6 +571,29 @@ def detect_dialogue(
                 "CAST-AMEND-2-005: raya dialogue detected at %d-%d (%s)",
                 span_start, dialogue_end, profile.code,
             )
+
+            # FEAT-CAST-004: the interposed tag may be CLOSED by a third raya
+            # that hands the sentence back to the speaker —
+            # "—Kessler —dijo Petrov con cuidado—, está en el manifiesto."
+            # Without this the resumption is narration, so half of one spoken
+            # sentence is read in the narrator's voice.
+            if inner:
+                resumed = _raya_resumption(body, inner, inner_marker_re)
+                if resumed is not None:
+                    res_off, res_text = resumed
+                    res_start = body_start + res_off
+                    res_end = res_start + len(res_text)
+                    if not any(
+                        res_start < e and res_end > s
+                        for s, e, _, _ in quote_positions
+                    ):
+                        quote_positions.append((
+                            res_start, res_end, res_text, True,
+                        ))
+                        logger.debug(
+                            "FEAT-CAST-004: raya speech resumes at %d after "
+                            "the closing raya of its tag", res_start,
+                        )
 
     # Sort by position
     quote_positions.sort(key=lambda x: x[0])
@@ -460,14 +628,23 @@ def detect_dialogue(
 # and the quote it tags — whitespace and punctuation only. Anything with LETTERS
 # in it is intervening prose (an action beat, another sentence, another quote's
 # body), which severs the link.
-_ATTRIB_GAP_RE = re.compile(r'^[\s,;:.!?—–…·\-]*$')
+#
+# F-fc1ac386: every code point in _DEFAULT_RAYA_MARKERS belongs in this class
+# (U+2015 HORIZONTAL BAR was missing) so a profile that declares ('―','\n')
+# cannot harvest the opener as a quote delimiter while the gap regex rejects it
+# as a separator. Profile attribution_separator particles (Japanese と/は/が/も)
+# are layered on in _attrib_gap_re — do not bake those into this English class.
+_ATTRIB_GAP_CLASS = (
+    r"\s,;:.!?…·\-" + "".join(re.escape(m) for m in _DEFAULT_RAYA_MARKERS)
+)
+_ATTRIB_GAP_RE = re.compile(rf"^[{_ATTRIB_GAP_CLASS}]*$")
 
 # Characters a profile may list in `dialogue_quotes` that must NOT be treated
 # as delimiters when measuring the gap between a quote and its attribution.
-# Both are raya-convention markers, and both appear in _ATTRIB_GAP_RE above as
-# attributive separators — a character cannot be a delimiter and a separator
-# at once. Kept next to that regex so the two stay in view of each other.
-_NON_DELIMITING_QUOTES = frozenset({"\n", "—", "–"})
+# Raya-convention markers appear in _ATTRIB_GAP_RE above as attributive
+# separators — a character cannot be a delimiter and a separator at once.
+# Kept next to that regex so the two stay in view of each other.
+_NON_DELIMITING_QUOTES = frozenset({"\n", *_DEFAULT_RAYA_MARKERS})
 
 # A sentence boundary inside the gap means the tag was already closed off: it is
 # the PREVIOUS quote's trailing tag, not this quote's leading tag. Such a tag may
@@ -513,7 +690,27 @@ def _attribution_quote_chars(profile: LanguageProfile) -> str:
     return "".join(sorted(chars))
 
 
-def _gap_is_attributive(gap: str, quote_chars: str, *, allow_quotes: bool) -> bool:
+@lru_cache(maxsize=16)
+def _attrib_gap_re(separator: str) -> re.Pattern:
+    """Gap regex: English punctuation, plus the profile's attribution_separator.
+
+    F-fc1ac386: ja ``attribution_separator`` allows と/は/が/も, which sit in
+    the after-window of ``「こんにちは」と太郎は言った。``. The letter-free
+    English class rejected that gap, so a matching said-pattern never won.
+    ``\\s+`` (the English default) is already covered by the punct class.
+    """
+    if not separator or separator in (r"\s+", r"\s*"):
+        return _ATTRIB_GAP_RE
+    return re.compile(rf"^(?:[{_ATTRIB_GAP_CLASS}]|{separator})*$")
+
+
+def _gap_is_attributive(
+    gap: str,
+    quote_chars: str,
+    *,
+    allow_quotes: bool,
+    gap_re: Optional[re.Pattern] = None,
+) -> bool:
     """
     True when ``gap`` (the text between a candidate tag and the quote) is thin
     enough that the tag can be attributing THIS quote.
@@ -529,7 +726,112 @@ def _gap_is_attributive(gap: str, quote_chars: str, *, allow_quotes: bool) -> bo
             gap = "".join(ch for ch in gap if ch not in quote_chars)
         elif any(ch in quote_chars for ch in gap):
             return False
-    return bool(_ATTRIB_GAP_RE.match(gap))
+    return bool((gap_re or _ATTRIB_GAP_RE).match(gap))
+
+
+# ---------------------------------------------------------------------------
+# FEAT-CAST-004: split quotes.
+#
+#   "Kessler," Petrov said carefully, "is on the manifest."
+#
+# is ONE spoken sentence with the attribution wedged into the middle. It was
+# detected as two quotes, attributed twice, and the back half — having no tag
+# of its own — fell to the alternation guess, so a single sentence came out of
+# the speakers in TWO voices. The same shape appears in Spanish with the raya
+# ("—Kessler —dijo Petrov—, está en el manifiesto.") and throughout the
+# classic register ("said Mr. Darcy, ...").
+#
+# The discriminator is the punctuation at the two ends of the interposed tag,
+# not the tag's content:
+#
+#   - the front half must NOT end a sentence — "Kessler," is interrupted,
+#     "Was it?" is finished and the next quote is a new utterance;
+#   - the tag must HAND THE SENTENCE BACK — it ends in a comma or a dash.
+#     "said Alice. " ends in a full stop, which closes the utterance, and
+#     that is exactly what separates a split quote from two consecutive
+#     quotes by the same speaker.
+# ---------------------------------------------------------------------------
+
+# Trailing punctuation on the front half that means the sentence FINISHED.
+_SENTENCE_FINAL_RE = re.compile(r'[.!?…]["”»\']?\s*$')
+
+# Trailing punctuation on the interposed tag that hands the sentence back.
+_TAG_RESUMES_RE = re.compile(r'[,;:—–]\s*$')
+
+# A tag longer than this is prose, not an attribution.
+_SPLIT_TAG_MAX_CHARS = 140
+
+
+def _is_split_quote_gap(
+    front_content: str,
+    gap: str,
+    profile: LanguageProfile,
+    dash_markers: tuple[str, ...] = (),
+) -> bool:
+    """True when ``gap`` is an attribution wedged inside ONE spoken sentence."""
+    stripped = gap.strip()
+    if not stripped or len(gap) > _SPLIT_TAG_MAX_CHARS:
+        return False
+
+    # Raya languages mark the interposition explicitly: it OPENS and CLOSES
+    # with a dash, and that is the convention's own statement that the same
+    # person is still speaking. No verb test and no sentence-final test are
+    # needed (or correct) here — "—¿Vienes? —preguntó—. No me obligues." is
+    # one speaker across a finished question, and "—Ese hombre —el que viste
+    # ayer— vino otra vez." carries no speech verb at all.
+    if dash_markers and stripped[0] in dash_markers:
+        if any(marker in stripped[1:] for marker in dash_markers):
+            return True
+
+    if _SENTENCE_FINAL_RE.search(front_content):
+        return False
+    if not _TAG_RESUMES_RE.search(gap):
+        return False
+    verb_re = _speech_verb_re(profile.code, profile.speaker_verbs)
+    return verb_re is not None and bool(verb_re.search(gap))
+
+
+@lru_cache(maxsize=16)
+def _speech_verb_re(profile_code: str, verbs: frozenset[str]) -> Optional[re.Pattern]:
+    """Any of the profile's speech verbs, anywhere.
+
+    Deliberately looser than ``build_said_patterns``, which also demands a
+    capitalized name. A split quote whose tag names nobody — ``"Kessler," she
+    said, "is on the manifest."`` — still has to be recognized as ONE turn,
+    even though there is no name in it to attribute to. Recognizing it is what
+    stops the two halves being read in two different voices.
+    """
+    if not verbs:
+        return None
+    alt = "|".join(re.escape(v) for v in sorted(verbs))
+    return re.compile(rf'\b(?i:{alt})\b')
+
+
+def _split_quote_continuations(
+    para: str,
+    segments: list[tuple[str, bool, int, int]],
+    profile: LanguageProfile,
+) -> set[int]:
+    """Indices of segments that CONTINUE the previous dialogue segment."""
+    continuations: set[int] = set()
+    dash_markers = _dash_dialogue_markers(profile)
+    prev_dialogue: Optional[int] = None
+    for index, (content, is_dialogue, start, _end) in enumerate(segments):
+        if not is_dialogue:
+            continue
+        if prev_dialogue is not None:
+            front_content, _, _, front_end = segments[prev_dialogue]
+            if front_end <= start and _is_split_quote_gap(
+                front_content, para[front_end:start], profile, dash_markers,
+            ):
+                continuations.add(index)
+                logger.debug(
+                    "FEAT-CAST-004: segment %d continues segment %d "
+                    "across an interposed tag %r",
+                    index, prev_dialogue, para[front_end:start][:60],
+                )
+        prev_dialogue = index
+    return continuations
 
 
 def _collect_candidates(
@@ -539,6 +841,7 @@ def _collect_candidates(
     quote_chars: str,
     *,
     before: bool,
+    gap_re: Optional[re.Pattern] = None,
 ) -> list[tuple[int, int, int, int, str, str]]:
     """
     Gather attribution candidates from ONE window, scored by DISTANCE to the
@@ -563,7 +866,9 @@ def _collect_candidates(
             gap = window[:match.start()]
             distance = match.start()
 
-        if not _gap_is_attributive(gap, quote_chars, allow_quotes=before):
+        if not _gap_is_attributive(
+            gap, quote_chars, allow_quotes=before, gap_re=gap_re,
+        ):
             break
 
         # Tier 0 — directly attached to this quote.
@@ -574,9 +879,20 @@ def _collect_candidates(
         #          quote, which would otherwise beat this quote's own tag on raw
         #          distance. A line break is a penalty, not a hard block, so
         #          hard-wrapped prose still attributes.
+        # FEAT-CAST-001: the tag's own terminal punctuation counts as a
+        # sentence boundary even though it never reaches `gap`.
+        # `name_boundary` CONSUMES it — "dijo Elena." matches through the full
+        # stop — so a tag that plainly closed the previous sentence arrived
+        # here with an EMPTY gap and was scored tier 0, "directly attached to
+        # this quote". On "—Vete —dijo Elena. —No quiero —respondió Marcos."
+        # that made the previous speaker beat the tag actually attached to
+        # this line, and the wrong voice was returned at full confidence.
+        tag_tail = match.group(0).rstrip()[-1:]
         if "\n" in gap or "\r" in gap:
             tier = 2
-        elif before and _SENTENCE_END_RE.search(gap):
+        elif before and (
+            _SENTENCE_END_RE.search(gap) or _SENTENCE_END_RE.match(tag_tail)
+        ):
             tier = 1
         else:
             tier = 0
@@ -590,6 +906,67 @@ def _collect_candidates(
             match.group(0),
         ))
     return out
+
+
+# ---------------------------------------------------------------------------
+# FEAT-CAST-001: attribution confidence.
+#
+# `_collect_candidates` above already computes the only signal that matters
+# here — a TIER: 0 = the tag is welded to this quote, 1 = it carried over
+# across a sentence boundary, 2 = it is on a different line. The tier was
+# used to SORT the candidates and then thrown away, so a cross-line guess and
+# a directly attached tag were reported identically: as "attributed".
+#
+# The numbers are a ladder, not a calibration. What they must satisfy is the
+# ordering (attached > carry-over > cross-line > alternation guess) and which
+# side of LOW_CONFIDENCE_THRESHOLD each lands on, and the tests assert the
+# ordering rather than the constants.
+LOW_CONFIDENCE_THRESHOLD = 0.5
+
+_TIER_CONFIDENCE = {
+    0: 0.95,   # tag directly attached to this quote
+    1: 0.70,   # carry-over across a sentence boundary, same paragraph
+    2: 0.45,   # tag on a DIFFERENT line — below the threshold on purpose
+}
+
+# A speaker produced by `_infer_next_speaker`'s alternation. Deliberately the
+# lowest non-zero score in the ladder: the text said nothing about who is
+# speaking, the previous turn did.
+TURN_INFERENCE_CONFIDENCE = 0.25
+
+# A `[Character]` override typed by the user into the source text.
+INLINE_OVERRIDE_CONFIDENCE = 1.0
+
+
+def extract_speaker_with_confidence(
+    text: str,
+    dialogue_start: int,
+    dialogue_end: int,
+    casting: Optional[CastingTable] = None,
+    *,
+    profile: Optional[LanguageProfile] = None,
+    context_window: int = 150,
+) -> tuple[Optional[str], Optional[str], Optional[str], float]:
+    """
+    FEAT-CAST-001: :func:`extract_speaker_from_context` plus provenance.
+
+    Identical logic; returns two more things the old signature discarded —
+    the source (``"tag"`` or ``None``) and a 0.0-1.0 confidence derived from
+    the winning candidate's tier.
+
+    ``extract_speaker_from_context`` remains the 2-tuple public API and simply
+    drops the extra fields, because it is exported from
+    ``audiobooker.casting`` and callers across the suite unpack exactly two
+    values (and compare the whole tuple to ``("Bob", "whisper")``).
+
+    Returns:
+        (speaker, emotion_hint, attribution_source, confidence). When no
+        attribution is found: ``(None, None, None, 0.0)``.
+    """
+    return _extract_speaker(
+        text, dialogue_start, dialogue_end, casting,
+        profile=profile, context_window=context_window,
+    )
 
 
 def extract_speaker_from_context(
@@ -647,6 +1024,23 @@ def extract_speaker_from_context(
     Returns:
         Tuple of (speaker_name, emotion_hint)
     """
+    speaker, emotion, _source, _confidence = _extract_speaker(
+        text, dialogue_start, dialogue_end, casting,
+        profile=profile, context_window=context_window,
+    )
+    return speaker, emotion
+
+
+def _extract_speaker(
+    text: str,
+    dialogue_start: int,
+    dialogue_end: int,
+    casting: Optional[CastingTable] = None,
+    *,
+    profile: Optional[LanguageProfile] = None,
+    context_window: int = 150,
+) -> tuple[Optional[str], Optional[str], Optional[str], float]:
+    """Shared body of the two public extractors. See their docstrings."""
     if profile is None:
         profile = get_profile("en")
 
@@ -662,17 +1056,20 @@ def extract_speaker_from_context(
     said_patterns = profile.build_said_patterns()
     emotion_pattern = profile.build_emotion_verb_pattern()
     quote_chars = _attribution_quote_chars(profile)
+    gap_re = _attrib_gap_re(profile.attribution_separator or "")
 
     candidates: list[tuple[int, int, int, int, str, str]] = []
     for pattern_rank, pattern in enumerate(said_patterns):
         candidates.extend(
             _collect_candidates(
-                window_after, pattern, pattern_rank, quote_chars, before=False,
+                window_after, pattern, pattern_rank, quote_chars,
+                before=False, gap_re=gap_re,
             )
         )
         candidates.extend(
             _collect_candidates(
-                window_before, pattern, pattern_rank, quote_chars, before=True,
+                window_before, pattern, pattern_rank, quote_chars,
+                before=True, gap_re=gap_re,
             )
         )
 
@@ -698,6 +1095,20 @@ def extract_speaker_from_context(
             logger.debug("Speaker %r rejected by validation, trying next candidate", speaker)
             continue
 
+        # FEAT-CAST-003: fold the matched name through the alias table so one
+        # character stops becoming three cast slots. `get_voice` already
+        # resolved aliases, so the AUDIO was correct -- what stayed broken was
+        # everything that keys on the speaker STRING: a permanently dirty
+        # uncast warning, split line counts, and split report rows.
+        if casting is not None:
+            alias_char = casting.resolve_alias(speaker)
+            if alias_char is not None and alias_char.name != speaker:
+                logger.debug(
+                    "FEAT-CAST-003: canonicalized %r -> %r via alias table",
+                    speaker, alias_char.name,
+                )
+                speaker = alias_char.name
+
         # Emotion comes from the WINNING tag only — a verb in some other tag
         # belongs to some other quote.
         emotion = None
@@ -705,10 +1116,10 @@ def extract_speaker_from_context(
             verb_match = emotion_pattern.search(tag_text)
             if verb_match:
                 emotion = profile.emotion_hints.get(verb_match.group(1).lower())
-        return speaker, emotion
+        return speaker, emotion, "tag", _TIER_CONFIDENCE.get(tier, 0.45)
 
     logger.debug("No speaker attribution found in context window")
-    return None, None
+    return None, None, None, 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -757,6 +1168,43 @@ _SCENE_CLOSE_TAG_RE = re.compile(r'\[/scene\]')
 # floats of their own.
 DIALOGUE_UNKNOWN_WARN_RATE = 0.4
 DIALOGUE_UNKNOWN_FAIL_RATE = 0.8
+
+
+# FEAT-CAST-001, coordinator call. `attribution_quality` gets its OWN
+# thresholds rather than reusing the unknown-rate ones, because it measures a
+# different and more dangerous quantity.
+#
+# An `unknown` line is the tool being honest: the user sees it in the report,
+# sees it in the review export, and can fix it. An UNVERIFIED line is a guess
+# the tool presented as an answer — invisible in every surface that existed
+# before this wave, and wrong often enough to matter (the passage that drove
+# this measured 52% hand-scored speaker accuracy while reporting quality ok).
+#
+# So a guess is worse for the user than an admission, and unverified must
+# fail EARLIER than unknown, not at the same 0.80. At 0.80 the 6-of-8-guessed
+# passage read `degraded` — a book that is three-quarters guesswork is not
+# degraded, it is unusable, and the user should be stopped before paying for
+# a TTS run of it.
+#
+# These are new keys with no published history, so they are set on their own
+# merits. `--force` remains the override, which is what makes erring toward
+# halting the right side to err on for an irreversible spend.
+UNVERIFIED_WARN_RATE = 0.30
+UNVERIFIED_FAIL_RATE = 0.60
+
+
+def attribution_quality_verdict(dialogue_unverified_rate: float) -> str:
+    """Classify the share of dialogue whose speaker was GUESSED.
+
+    Distinct from :func:`dialogue_quality_verdict`, which classifies the
+    share the tool admits it could not attribute. See the threshold comment
+    above for why this one is stricter.
+    """
+    if dialogue_unverified_rate >= UNVERIFIED_FAIL_RATE:
+        return "failed"
+    if dialogue_unverified_rate >= UNVERIFIED_WARN_RATE:
+        return "degraded"
+    return "ok"
 
 
 def dialogue_quality_verdict(dialogue_unknown_rate: float) -> str:
@@ -963,6 +1411,14 @@ def compile_chapter(
         # Detect dialogue segments in this paragraph
         segments = detect_dialogue(para, include_single_quotes, profile=profile)
 
+        # FEAT-CAST-004: which dialogue segments are the BACK HALF of a split
+        # quote. Computed once per paragraph, before attribution, because the
+        # back half must inherit the front half's speaker rather than be
+        # attributed (and guessed at) on its own.
+        continuations = _split_quote_continuations(para, segments, profile)
+        carried: Optional[tuple[str, Optional[str], Optional[str], float]] = None
+        carried_utterance: Optional[Utterance] = None
+
         # Check if any segment is actual dialogue
         has_dialogue = any(is_dia for _, is_dia, _, _ in segments)
 
@@ -995,7 +1451,7 @@ def compile_chapter(
         consecutive_narration_paragraphs = 0
 
         # Process segments
-        for content, is_dialogue, start, end in segments:
+        for seg_index, (content, is_dialogue, start, end) in enumerate(segments):
             if not content.strip():
                 continue
 
@@ -1004,10 +1460,42 @@ def compile_chapter(
             abs_end = para_start + para_lead + end
 
             if is_dialogue:
+                # FEAT-CAST-004: the back half of a split quote is the SAME
+                # turn. It inherits the front half's speaker, provenance and
+                # confidence, and is deliberately not pushed onto the turn
+                # stack below — pushing the same name twice would leave
+                # [X, X] and make the next alternation guess return X.
+                is_continuation = seg_index in continuations and carried is not None
+                if is_continuation:
+                    speaker, emotion, attribution_source, confidence = carried
+                    # The tag usually hangs off the FRONT half, but not
+                    # always: in "—Ese hombre —el que viste ayer— vino otra
+                    # vez —dijo Elena." only the BACK half touches the tag.
+                    # Take whichever half actually has evidence and give it to
+                    # both, retro-fixing the front utterance in place — one
+                    # sentence, one voice, decided once.
+                    if speaker in (None, "unknown") or confidence < _TIER_CONFIDENCE[0]:
+                        back = _extract_speaker(
+                            para, start, end, casting, profile=profile,
+                        )
+                        if back[0] is not None and back[3] > confidence:
+                            speaker, emotion, attribution_source, confidence = back
+                            if carried_utterance is not None:
+                                carried_utterance.speaker = speaker
+                                carried_utterance.attribution_source = (
+                                    attribution_source
+                                )
+                                carried_utterance.confidence = confidence
+                                if carried_utterance.emotion is None:
+                                    carried_utterance.emotion = emotion
+                            if speaker != "unknown":
+                                _push_speaker(speaker)
                 # Try to attribute speaker
-                if override_char:
+                elif override_char:
                     speaker = override_char
                     emotion = override_emotion
+                    attribution_source = "inline"
+                    confidence = INLINE_OVERRIDE_CONFIDENCE
                     # FT-CAST-024: an inline [Char] override with no emotion is
                     # not a user-set emotion, so the scene fallback may fill it
                     # (still below explicit/inline; chapter mood stays lowest).
@@ -1016,7 +1504,7 @@ def compile_chapter(
                     elif emotion is None and chapter_mood:
                         emotion = chapter_mood
                 else:
-                    speaker, emotion = extract_speaker_from_context(
+                    speaker, emotion, attribution_source, confidence = _extract_speaker(
                         para, start, end, casting, profile=profile,
                     )
                     # FT-CAST-024 / FT-CAST-015: emotion fallback precedence —
@@ -1038,16 +1526,28 @@ def compile_chapter(
                         inferred = _infer_next_speaker()
                         if inferred is not None:
                             speaker = inferred
+                            # FEAT-CAST-001: a guess must be VISIBLY a guess.
+                            # This line is the reason the whole feature exists:
+                            # the alternation fill was recorded as a successful
+                            # attribution, so it LOWERED the unattributed rate
+                            # and the quality signal improved as attribution
+                            # degraded.
+                            attribution_source = "turn"
+                            confidence = TURN_INFERENCE_CONFIDENCE
                             logger.debug(
                                 "Turn-tracking inferred speaker=%r at offset %d",
                                 speaker, abs_start,
                             )
                         else:
                             speaker = "unknown"
+                            attribution_source = None
+                            confidence = 0.0
 
                 # FT-CAST-001: Track attributed speaker
-                if speaker != "unknown":
+                if speaker != "unknown" and not is_continuation:
                     _push_speaker(speaker)
+
+                carried = (speaker, emotion, attribution_source, confidence)
 
                 utterance = Utterance(
                     speaker=speaker,
@@ -1058,7 +1558,11 @@ def compile_chapter(
                     line_index=line_index,
                     start_pos=abs_start,
                     end_pos=abs_end,
+                    attribution_source=attribution_source,
+                    confidence=confidence,
                 )
+                if not is_continuation:
+                    carried_utterance = utterance
             else:
                 # Narration
                 utterance = Utterance(
@@ -1081,6 +1585,7 @@ def compile_chapter(
     narration_count = 0
     unknown_count = 0
     unknown_dialogue_count = 0
+    guessed_dialogue_count = 0
 
     for utterance in utterances:
         key = casting.normalize_key(utterance.speaker)
@@ -1089,6 +1594,11 @@ def compile_chapter(
             dialogue_count += 1
             if utterance.speaker == "unknown":
                 unknown_dialogue_count += 1
+            elif (
+                utterance.confidence is not None
+                and utterance.confidence < LOW_CONFIDENCE_THRESHOLD
+            ):
+                guessed_dialogue_count += 1
         else:
             narration_count += 1
         if utterance.speaker == "unknown":
@@ -1164,6 +1674,27 @@ def compile_chapter(
                 100.0 * dialogue_unknown_rate, 100.0 * all_rate, len(utterances),
             )
 
+        # FEAT-CAST-001: the case the warnings above CANNOT see. Turn-tracking
+        # answers every question it is asked, so a chapter whose prose names
+        # nobody after the first exchange reports zero unknowns and a clean
+        # verdict while most of its voices were produced by alternating. The
+        # unattributed rate does not rise as attribution degrades — it FALLS.
+        unverified = unknown_dialogue_count + guessed_dialogue_count
+        unverified_rate = unverified / dialogue_count
+        if (
+            guessed_dialogue_count
+            and dialogue_quality_verdict(unverified_rate) != "ok"
+        ):
+            logger.warning(
+                "Chapter %d: %d/%d DIALOGUE lines (%.0f%%) have no attribution "
+                "in the text and were inferred by alternating turns — a guess, "
+                "not a reading. The unattributed rate above cannot show this, "
+                "because an inferred speaker LOWERS it. Spot-check "
+                "compile_report()['low_confidence'] before rendering.",
+                chapter.index, guessed_dialogue_count, dialogue_count,
+                100.0 * guessed_dialogue_count / dialogue_count,
+            )
+
     return utterances
 
 
@@ -1193,12 +1724,41 @@ def compile_report(
             - dialogue_unknown_rate: float (0.0-1.0) — over DIALOGUE only
               (PH-B-002). This is the real signal.
             - total_dialogue_unknown: int
-            - quality: 'ok' | 'degraded' | 'failed' (PH-B-002)
+            - quality: 'ok' | 'degraded' | 'failed' (PH-B-002). Computed from
+              dialogue_unknown_rate ALONE, and therefore gameable — see
+              attribution_quality below. Unchanged because it is published.
             - emotion_distribution: {emotion: count}
             - top_unattributed: list of {text, chapter_index, line_index, context}
             - total_utterances: int
             - total_dialogue: int
             - total_narration: int
+
+    FEAT-CAST-001 adds, alongside the above and without changing any of it:
+
+            - low_confidence: list of {text, speaker, confidence,
+              attribution_source, chapter_index, line_index, context} —
+              attributed lines whose attribution is weak. Sits beside
+              top_unattributed because the two are the same problem.
+            - total_low_confidence: int
+            - dialogue_low_confidence_rate: float
+            - dialogue_unverified_rate: float — (unknown + low-confidence) over
+              DIALOGUE. **This is the number that cannot be gamed.**
+            - attribution_quality: the verdict on dialogue_unverified_rate.
+            - attribution_source_distribution: {source: count} over dialogue.
+
+    Why the unverified rate exists
+    ------------------------------
+    ``_infer_next_speaker`` fills every attribution gap by alternating from
+    the last known speaker, and the fill was recorded as a SUCCESSFUL
+    attribution. So a chapter where the text names nobody after line two
+    scored ``dialogue_unknown_rate = 0.0`` and ``quality = 'ok'`` while three
+    quarters of its voices were manufactured: **the quality signal improved as
+    attribution degraded**, and guessing harder was the fastest way to a clean
+    report.
+
+    ``dialogue_unverified_rate`` closes that: a guess moves a line out of
+    ``unknown`` and into ``low_confidence``, and the sum does not move. The
+    only way to improve it is to attribute more lines from the text.
 
     PH-B-002: the report used to carry ``unknown_rate`` and nothing that let a
     caller tell a healthy book from a collapsed one, so every caller would have
@@ -1211,14 +1771,27 @@ def compile_report(
     ``dialogue_unknown_rate`` and refuse to proceed to render on
     ``quality == 'failed'``.
     """
+    from audiobooker.nlp.speaker_resolver import SpeakerResolver
+
     speaker_counts: dict[str, int] = {}
     emotion_counts: dict[str, int] = {}
+    source_counts: dict[str, int] = {}
     unattributed: list[dict] = []
+    low_confidence: list[dict] = []
     total = 0
     total_dialogue = 0
     total_narration = 0
     unknown_count = 0
     unknown_dialogue = 0
+    low_confidence_dialogue = 0
+    nlp_band = SpeakerResolver.LOW_CONFIDENCE_BAND
+
+    def _context_for(chapter: Chapter, utt: Utterance) -> str:
+        if not chapter.raw_text or utt.start_pos < 0 or utt.end_pos < 0:
+            return ""
+        ctx_start = max(0, utt.start_pos - 80)
+        ctx_end = min(len(chapter.raw_text), utt.end_pos + 80)
+        return chapter.raw_text[ctx_start:ctx_end].strip()[:200]
 
     for chapter in chapters:
         for utt in chapter.utterances:
@@ -1230,6 +1803,43 @@ def compile_report(
                 total_dialogue += 1
                 if utt.speaker == "unknown":
                     unknown_dialogue += 1
+                if utt.attribution_source:
+                    source_counts[utt.attribution_source] = (
+                        source_counts.get(utt.attribution_source, 0) + 1
+                    )
+                # FEAT-CAST-001: attributed, but weakly. Counted separately
+                # from 'unknown' so the two cannot be traded against each
+                # other — an alternation guess moves a line from the first
+                # bucket to the second and the total does not change.
+                #
+                # NLP fuzzy fills are capped below LOW_CONFIDENCE_THRESHOLD
+                # by SpeakerResolver, so they already land here. Also count
+                # attribution_source=="nlp" below LOW_CONFIDENCE_BAND so a
+                # cap regression cannot game dialogue_unverified_rate.
+                weak_nlp = (
+                    utt.attribution_source == "nlp"
+                    and utt.confidence is not None
+                    and utt.confidence < nlp_band
+                )
+                if (
+                    utt.speaker != "unknown"
+                    and utt.confidence is not None
+                    and (
+                        utt.confidence < LOW_CONFIDENCE_THRESHOLD
+                        or weak_nlp
+                    )
+                ):
+                    low_confidence_dialogue += 1
+                    if len(low_confidence) < max_unattributed:
+                        low_confidence.append({
+                            "text": utt.text[:120],
+                            "speaker": utt.speaker,
+                            "confidence": utt.confidence,
+                            "attribution_source": utt.attribution_source,
+                            "chapter_index": utt.chapter_index,
+                            "line_index": utt.line_index,
+                            "context": _context_for(chapter, utt),
+                        })
             else:
                 total_narration += 1
 
@@ -1239,22 +1849,23 @@ def compile_report(
             if utt.speaker == "unknown":
                 unknown_count += 1
                 if len(unattributed) < max_unattributed:
-                    # Build context snippet from surrounding text
-                    context = ""
-                    if chapter.raw_text and utt.start_pos >= 0 and utt.end_pos >= 0:
-                        ctx_start = max(0, utt.start_pos - 80)
-                        ctx_end = min(len(chapter.raw_text), utt.end_pos + 80)
-                        context = chapter.raw_text[ctx_start:ctx_end].strip()
                     unattributed.append({
                         "text": utt.text[:120],
                         "chapter_index": utt.chapter_index,
                         "line_index": utt.line_index,
-                        "context": context[:200],
+                        "context": _context_for(chapter, utt),
                     })
 
     unknown_rate = (unknown_count / total) if total > 0 else 0.0
     dialogue_unknown_rate = (
         (unknown_dialogue / total_dialogue) if total_dialogue > 0 else 0.0
+    )
+    dialogue_low_confidence_rate = (
+        (low_confidence_dialogue / total_dialogue) if total_dialogue > 0 else 0.0
+    )
+    dialogue_unverified_rate = (
+        ((unknown_dialogue + low_confidence_dialogue) / total_dialogue)
+        if total_dialogue > 0 else 0.0
     )
 
     return {
@@ -1270,6 +1881,13 @@ def compile_report(
         "total_utterances": total,
         "total_dialogue": total_dialogue,
         "total_narration": total_narration,
+        # FEAT-CAST-001 — the ungameable half of the picture.
+        "low_confidence": low_confidence,
+        "total_low_confidence": low_confidence_dialogue,
+        "dialogue_low_confidence_rate": dialogue_low_confidence_rate,
+        "dialogue_unverified_rate": dialogue_unverified_rate,
+        "attribution_quality": attribution_quality_verdict(dialogue_unverified_rate),
+        "attribution_source_distribution": source_counts,
     }
 
 

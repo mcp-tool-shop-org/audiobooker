@@ -1,11 +1,19 @@
 # --- Measured CI cost (dogfood-swarm SKILL item 8) --------------------------
-# 5 billable min per push across 5 jobs (~3.1 min summed job time), re-measured
-# 2026-09-14 from two clean ALL-SUCCESS runs:
+# 7 billable min per push across 5 jobs (~4.3 min summed job time),
+# re-measured 2026-09-14 from a clean ALL-SUCCESS run on the 3.0.0 branch:
+#   34922950012 (2026-09-14): typecheck 30s, dep-audit 20s, ci(3.10) 72s,
+#                              ci(3.11) 59s, ci(3.12) 75s
+# This is UP from 5, and the reason is worth recording rather than just
+# editing the number: the feature pass took the suite from 1708 to 1931
+# tests, which pushed ci(3.10) and ci(3.12) past the 60-second line. Two
+# jobs therefore round up to 2 billable minutes each instead of 1. Nothing
+# about the workflow changed — the cost moved because the thing it runs
+# grew, which is precisely the drift this comment exists to make visible.
+# Earlier measurements, for the trend:
 #   34177587368 (2026-09-08): typecheck 25s, dep-audit 21s, ci(3.10) 44s,
-#                              ci(3.11) 42s, ci(3.12) 55s
+#                              ci(3.11) 42s, ci(3.12) 55s  -> 5 min
 #   34134129731 (2026-09-07): typecheck 24s, dep-audit 13s, ci(3.10) 40s,
-#                              ci(3.11) 46s, ci(3.12) 54s
-# Every job on both runs rounds up to 1 billable minute, so 5 jobs = 5 min.
+#                              ci(3.11) 46s, ci(3.12) 54s  -> 5 min
 # The previous version of this comment (measured 2026-09-07 from run
 # 34122801803) cited a FAILED run where fail-fast CANCELLED ci(3.10) and
 # ci(3.12) after ~3.9 min each of real runner time — a truncated-failure
@@ -15,6 +23,10 @@
 # than one long one. This number is measured, never estimated; re-measure
 # after any change from a clean all-success run:
 #   gh api repos/mcp-tool-shop-org/audiobooker/actions/runs/<id>/jobs
+# Wave-2 ci-tooling amend (action injection / docker dispatch / typecheck
+# ratchet / release preflight) added no CI job and did not expand the Python
+# matrix. typecheck still ~30s (wrapper is milliseconds); still 5 jobs /
+# 7 billable min per push. release.yml preflight is release-only.
 # ---------------------------------------------------------------------------
 name: CI
 
@@ -37,9 +49,10 @@ on:
   #
   # The asymmetry is the point. Pushes are frequent, so cost dominates and
   # the filter stays. PRs are infrequent and gated, so satisfiability
-  # dominates. Cost of a docs PR is one full run: 5 billable minutes across
+  # dominates. Cost of a docs PR is one full run: 7 billable minutes across
   # 5 jobs (GitHub bills each job rounded up to the minute; the summed job
-  # time is ~3.2), measured on run 34909001174.
+  # time is ~4.3), measured on run 34922950012 — see the header block for
+  # why this moved from 5.
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -62,7 +75,10 @@ jobs:
     strategy:
       matrix:
         python-version: ["3.10", "3.11", "3.12"]
-      fail-fast: true
+      # A 3.12/3.11 fail must not cancel 3.10 before its log exists.
+      # Same three cells, same billable minutes; not a second pytest leg.
+      # Re-run failed jobs can then start the cell that actually broke.
+      fail-fast: false
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -116,7 +132,7 @@ jobs:
       # and ffmpeg are not installed on the runner); the other four run.
       #
       # Cost: no new job, no new step, no trigger change — so the measured
-      # 5 billable min/push in the header block above is unchanged. GitHub
+      # per-push total in the header block above is unchanged by this. GitHub
       # bills per JOB rounded UP to the minute and these four tests take
       # <0.3s locally, which cannot move a rounded-up minute. Re-measure from
       # the first clean all-success run after this merges if you want the
@@ -167,14 +183,28 @@ jobs:
           # release.yml to npm@12.0.2. This was the one hole.
           # A new pyright minor routinely tightens inference, so bump this
           # deliberately, with the [tool.pyright] block in pyproject.toml in
-          # view. The step is continue-on-error today, so a float would not
-          # break the build — it would quietly change what "typecheck passed"
-          # meant, which is worse.
+          # view. The job is a required check; a float would quietly change
+          # what "typecheck passed" meant (and can raise the residual cap).
           pip install pyright==1.1.414
 
+      - name: CI policy assertions
+        # Planted-RED for the ci-tooling amend gates. Restore a closed
+        # defect (|- interpolation, continue-on-error on a required job,
+        # fail-fast: true, MAX_ERRORS>82, OIDC/npm split, dispatch
+        # silent-green) and this step fails. Same typecheck job, not a
+        # new billable minute.
+        run: python tools/check_ci_policy.py
+
       - name: Pyright type-check
-        continue-on-error: true  # Non-blocking until type coverage improves
-        run: pyright audiobooker/
+        # Required check. continue-on-error made it vacuous (82 residuals
+        # still greened typecheck). The wrapper dumps every diagnostic,
+        # fails closed on NEW file:rule identities vs
+        # tools/pyright_baseline.txt, and caps count at MAX_ERRORS=82.
+        # Pay down types by lowering the cap and pruning the baseline;
+        # do not restore continue-on-error. No second pytest leg.
+        # Per-push minutes unchanged: still 5 jobs / 7 billable min
+        # (run 34922950012).
+        run: python tools/check_pyright_gate.py audiobooker/
 
   dep-audit:
     runs-on: ubuntu-latest

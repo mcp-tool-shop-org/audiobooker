@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  Turn <strong>EPUB / TXT / PDF / DOCX</strong> books into professionally narrated, multi-voice audiobooks (<strong>M4B / MP3 / Opus / FLAC</strong>) — from one command.
+  Turn <strong>EPUB / TXT / PDF / DOCX</strong> books into professionally narrated, multi-voice audiobooks (<strong>M4B / MP3 / Opus / FLAC / WAV</strong>) — from one command.
 </p>
 
 This is the **`npx` wrapper** for [`audiobooker-ai`](https://pypi.org/project/audiobooker-ai/) (Python). It bootstraps a private Python environment on first run, installs the pinned version from PyPI, and runs the real CLI — no manual `pip`, no changes to your system Python.
@@ -65,7 +65,8 @@ Rendering also needs **FFmpeg** on PATH for M4B/MP3 assembly (`winget install ff
 - **Review-before-render**: export a human-editable script, fix attributions, re-import — nothing is silently changed.
 - **ACX-spec mastering**: `render --acx` masters to the ACX audio target — RMS between −23 and −18 dBFS, peak at or below −3, noise floor at or below −60 — and `master-check` reports PASS/FAIL against those three measured limits.
   Note that meeting the spec is not the same as being accepted: ACX's standard submission flow is for human narration. See the [main README](https://github.com/mcp-tool-shop-org/audiobooker#where-an-ai-narrated-audiobook-can-actually-go) for the routes that do take AI-narrated titles.
-- **Formats**: M4B (chapter markers + embedded cover + series metadata), MP3, Opus, FLAC; per-chapter export; retail sample clips.
+- **Attribution you can audit**: every line records *how* its speaker was decided — a speech tag, your own correction, or a bare alternating-turn guess — and `audiobooker report` counts the guesses separately from the lines it could not attribute at all. A guess cannot improve the score.
+- **Formats**: M4B (chapter markers + embedded cover + series metadata), MP3, Opus, FLAC, WAV; per-chapter export; retail sample clips.
 - **7 language profiles** (en/fr/de/es/ja/it/pt) and a per-book config file for set-and-forget defaults.
 
 ## Environment variables

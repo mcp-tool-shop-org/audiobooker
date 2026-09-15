@@ -56,17 +56,30 @@ FAILED_ATTRIBUTION_TEXT = "Chapter 1: Fog\n\n" + "\n\n".join(
     for i in range(4)
 )
 
-# One named speaker (Alice) up front; turn-tracking needs a SECOND known
-# speaker to alternate with, so the next three bare quotes stay unknown.
-# Measured: quality='degraded', dialogue_unknown_rate=0.75 (3/4).
+# RECALIBRATED for attribution_quality (FEAT-CAST-001).
+#
+# Measured now: quality='ok', attribution_quality='degraded',
+# 0 unknown / 2 guessed of 5 dialogue lines, unverified 0.40.
+#
+# The previous fixture was 3-of-4 UNATTRIBUTED, which read 'degraded' under
+# dialogue_quality_verdict (fail at 0.80) but reads 'failed' under
+# attribution_quality (fail at 0.60) — so the test asserting "degraded still
+# renders" was pointing at a book that is now correctly refused.
+#
+# This one is 3 of 5 tagged: 0 unknown, 2 guessed, unverified 0.40, squarely
+# inside [0.30, 0.60). It is also a truer fixture for this test — it exercises
+# the guessed path the new metric exists to measure, rather than riding on
+# unattributed lines the old metric already counted.
 DEGRADED_TEXT = "Chapter 1: Talk\n\n" + (
     '"One," said Alice.\n\n'
     "The hall was cold.\n\n"
-    '"Two."\n\n'
+    '"Two," said Bob.\n\n'
     "Nothing stirred.\n\n"
-    '"Three."\n\n'
+    '"Three," said Alice.\n\n'
     "Nothing stirred again.\n\n"
-    '"Four."'
+    '"Four."\n\n'
+    "The clock ticked.\n\n"
+    '"Five."'
 )
 
 # Two named speakers, both explicitly tagged throughout.
@@ -91,9 +104,23 @@ NARRATION_ONLY_TEXT = (
 )
 
 
-def _make_project(tmp_path, text: str, title: str = "Test Book"):
-    """Create + save a project, returning its path (mirrors test_health_c_cli.py)."""
+def _make_project(tmp_path, text: str, title: str = "Test Book", *, cast_all=False):
+    """Create + save a project, returning its path (mirrors test_health_c_cli.py).
+
+    FEAT-UX-002 (cli-surface wave, out-of-grant declared edit): ``cast_all``
+    is new. ``render`` now refuses when a NAMED speaker owns dialogue with no
+    voice — the shape a typo'd speaker in an imported review file takes. The
+    two tests below that assert a render is ALLOWED to proceed are about
+    attribution quality, not about casting, so they cast the book first;
+    otherwise they would pass or fail on the wrong gate. The tests that
+    assert a REFUSAL deliberately do not use it, so they still prove the
+    attribution gate fires on its own.
+    """
     project = AudiobookProject.from_string(text, title=title, author="Author")
+    if cast_all:
+        project.compile()
+        for speaker in sorted(project.get_uncast_speakers()):
+            project.cast(speaker, "af_bella")
     path = tmp_path / "p.audiobooker"
     project.save(path)
     return path
@@ -117,7 +144,11 @@ class TestFixturesMatchClaimedVerdict:
         project = AudiobookProject.from_string(DEGRADED_TEXT, title="X")
         project.compile()
         report = compile_report(project.chapters, project.casting)
-        assert report["quality"] == "degraded"
+        # Recalibrated: this fixture is 0 unknown / 2 guessed, so the
+        # OLD metric reads ok and the NEW one reads degraded. That split is
+        # the point of the fixture now.
+        assert report["quality"] == "ok"
+        assert report["attribution_quality"] == "degraded"
 
     def test_healthy_fixture_is_ok(self):
         project = AudiobookProject.from_string(HEALTHY_TEXT, title="X")
@@ -253,7 +284,7 @@ class TestRenderRefusesOnFailedAttribution:
 
     def test_degraded_attribution_does_not_block_render(self, tmp_path, monkeypatch):
         """Only 'failed' halts render — 'degraded' is a warning, not a wall."""
-        path = _make_project(tmp_path, DEGRADED_TEXT)
+        path = _make_project(tmp_path, DEGRADED_TEXT, cast_all=True)
 
         calls = []
 
@@ -269,7 +300,7 @@ class TestRenderRefusesOnFailedAttribution:
         assert calls, "a merely 'degraded' book must still be allowed to render"
 
     def test_healthy_attribution_renders_normally(self, tmp_path, monkeypatch):
-        path = _make_project(tmp_path, HEALTHY_TEXT)
+        path = _make_project(tmp_path, HEALTHY_TEXT, cast_all=True)
 
         calls = []
 

@@ -106,10 +106,13 @@ class TestHashUtils:
         c2 = CastingTable(fallback_voice_id="bm_george")
         assert casting_hash(c1) != casting_hash(c2)
 
-    def test_render_params_hash_changes_on_sample_rate(self):
+    def test_render_params_hash_ignores_unused_sample_rate(self):
+        """F-5055b6b8: sample_rate is not a synthesizer input — hashing it
+        was inverse-Vary (operators paid a full re-render of identical PCM).
+        """
         cfg1 = ProjectConfig(sample_rate=24000)
         cfg2 = ProjectConfig(sample_rate=44100)
-        assert render_params_hash(cfg1) != render_params_hash(cfg2)
+        assert render_params_hash(cfg1) == render_params_hash(cfg2)
 
 
 # ---------------------------------------------------------------------------

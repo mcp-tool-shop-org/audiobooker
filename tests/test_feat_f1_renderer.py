@@ -298,9 +298,9 @@ class TestOpusFlac:
         assert "-map_metadata" in runner.flat()
 
     def test_opus_chapter_mux_failure_falls_back(self, tmp_path: Path):
-        # First call = silence gen, second = encode (ok), third = mux (fail).
+        # Inter-chapter silence is stdlib wave now (F-671abba9), so the
+        # first ffmpeg call is encode and the second is the chapter mux.
         results = [
-            RunResult(returncode=0),  # silence
             RunResult(returncode=0),  # encode
             RunResult(returncode=1, stderr="mux boom"),  # mux fails
         ]

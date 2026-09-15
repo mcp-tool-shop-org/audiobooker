@@ -17,9 +17,11 @@ audiobooker make mybook.epub --acx --format m4b
 
 ```bash
 audiobooker new mybook.epub        # parse (EPUB/PDF/DOCX/TXT/MD or a folder)
-audiobooker cast --interactive     # guided per-character casting
 audiobooker compile                # dialogue, speakers, emotion
-audiobooker report                 # unknown-attribution rate + weak lines
+audiobooker speakers               # who did compile find?
+audiobooker speakers merge "Dr. Merrin" Merrin   # fold duplicate names
+audiobooker cast --interactive     # guided per-character casting
+audiobooker report                 # unattributed + guessed rates, worst lines
 audiobooker review-export          # human-editable script
 audiobooker review-import mybook_review.txt
 audiobooker render --acx
@@ -37,6 +39,8 @@ audiobooker audition Alice --render               # A/B the top candidates as au
 audiobooker cast --interactive                    # walk each uncast speaker
 audiobooker cast-fill --gender female --voices af_bella,af_sky,af_nova
 audiobooker cast-apply --auto                     # apply the top suggestion to all
+audiobooker speakers --suggest-aliases            # Dr. Merrin / Merrin / The Doctor
+audiobooker speakers merge "Dr. Merrin" Merrin    # one slot, one voice
 ```
 
 Reuse a cast across a series with **presets**, and hand a CSV to a collaborator:

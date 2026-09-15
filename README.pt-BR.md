@@ -1,12 +1,9 @@
 <p align="center">
-  <a href="https://github.com/mcp-tool-shop-org/audiobooker/blob/main/README.ja.md">日本語</a> | <a href="https://github.com/mcp-tool-shop-org/audiobooker/blob/main/README.zh.md">中文</a> | <a href="https://github.com/mcp-tool-shop-org/audiobooker/blob/main/README.es.md">Español</a> | <a href="https://github.com/mcp-tool-shop-org/audiobooker/blob/main/README.fr.md">Français</a> | <a href="https://github.com/mcp-tool-shop-org/audiobooker/blob/main/README.hi.md">हिन्दी</a> | <a href="https://github.com/mcp-tool-shop-org/audiobooker/blob/main/README.it.md">Italiano</a> | <a href="https://github.com/mcp-tool-shop-org/audiobooker/blob/main/README.pt-BR.md">Português (BR)</a>
+  <a href="README.ja.md">日本語</a> | <a href="README.zh.md">中文</a> | <a href="README.es.md">Español</a> | <a href="README.fr.md">Français</a> | <a href="README.hi.md">हिन्दी</a> | <a href="README.it.md">Italiano</a> | <a href="README.md">English</a>
 </p>
 
 <p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/mcp-tool-shop-org/audiobooker/main/assets/audiobooker-logo-dark.png">
-    <img src="https://raw.githubusercontent.com/mcp-tool-shop-org/audiobooker/main/assets/audiobooker-logo.png" alt="Audiobooker" width="500" />
-  </picture>
+  <img src="https://raw.githubusercontent.com/mcp-tool-shop-org/audiobooker/main/assets/audiobooker-logo.png" alt="Audiobooker" width="480" />
 </p>
 
 <p align="center">
@@ -53,7 +50,7 @@ ressintetizar o livro.
 <details>
 <summary>Container details — tags, the cache, and file ownership</summary>
 
-- Marcado com `latest`, `2`, `2.1` e a versão exata, enviado para o GHCR em cada
+- Marcado com `latest`, `3`, `3.0` e a versão exata, enviado para o GHCR em cada
 lançamento.
 - O ponto de entrada **é** `audiobooker`, portanto, passe o subcomando imediatamente após
 o nome da imagem — não repita o nome do programa.
@@ -79,6 +76,19 @@ pip install -e '.[render]'
 ```
 </details>
 
+<details>
+<summary><strong>Upgrading from 2.x</strong> — five things changed on purpose</summary>
+
+Cada um destes é um caso em que a versão 2.x aceitava algo e fazia a ação incorreta de forma silenciosa. A versão 3.0 recusa, em vez disso. Detalhes completos em [CHANGELOG](CHANGELOG.md).
+
+- **A sua primeira renderização renderiza novamente todos os capítulos, uma vez.** Três entradas que alteram o áudio — predefinição de emoção, intensidade da fala e velocidade/tom/ênfase por personagem — estavam ausentes da chave de cache, então, ao alterar a predefinição, era reportado "Em cache" e retornava o áudio antigo. Agora, estão na chave, e uma entrada de cache da versão 2.x não pode provar o que a gerou.
+- **`--format m4a` não é mais uma opção para todo o livro.** Sempre significou um arquivo por capítulo; ao solicitar um livro inteiro em `m4a`, anteriormente gerava um único arquivo M4B com um nome `.m4a`. Ainda é válido em `podcast --format`.
+- **`render` recusa um livro cujo atributo indica `FAILED`**, em vez de realizar uma síntese de voz (TTS) nele. `--force` substitui. Execute `audiobooker report` para ver quais linhas estão causando o problema.
+- **`make` recusa quando o arquivo do projeto já existe.** Anteriormente, sobrescrevia vozes definidas manualmente, substituições de pronúncia e títulos editados com uma nova análise automática. Passe `--overwrite-project` se for isso que você deseja.
+- **`compile()` gera um erro quando todos os capítulos falham**, em vez de retornar `None`, como faz uma execução limpa. Se você o chamar a partir do Python, agora pode gerar um erro.
+
+</details>
+
 ## Início rápido
 
 ```bash
@@ -90,7 +100,10 @@ audiobooker new mybook.epub            # parse into chapters (EPUB/PDF/TXT/MD/DO
 audiobooker cast --interactive         # guided per-character casting
 audiobooker audition Sarah --render    # A/B candidate voices for one character
 audiobooker compile                    # detect dialogue, attribute speakers, infer emotion
-audiobooker report                     # what's weak? unknown-attribution rate + top lines
+audiobooker speakers                   # who did compile find?
+audiobooker speakers --suggest-aliases # Dr. Merrin / Merrin / The Doctor?
+audiobooker speakers merge "Dr. Merrin" Merrin   # fold those slots into one voice
+audiobooker report                     # what's weak? unattributed + guessed rates, top lines
 audiobooker review-export              # human-editable script — fix attributions
 audiobooker review-import mybook_review.txt
 audiobooker render --acx               # render + master to ACX spec
@@ -106,15 +119,17 @@ audiobooker master-check mybook.m4b    # PASS/FAIL vs ACX loudness/peak/noise-fl
 - Limpeza inteligente de texto, remoção com reconhecimento de Markdown, tratamento de notas de rodapé e um **lexicão de pronúncia reutilizável** (`pronunciation import/export`, CSV/JSON, com passagem de fonemas).
 
 ### Atribuição e seleção de vozes
-- **Multi-voice synthesis** with explainable, ranked voice **suggestions** and an **`audition`** command to A/B candidates per character.
-- **Interactive casting**, **bulk `cast-fill`** by gender/role, **named cast presets** reusable across a series, and **CSV cast sheets** for collaborators.
-- **Dialogue detection + speaker attribution** (optional **BookNLP** co-reference), **alias auto-discovery**, and **emotion inference** with adjustable **intensity**, **scene-level mood**, and genre **preset packs**.
+- **Síntese de voz múltipla** com sugestões de voz explicáveis e classificadas e um comando **`audition`** para comparar candidatos por personagem.
+- **Distribuição de vozes interativa**, **distribuição em massa `cast-fill`** por gênero/papel, **predefinições de distribuição nomeadas** reutilizáveis em uma série e **planilhas de distribuição CSV** para colaboradores.
+- **Detecção de diálogo + atribuição de falante** (co-referência opcional **BookNLP**), **descoberta automática de alias** e **inferência de emoção** com **intensidade** ajustável, **humor em nível de cena** e pacotes de predefinição de gênero.
+- **Atribuição que você pode auditar.** Cada linha registra *como* seu falante foi determinado — uma tag de fala, uma substituição embutida, co-referência, sua própria correção ou uma simples suposição de alternância de turnos — e `report` conta as suposições separadamente das linhas que não conseguiu atribuir. Uma suposição não pode melhorar a pontuação, então o número diminui quando a atribuição piora, o que é a única direção que é útil.
 
 ### Renderização e saída
-- **M4B** (chapter markers + embedded cover + series metadata), **MP3**, **Opus**, **FLAC**, **WAV**; per-chapter export; **podcast/RSS** feed export.
-  WAV has no chapter atom, so a WAV render says so plainly rather than reporting a failed chapter mux — reach for it when the audio is going into an editor.
-- **ACX-spec mastering** (`--acx`) + a **`master-check`** that reports PASS/FAIL on RMS loudness, peak, and noise floor; retail **`sample`** clips.
-- Parallel rendering, a **persistent render cache** with resume, dynamic progress + ETA, and structured failure reports.
+- **M4B** (marcadores de capítulo + capa incorporada + metadados da série), **MP3**, **Opus**, **FLAC**, **WAV**; exportação por capítulo; exportação de feed **podcast/RSS**.
+O WAV não tem um átomo de capítulo, então uma renderização WAV indica isso claramente, em vez de relatar uma falha na multiplexação do capítulo — use-o quando o áudio for para um editor.
+- **Masterização com especificações ACX** (`--acx`) + um **`master-check`** que relata PASS/FAIL em relação ao volume RMS, pico e ruído de fundo; clipes de varejo **`sample`**.
+- Renderização paralela, um **cache de renderização persistente** com retomada, progresso dinâmico + ETA e relatórios de falha estruturados.
+A chave de cache cobre tudo o que altera o áudio — texto, distribuição de vozes, vozes, mecanismo e versão, perfil, predefinição de emoção e intensidade — então, uma re-renderização que diz "Em cache" significa isso. Um **cache opcional por fala** (`utterance_cache`) restringe uma re-renderização às linhas que você realmente editou.
 
 ### Fluxo de trabalho e ecossistema
 - **Pipeline único** `make` · **arquivo de configuração** (`.audiobookerrc` / `[tool.audiobooker]`) · **modo** `--watch` · **lote baseado em manifesto** · conclusão de shell.
@@ -165,14 +180,14 @@ Portanto: `--acx` é sobre o áudio. Se um varejista aceita um título narrado p
 | `cast-export` · `cast-import <file>` | Permite a troca completa da atribuição em formato JSON/CSV — edição manual ou reutilização em diferentes edições |
 | `audition <char>` | Vozes candidatas classificadas (A/B) para um personagem (`--render`) |
 | `compile` | Detecta diálogos, atribui falantes, infere emoções |
-| `report` | Qualidade da compilação: taxa desconhecida, principais linhas não atribuídas, mistura de emoções |
+| `report` | Qualidade da compilação: taxa de não atribuição, taxa de suposição, piores linhas, mistura de emoções. |
 | `review-export` · `review-import <file>` | Revisão editável por humanos, com possibilidade de troca completa |
 | `render` | Renderiza o audiolivro (`--acx`, `--format`, `--split`, `--bitrate`, `--engine`, `--watch`, `--cover`, `-j N`) |
 | `sample` · `master-check <file>` | Amostra de varejo masterizada · verificação em relação às especificações de áudio do ACX |
 | `export-chapters` · `podcast` | Folha de marcação de capítulos (ffmetadata/cue/json) · feed RSS para podcast |
 | `preview` · `batch` · `diagnose` | Clipe de teste de voz · lote/`--manifest` · verificação do ambiente (encerra com código de erro diferente de zero quando o sistema não consegue renderizar) |
 | `load <file>` | Abre um projeto `.audiobooker` existente |
-| `voices` · `chapters` · `speakers` · `info` · `status` · `cache` · `emotions` · `pronunciation` · `completion` | Inspeciona e gerencia |
+| `voices` · `chapters` · `speakers` · `speakers merge` · `info` · `status` · `cache` · `emotions` · `pronunciation` · `completion` | Inspecione e gerencie (`speakers merge <from> <to>`: agrupa nomes duplicados em um único espaço de atribuição). |
 
 Cada comando suporta `-h/--help`. Flags globais: `--silent`, `--debug`. **Códigos de saída:** `0` ok · `1` erro do usuário (incluindo um livro que não pode ser compilado ou uma renderização recusada porque a atribuição falhou) · `2` erro de execução · `3` parcial (lote).
 

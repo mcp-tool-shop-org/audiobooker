@@ -39,6 +39,12 @@ class LanguageProfile:
     dialogue_quotes: tuple[tuple[str, str], ...] = ()
     smart_quotes: tuple[tuple[str, str], ...] = ()
     single_quotes: tuple[tuple[str, str], ...] = ()
+    # Line-initial dash (raya) openers. Empty means derive them: first from
+    # dialogue_quotes pairs whose close is a newline, then from the ISO
+    # raya-language set in casting.dialogue. A synthetic profile that uses
+    # U+2015 HORIZONTAL BAR can set this explicitly instead of relying on
+    # getattr against a field that did not exist (F-fc1ac386).
+    dash_dialogue_markers: tuple[str, ...] = ()
 
     # Speaker attribution
     speaker_verbs: frozenset[str] = frozenset()
@@ -77,7 +83,13 @@ class LanguageProfile:
     # whitespace at all.
     attribution_separator: str = r"\s+"
     # What may follow a matched name.
-    name_boundary: str = r"(?:\s|[,.\!\?]|$)"
+    # FEAT-CAST-006: the raya and en dash are boundaries too. Without them
+    # `respondió Marcos—.` — the ordinary Spanish shape where an interposed
+    # comment is CLOSED by a dash — matched no attribution pattern at all, so
+    # the speaker came back None and turn-tracking guessed one. The failure
+    # was silent in the usual way: a guess is recorded as a successful
+    # attribution, so the unattributed rate went DOWN.
+    name_boundary: str = r"(?:\s|[,.\!\?—–]|$)"
     # Definite article used in the "said the Doctor" pattern. Empty disables
     # that third pattern for languages where it does not apply.
     definite_article: str = "the"

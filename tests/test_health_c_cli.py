@@ -221,7 +221,12 @@ class TestInstallHint:
         captured = capsys.readouterr()
         # Residual 4: the install hint is part of an error report -> stderr.
         combined = captured.out + captured.err
-        assert code == 1
+        # cli-surface wave: `voices` no longer exits 1 when the backend is
+        # absent — it prints the curated catalog that cast-suggest and
+        # audition already rank against, so the offline workflow is
+        # symmetrical. The canonical install hint, which is what this test is
+        # named for, is still printed and still on stderr.
+        assert code == 0
         assert "pip install voice-soundboard" in captured.err
         assert "F:/" not in combined
 
@@ -416,7 +421,17 @@ class TestRenderRelabel:
     def test_render_prints_audiobook_length_not_estimated_render_time(
         self, tmp_path, monkeypatch, capsys
     ):
-        path = _make_project(tmp_path)
+        # FEAT-UX-002 (cli-surface wave, out-of-grant declared edit): the
+        # shared fixture casts nobody, and `render` now refuses when a named
+        # speaker owns dialogue with no voice. This test is about a printed
+        # label, not about casting, so cast the book rather than weaken the
+        # gate or hide behind --force.
+        project = AudiobookProject.from_string(SAMPLE_TEXT, title="Test Book", author="Author")
+        project.cast("narrator", "af_heart")
+        project.cast("Alice", "af_bella")
+        project.cast("Bob", "bm_george")
+        path = tmp_path / "p.audiobooker"
+        project.save(path)
 
         # Stub the actual render so no TTS backend is touched.
         def fake_render(self, *a, **k):
