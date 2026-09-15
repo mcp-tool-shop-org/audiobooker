@@ -1733,6 +1733,8 @@ def compile_report(
     ``dialogue_unknown_rate`` and refuse to proceed to render on
     ``quality == 'failed'``.
     """
+    from audiobooker.nlp.speaker_resolver import SpeakerResolver
+
     speaker_counts: dict[str, int] = {}
     emotion_counts: dict[str, int] = {}
     source_counts: dict[str, int] = {}
@@ -1744,6 +1746,7 @@ def compile_report(
     unknown_count = 0
     unknown_dialogue = 0
     low_confidence_dialogue = 0
+    nlp_band = SpeakerResolver.LOW_CONFIDENCE_BAND
 
     def _context_for(chapter: Chapter, utt: Utterance) -> str:
         if not chapter.raw_text or utt.start_pos < 0 or utt.end_pos < 0:
@@ -1770,10 +1773,23 @@ def compile_report(
                 # from 'unknown' so the two cannot be traded against each
                 # other — an alternation guess moves a line from the first
                 # bucket to the second and the total does not change.
+                #
+                # NLP fuzzy fills are capped below LOW_CONFIDENCE_THRESHOLD
+                # by SpeakerResolver, so they already land here. Also count
+                # attribution_source=="nlp" below LOW_CONFIDENCE_BAND so a
+                # cap regression cannot game dialogue_unverified_rate.
+                weak_nlp = (
+                    utt.attribution_source == "nlp"
+                    and utt.confidence is not None
+                    and utt.confidence < nlp_band
+                )
                 if (
                     utt.speaker != "unknown"
                     and utt.confidence is not None
-                    and utt.confidence < LOW_CONFIDENCE_THRESHOLD
+                    and (
+                        utt.confidence < LOW_CONFIDENCE_THRESHOLD
+                        or weak_nlp
+                    )
                 ):
                     low_confidence_dialogue += 1
                     if len(low_confidence) < max_unattributed:
