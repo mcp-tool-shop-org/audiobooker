@@ -2450,6 +2450,11 @@ def cmd_compile(args) -> int:
         from audiobooker.casting import compile_report
         quality_report = compile_report(project.chapters, project.casting)
         quality = quality_report["quality"]
+        # FEAT-CAST-001: `quality` counts only lines the tool ADMITS it could
+        # not attribute. A turn-tracking guess is recorded as a success, so it
+        # LOWERS that number — a chapter whose every speaker was invented
+        # reports 0% unattributed. attribution_quality counts the guesses.
+        attribution_quality = quality_report["attribution_quality"]
         uncast = project.get_uncast_speakers()
 
         # FEAT-UX-004: `report --json` existed; `compile --json` did not, so
@@ -2469,6 +2474,12 @@ def cmd_compile(args) -> int:
                 "dialogue_unattributed": quality_report["total_dialogue_unknown"],
                 "dialogue_unattributed_rate": quality_report["dialogue_unknown_rate"],
                 "quality": quality,
+                "dialogue_guessed": quality_report["total_low_confidence"],
+                "dialogue_unverified_rate":
+                    quality_report["dialogue_unverified_rate"],
+                "attribution_quality": attribution_quality,
+                "attribution_sources":
+                    quality_report["attribution_source_distribution"],
                 "uncast_speakers": sorted(uncast),
             })
             return 0
@@ -2482,24 +2493,42 @@ def cmd_compile(args) -> int:
                 f"{quality_report['total_dialogue']} dialogue lines "
                 f"unattributed ({quality_report['dialogue_unknown_rate']:.0%})"
             )
-        if quality != "ok":
+            guessed = quality_report["total_low_confidence"]
+            if guessed:
+                _out(
+                    f"  ...and {guessed} more guessed by alternating turns "
+                    f"({quality_report['dialogue_unverified_rate']:.0%} of "
+                    "dialogue has no attribution in the text)"
+                )
+        # Warn on the STRICTER of the two. attribution_quality is the one
+        # that can see a guess; quality is the one users already know.
+        verdict = (
+            "failed"
+            if "failed" in (quality, attribution_quality)
+            else "degraded"
+            if "degraded" in (quality, attribution_quality)
+            else "ok"
+        )
+        if verdict != "ok":
             behavior = project.casting.unknown_character_behavior
-            if quality == "failed":
+            if verdict == "failed":
                 urgency = "the book will render as a near-single-voice reading"
             else:
                 urgency = "consider reviewing attribution before rendering"
             _err(
-                f"WARNING: dialogue attribution is {quality.upper()} — "
+                f"WARNING: dialogue attribution is {verdict.upper()} — "
                 f"{urgency} (unknown speakers fall back to {behavior!r}).",
                 args=args,
             )
             _err(
                 "Hint: check --lang, add inline [character] overrides, or "
                 "cast the missing speakers. Run 'audiobooker report' for the "
-                "worst offending lines.",
+                "worst offending lines — including the ones that were "
+                "guessed rather than left unattributed, which the "
+                "unattributed count does not show.",
                 args=args,
             )
-            if quality == "failed":
+            if verdict == "failed":
                 _err(
                     "Hint: 'audiobooker render' will refuse to proceed at "
                     "this quality level unless you pass --force.",
@@ -2898,23 +2927,47 @@ def _check_dialogue_attribution_quality(args, chapters, casting) -> Optional[int
     from audiobooker.casting import compile_report
 
     report = compile_report(chapters, casting)
-    if report["quality"] != "failed" or getattr(args, "force", False):
+
+    # FEAT-CAST-001: gate on attribution_quality, not quality.
+    #
+    # `quality` counts only dialogue the tool ADMITS it could not attribute.
+    # Turn-tracking fills every gap by alternation and each guess is recorded
+    # as a successful attribution, so a guess LOWERS that number. The gate was
+    # therefore blind to the exact failure it exists to catch: a chapter where
+    # every line got a confident wrong speaker has nothing `unknown` in it and
+    # sailed straight through. The passage that drove this reads quality "ok"
+    # at 52% hand-scored speaker accuracy.
+    #
+    # `attribution_quality` counts dialogue whose speaker was GUESSED, so it
+    # cannot be improved by guessing harder. Both are reported below, because
+    # the remedies differ: unattributed lines want casting or --lang, guessed
+    # lines want a review pass.
+    if report["attribution_quality"] != "failed" or getattr(
+        args, "force", False
+    ):
         return None
+
+    unverified = report["dialogue_unverified_rate"]
+    guessed = report["total_low_confidence"]
+    unknown = report["total_dialogue_unknown"]
+    total = report["total_dialogue"]
 
     _err(
         "Error: dialogue attribution failed the quality gate — "
-        f"{report['total_dialogue_unknown']}/{report['total_dialogue']} "
-        f"dialogue lines ({report['dialogue_unknown_rate']:.0%}) are "
+        f"{guessed + unknown}/{total} dialogue lines ({unverified:.0%}) have "
+        "no attribution in the text. "
+        f"{guessed} were guessed by alternating turns and {unknown} are "
         "unattributed. Rendering now would pay for a full TTS run of a book "
-        "that comes out as a near-single-voice reading (unknown speakers "
-        f"fall back to {casting.unknown_character_behavior!r}).",
+        "whose speakers are largely invented (unknown speakers fall back to "
+        f"{casting.unknown_character_behavior!r}).",
         args=args,
     )
     _err(
-        "Hint: check --lang, add inline [character] overrides, or cast the "
-        "missing speakers, then re-run. Run 'audiobooker report' for the "
-        "worst offending lines, or pass --force to render anyway (e.g. the "
-        "book really is mostly narration).",
+        "Hint: a guessed line is not visible in the unattributed count — run "
+        "'audiobooker report' and check the low-confidence lines, or "
+        "'review-export' to fix them by hand. Check --lang if the book is "
+        "not English. Pass --force to render anyway (e.g. the book really is "
+        "mostly narration).",
         args=args,
     )
     return 1

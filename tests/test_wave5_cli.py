@@ -56,17 +56,30 @@ FAILED_ATTRIBUTION_TEXT = "Chapter 1: Fog\n\n" + "\n\n".join(
     for i in range(4)
 )
 
-# One named speaker (Alice) up front; turn-tracking needs a SECOND known
-# speaker to alternate with, so the next three bare quotes stay unknown.
-# Measured: quality='degraded', dialogue_unknown_rate=0.75 (3/4).
+# RECALIBRATED for attribution_quality (FEAT-CAST-001).
+#
+# Measured now: quality='ok', attribution_quality='degraded',
+# 0 unknown / 2 guessed of 5 dialogue lines, unverified 0.40.
+#
+# The previous fixture was 3-of-4 UNATTRIBUTED, which read 'degraded' under
+# dialogue_quality_verdict (fail at 0.80) but reads 'failed' under
+# attribution_quality (fail at 0.60) — so the test asserting "degraded still
+# renders" was pointing at a book that is now correctly refused.
+#
+# This one is 3 of 5 tagged: 0 unknown, 2 guessed, unverified 0.40, squarely
+# inside [0.30, 0.60). It is also a truer fixture for this test — it exercises
+# the guessed path the new metric exists to measure, rather than riding on
+# unattributed lines the old metric already counted.
 DEGRADED_TEXT = "Chapter 1: Talk\n\n" + (
     '"One," said Alice.\n\n'
     "The hall was cold.\n\n"
-    '"Two."\n\n'
+    '"Two," said Bob.\n\n'
     "Nothing stirred.\n\n"
-    '"Three."\n\n'
+    '"Three," said Alice.\n\n'
     "Nothing stirred again.\n\n"
-    '"Four."'
+    '"Four."\n\n'
+    "The clock ticked.\n\n"
+    '"Five."'
 )
 
 # Two named speakers, both explicitly tagged throughout.
@@ -131,7 +144,11 @@ class TestFixturesMatchClaimedVerdict:
         project = AudiobookProject.from_string(DEGRADED_TEXT, title="X")
         project.compile()
         report = compile_report(project.chapters, project.casting)
-        assert report["quality"] == "degraded"
+        # Recalibrated: this fixture is 0 unknown / 2 guessed, so the
+        # OLD metric reads ok and the NEW one reads degraded. That split is
+        # the point of the fixture now.
+        assert report["quality"] == "ok"
+        assert report["attribution_quality"] == "degraded"
 
     def test_healthy_fixture_is_ok(self):
         project = AudiobookProject.from_string(HEALTHY_TEXT, title="X")
