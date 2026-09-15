@@ -36,7 +36,6 @@
     "multi-voice",
     "dialogue-detection",
     "acx",
-    "audible",
     "cli"
   ]
 }

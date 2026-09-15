@@ -2,7 +2,7 @@ import type { SiteConfig } from '@mcptoolshop/site-theme';
 
 export const config: SiteConfig = {
   title: 'Audiobooker',
-  description: 'Convert EPUB/TXT/PDF/DOCX books into professionally narrated, multi-voice audiobooks (M4B/MP3/Opus/FLAC) with ACX/Audible-ready mastering.',
+  description: 'Convert EPUB/TXT/PDF/DOCX books into professionally narrated, multi-voice audiobooks (M4B/MP3/Opus/FLAC/WAV), mastered to the ACX audio spec.',
   logoBadge: 'AB',
   brandName: 'Audiobooker',
   repoUrl: 'https://github.com/mcp-tool-shop-org/audiobooker',
@@ -12,7 +12,7 @@ export const config: SiteConfig = {
     badge: 'Open source',
     headline: 'Books deserve',
     headlineAccent: 'a voice.',
-    description: 'Convert EPUB, PDF, DOCX, and text into professionally narrated, multi-voice audiobooks — with dialogue detection, emotion, and ACX/Audible-ready mastering.',
+    description: 'Convert EPUB, PDF, DOCX, and text into professionally narrated, multi-voice audiobooks — with dialogue detection, emotion, and mastering to the ACX audio spec.',
     primaryCta: { href: '#usage', label: 'Get started' },
     secondaryCta: { href: 'handbook/', label: 'Read the Handbook' },
     previews: [
@@ -32,9 +32,9 @@ export const config: SiteConfig = {
         { title: 'Multi-voice synthesis', desc: 'A distinct voice per character, with ranked suggestions and an audition command to A/B candidates before you commit.' },
         { title: 'Dialogue & emotion', desc: 'Detects quoted dialogue, attributes speakers (optional BookNLP co-reference), and infers emotion with adjustable intensity.' },
         { title: 'Many inputs', desc: 'EPUB, PDF, DOCX, Markdown, or a folder of per-chapter files — with TOC-driven chapter splitting and 7 language profiles.' },
-        { title: 'ACX/Audible mastering', desc: 'render --acx masters to spec; master-check reports PASS/FAIL on loudness, peak, and noise floor.' },
+        { title: 'ACX-spec mastering', desc: 'render --acx masters to the ACX audio target; master-check reports PASS/FAIL on RMS loudness, peak and noise floor. Meeting the spec is not the same as being accepted \u2014 ACX\u2019s standard flow is for human narration.' },
         { title: 'Review before render', desc: 'A human-editable review format lets you correct attributions and emotions before a second of audio is rendered.' },
-        { title: 'Pro output', desc: 'M4B (chapters + cover + series tags), MP3, Opus, FLAC; podcast RSS; persistent cache with resume.' },
+        { title: 'Pro output', desc: 'M4B (chapters + cover + series tags), MP3, Opus, FLAC, WAV; podcast RSS; persistent cache with resume. Also on GHCR with ffmpeg inside.' },
       ],
     },
     {
@@ -111,7 +111,7 @@ project.render("mybook.m4b")`,
         ['audiobooker compile', 'Detect dialogue, attribute speakers, infer emotion'],
         ['audiobooker report', 'Compile quality: unknown rate + weak attributions'],
         ['audiobooker review-export / -import', 'Human-editable review round-trip'],
-        ['audiobooker render --acx', 'Render + master to ACX/Audible spec'],
+        ['audiobooker render --acx', 'Render + master to the ACX audio spec'],
         ['audiobooker master-check <file>', 'PASS/FAIL vs ACX loudness/peak/noise'],
         ['audiobooker podcast / export-chapters', 'Podcast RSS / chapter cue sheet'],
         ['audiobooker diagnose', 'Check environment (deps, engine, FFmpeg)'],

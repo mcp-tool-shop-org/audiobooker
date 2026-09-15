@@ -17,7 +17,7 @@
   Turn <strong>EPUB / TXT / PDF / DOCX</strong> books into professionally narrated, multi-voice audiobooks (<strong>M4B / MP3 / Opus / FLAC</strong>) — from one command.
 </p>
 
-Questa è la **`npx wrapper`** per [`audiobooker-ai`](https://pypi.org/project/audiobooker-ai/) (Python). Alla prima esecuzione, crea un ambiente Python privato, installa la versione specifica da PyPI ed esegue l'effettiva CLI: niente `pip` manuale, nessuna modifica al tuo sistema Python.
+Questa è la **`npx` wrapper** per [`audiobooker-ai`](https://pypi.org/project/audiobooker-ai/) (Python). Alla prima esecuzione, crea un ambiente Python privato, installa la versione specifica da PyPI ed esegue la vera CLI: niente configurazioni manuali `pip`, nessuna modifica al tuo Python di sistema.
 
 ## Provalo
 
@@ -31,9 +31,9 @@ Oppure installalo a livello globale:
 npm install -g @mcptoolshop/audiobooker
 ```
 
-Alla prima esecuzione, configura un ambiente virtuale gestito nella directory dei dati dell'utente (`~/.local/share/audiobooker` o `%LOCALAPPDATA%\audiobooker` su Windows) e installa `audiobooker-ai`. Tutte le esecuzioni successive avvengono istantaneamente.
+Alla prima esecuzione, viene configurato un ambiente virtuale gestito nella directory dei dati dell'utente (`~/.local/share/audiobooker` o `%LOCALAPPDATA%\audiobooker` su Windows) e viene installato `audiobooker-ai`. Tutte le esecuzioni successive si avviano istantaneamente.
 
-**Richiede Python 3.10+** nel PATH (la wrapper cerca `python3` / `py`). Se non è presente, la wrapper ti indica esattamente come installarlo per il tuo sistema operativo.
+**Richiede Python 3.10+** nel PATH (la wrapper individua `python3` / `py`). Se non è presente, la wrapper ti indica esattamente come installarlo per il tuo sistema operativo.
 
 ## Guida rapida
 
@@ -50,7 +50,7 @@ npx @mcptoolshop/audiobooker render --format m4b
 
 ## Elaborazione audio (sintesi vocale)
 
-L'analisi, l'assegnazione dei ruoli, la compilazione e il flusso di lavoro di revisione funzionano immediatamente. **L'elaborazione dell'audio** richiede il motore TTS, che comporta dipendenze più pesanti: abilita questa funzione quando sei pronto:
+L'analisi, la selezione, la compilazione e il flusso di lavoro di revisione funzionano immediatamente. **L'elaborazione audio** richiede il motore TTS, che comporta l'installazione di dipendenze più pesanti: abilita questa funzione quando sei pronto:
 
 ```bash
 AUDIOBOOKER_INSTALL_EXTRAS=render npx @mcptoolshop/audiobooker render
@@ -60,12 +60,13 @@ L'elaborazione richiede anche **FFmpeg** nel PATH per l'assemblaggio in formato 
 
 ## Cosa fa
 
-- **Assegnazione di voci multiple** con suggerimenti vocali classificati e spiegabili; `audiobooker audition <character>` ti consente di confrontare le voci candidate prima di confermare la scelta.
-- **Rilevamento dei dialoghi + attribuzione degli oratori** (opzionale co-riferimento BookNLP), inferenza delle emozioni e lessici di pronuncia riutilizzabili.
+- **Selezione di voci multiple** con suggerimenti di voci classificati e spiegabili; `audiobooker audition <character>` ti consente di confrontare le voci candidate prima di scegliere.
+- **Rilevamento dei dialoghi + attribuzione del parlante** (opzionale co-riferimento BookNLP), inferenza delle emozioni e lessici di pronuncia riutilizzabili.
 - **Revisione prima dell'elaborazione**: esporta uno script modificabile manualmente, correggi le attribuzioni, reimporta: nulla viene modificato in silenzio.
-- **Mastering ACX / Audible**: `render --acx` più `master-check` fornisce un rapporto PASS/FAIL sul volume, il picco e il livello di rumore.
-- **Formati**: M4B (marcatori dei capitoli + copertina incorporata + metadati della serie), MP3, Opus, FLAC; esportazione per capitolo; clip di esempio per la vendita al dettaglio.
-- **7 profili linguistici** (en/fr/de/es/ja/it/pt) e un file di configurazione per libro per impostazioni predefinite che non richiedono ulteriori modifiche.
+- **Mastering conforme alle specifiche ACX**: `render --acx` esegue il mastering per raggiungere i parametri audio di ACX: RMS tra −23 e −18 dBFS, picco a o inferiore a −3, livello di rumore a o inferiore a −60; `master-check` segnala PASS/FAIL rispetto a questi tre limiti misurati.
+Tieni presente che il rispetto delle specifiche non è la stessa cosa dell'essere accettati: il flusso di invio standard di ACX è per la narrazione umana. Consulta il [README principale](https://github.com/mcp-tool-shop-org/audiobooker#where-an-ai-narrated-audiobook-can-actually-go) per le opzioni che accettano titoli narrati dall'IA.
+- **Formati**: M4B (marcatori di capitolo + copertina incorporata + metadati della serie), MP3, Opus, FLAC; esportazione per capitolo; clip di esempio per la vendita al dettaglio.
+- **7 profili linguistici** (en/fr/de/es/ja/it/pt) e un file di configurazione per libro per impostare valori predefiniti che non richiedono ulteriori modifiche.
 
 ## Variabili d'ambiente
 

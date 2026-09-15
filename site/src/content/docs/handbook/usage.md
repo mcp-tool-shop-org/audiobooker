@@ -48,16 +48,26 @@ audiobooker cast-export --format csv cast.csv     # edit in a spreadsheet
 audiobooker cast-import --format csv cast.csv
 ```
 
-## Publishing to ACX / Audible
+## Mastering to the ACX audio spec
 
 ```bash
-audiobooker render --acx           # loudnorm -20 LUFS, -3 dBTP peak, 44.1k, 192k
-audiobooker master-check book.m4b  # PASS/FAIL: RMS [-23,-18], peak <= -3 dB, floor <= -60 dB
+audiobooker render --acx --format mp3 --bitrate 192k
+audiobooker master-check book.mp3  # PASS/FAIL: RMS [-23,-18], peak <= -3 dB, floor <= -60 dB
 audiobooker sample --duration 180  # a mastered retail sample clip
 audiobooker podcast --base-url https://cdn.example.com/   # per-chapter audio + RSS
 ```
 
-`master-check` verifies the *measurable* ACX specs (loudness, peak, noise floor) — ACX also has subjective/QC criteria a tool can't certify.
+ACX gates on **unweighted RMS**, not LUFS. The mastering pass targets
+−20 LUFS because that is what `ffmpeg loudnorm` can aim at, and it lands
+inside the −23..−18 dBFS RMS window for speech — `master-check`
+then measures the RMS itself. `--acx` sets the sample rate but not the codec,
+hence `--format mp3 --bitrate 192k` for the full spec.
+
+**Meeting the spec is not the same as being accepted.** ACX's standard
+submission flow is for human narration. Routes that do take AI-narrated
+titles, generally with disclosure, include Amazon's Virtual Voice via KDP and
+aggregators such as Spotify Audiobooks for Authors, Author's Republic and
+Kobo Writing Life — check their current terms, which move quickly.
 
 ## Output formats
 
