@@ -26,13 +26,22 @@ on:
       - 'tests/**'
       - 'pyproject.toml'
       - '.github/workflows/**'
+  # Deliberately NOT paths-filtered, unlike `push` above.
+  #
+  # Branch protection requires ci (3.10/3.11/3.12), dep-audit and typecheck.
+  # With a paths filter here, a docs-only PR fires none of them — and a
+  # required check that never runs is never satisfied, so the PR blocks
+  # forever. The only escapes were bypassing branch protection (which this
+  # repo learned not to do: a bypassed push shipped a platform-specific bug
+  # CI would have caught) or padding the PR with an unrelated code change.
+  #
+  # The asymmetry is the point. Pushes are frequent, so cost dominates and
+  # the filter stays. PRs are infrequent and gated, so satisfiability
+  # dominates. Cost of a docs PR is one full run: 5 billable minutes across
+  # 5 jobs (GitHub bills each job rounded up to the minute; the summed job
+  # time is ~3.2), measured on run 34909001174.
   pull_request:
     branches: [main]
-    paths:
-      - 'audiobooker/**'
-      - 'tests/**'
-      - 'pyproject.toml'
-      - '.github/workflows/**'
   workflow_dispatch:
 
 concurrency:

@@ -1204,25 +1204,13 @@ class TestSpanishProfile:
         )
         assert speaker is None
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "F-9f2e0c74-A (open defect, dialogue.py — NOT owned by the test "
-            "domain). Attribution never fires on the raya form that modern "
-            "Spanish fiction uses almost exclusively. es.py declares "
-            "('—', '\\n') in dialogue_quotes, so _attribution_quote_chars() "
-            "puts — in the quote-character set, and _gap_is_attributive(..., "
-            "allow_quotes=False) then rejects any after-window candidate whose "
-            "gap contains the attributive raya of '—dijo María'. "
-            "_ATTRIB_GAP_RE explicitly whitelists — and – as attributive "
-            "separators, so the two mechanisms contradict each other. fr.py and "
-            "it.py are unaffected only because they never declare the pair and "
-            "fall back to _RAYA_LANGUAGES; pt.py declares it and is broken the "
-            "same way. Fix: exclude the raya markers from "
-            "_attribution_quote_chars the way '\\n' already is. Remove this "
-            "xfail with that fix — strict=True makes it fail loudly on XPASS."
-        ),
-    )
+    # F-9f2e0c74-A: this carried `@pytest.mark.xfail(strict=True)` while the
+    # defect was open, because the fix lived in audiobooker/casting/dialogue.py
+    # and this domain owned no source files. Strict xfail is what made the fix
+    # detectable: the moment the raya markers were excluded from
+    # _attribution_quote_chars, this XPASSed and failed the suite loudly, which
+    # is the whole point. Fixed in the same integration; the marker is gone and
+    # the assertion stands on its own.
     def test_spanish_raya_dialogue_attributes_speaker(self):
         """—Ven aquí —dijo María. should attribute to María.
 

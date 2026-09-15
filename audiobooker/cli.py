@@ -71,6 +71,7 @@ from pathlib import Path
 from typing import Optional
 
 from audiobooker import formats as audio_formats
+from audiobooker.errors import CompilationFailedError
 
 
 # Canonical install hint for the optional TTS backend. voice-soundboard IS on
@@ -89,7 +90,16 @@ _QUIET = False
 # (missing file, bad index/value, missing key). Handlers catch these and
 # return 1. Anything else propagates to main()'s outer handler -> exit 2,
 # distinguishing user mistakes from unexpected internal failures.
-USER_ERROR_TYPES = (FileNotFoundError, ValueError, IndexError, KeyError)
+# CompilationFailedError is listed explicitly (CH-B-002 handoff). It
+# subclasses RuntimeError so every existing `except Exception` site keeps
+# working — but that also meant main()'s catch-all owned it and exited 2,
+# "audiobooker hit an unexpected error". A book that did not compile is the
+# user's book not compiling. The message block was already correct; only the
+# exit code was lying about whose fault it was.
+USER_ERROR_TYPES = (
+    FileNotFoundError, ValueError, IndexError, KeyError,
+    CompilationFailedError,
+)
 
 
 def _out(*args, **kwargs) -> None:

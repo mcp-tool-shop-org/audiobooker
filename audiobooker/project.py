@@ -33,7 +33,7 @@ _VALID_PROJECT_KWARGS = {
     "output_path", "metadata",
 }
 
-from audiobooker.errors import AudiobookerError, ErrorDetail
+from audiobooker.errors import CompilationFailedError
 from audiobooker.models import (
     BookMetadata,
     Chapter,
@@ -47,42 +47,6 @@ from audiobooker.models import (
     resolve_stored_path,
 )
 
-
-class CompilationFailedError(AudiobookerError, RuntimeError):
-    """Every chapter in the book failed to compile (CH-B-002).
-
-    Carries the shipcheck error shape (``code`` / ``message`` / ``hint`` /
-    ``retryable``) like the rest of ``audiobooker.errors``. It subclasses
-    ``RuntimeError`` so that ``except Exception`` call sites -- including
-    ``cli.main()``'s catch-all, which routes it through ``_report_error`` and
-    exits 2 -- keep working untouched.
-
-    It lives here rather than in ``audiobooker/errors.py`` only because that
-    module belongs to another agent this wave; it should move there, and
-    ``cli.USER_ERROR_TYPES`` should learn about it so a failed compile exits 1
-    (a user error) rather than 2 (an unexpected one). Both are noted in the
-    handoff; neither changes the fact that a total failure now stops the run.
-    """
-
-    def __init__(self, summary: str, *, chapter_count: int) -> None:
-        AudiobookerError.__init__(
-            self,
-            ErrorDetail(
-                code="COMPILE_ALL_CHAPTERS_FAILED",
-                message=(
-                    f"All {chapter_count} chapter(s) failed to compile, so the "
-                    f"project has no utterances to render: {summary}"
-                ),
-                hint=(
-                    "The failures above are per chapter — one shared cause is "
-                    "likely. Check that the source text parsed (audiobooker "
-                    "chapters), that --lang matches the book, and re-run with "
-                    "--debug for the full traceback."
-                ),
-                retryable=False,
-            ),
-        )
-        self.chapter_count = chapter_count
 
 
 def _sanitize_filename(name: str) -> str:
@@ -2329,7 +2293,31 @@ class AudiobookProject:
         """
         from concurrent.futures import ProcessPoolExecutor, as_completed
 
-        workers = min(self.config.compile_workers, len(active_chapters))
+        # CH-B-013: clamp to the machine, not just to the chapter count.
+        # `compile_workers` is validated as "a positive integer" in BOTH
+        # models.py and config_file.py — the two agree, and what they agree on
+        # is a floor with no ceiling. So a config copied from another project,
+        # or an honest "more workers = faster" guess, passes validation and
+        # spawns that many ProcessPoolExecutor workers, each of which may load
+        # BookNLP/spaCy. On a long novel (40-80+ chapters) the chapter-count
+        # bound does not help: it IS the large number. Exactly the books this
+        # feature exists to speed up are the ones it could thrash.
+        #
+        # Clamped rather than rejected: a ceiling in the validator would have
+        # to be an arbitrary constant, and would wrongly refuse a legitimate
+        # value on a 128-core machine. The clamp adapts, and says so when it
+        # bites, so the user learns their setting is not being honoured
+        # instead of wondering why it did not get faster.
+        requested = self.config.compile_workers
+        cpu_budget = os.cpu_count() or 4
+        workers = min(requested, cpu_budget, len(active_chapters))
+        if requested > cpu_budget:
+            logger.warning(
+                "compile_workers=%d exceeds this machine's %d CPU(s); "
+                "using %d. More workers than cores does not compile faster — "
+                "each one may load its own NLP model.",
+                requested, cpu_budget, workers,
+            )
         logger.info(
             "Parallel compilation: %d chapters across %d workers",
             len(active_chapters), workers,
