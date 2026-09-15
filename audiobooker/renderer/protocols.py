@@ -9,7 +9,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Optional, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Callable, Optional, Protocol, runtime_checkable
+
+if TYPE_CHECKING:
+    from audiobooker.renderer.output import AssemblyResult
 
 
 @dataclass
@@ -134,4 +137,4 @@ class AssemblerProtocol(Protocol):
         title: str = "Audiobook",
         author: str = "",
         chapter_pause_ms: int = 2000,
-    ) -> "AssemblyResult": ...  # noqa: F821 — forward ref to output.AssemblyResult
+    ) -> "AssemblyResult": ...

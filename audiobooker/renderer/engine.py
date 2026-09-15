@@ -2689,7 +2689,10 @@ def render_sample(
     Trims ``duration`` seconds (starting at ``start_seconds``) from a single
     chapter and masters it with the chosen profile/bitrate, tagging it as a
     "Retail Sample". The chapter's rendered WAV is reused from the render
-    cache when present; otherwise the chapter is rendered on the fly.
+    cache when present; otherwise the chapter is synthesized into a
+    per-process tmp (same ``_chapter_tmp_path`` contract as
+    ``render_project``) and the live ``chapter_NNNN.wav`` plus its
+    ``ChapterCacheEntry`` are rewritten only after success (F-ff5a0ed1).
 
     Args:
         project: AudiobookProject (chapters should be compiled).
@@ -2719,7 +2722,9 @@ def render_sample(
         _sanitize_metadata_value,
     )
     from audiobooker.renderer.cache_manifest import (
-        load_manifest, get_cache_root, get_manifest_path, get_chapter_wav_path,
+        CacheManifest, ChapterCacheEntry,
+        load_manifest, save_manifest,
+        get_cache_root, get_manifest_path, get_chapter_wav_path,
     )
     from audiobooker.renderer.hash_utils import (
         chapter_text_hash, casting_hash, render_params_hash,
@@ -2768,26 +2773,27 @@ def render_sample(
     # --- Locate the chapter WAV: reuse cache when valid, else render fresh ---
     # Identity is chapter.index (FEAT-PROD-012), never the list position.
     chapter_index = chapter.index
-    chapter_wav: Optional[Path] = None
     cached_path = get_chapter_wav_path(cache_root, chapter_index)
     manifest_path = get_manifest_path(cache_root)
     manifest = load_manifest(manifest_path)
+    text_hash = chapter_text_hash(chapter)
+    # FEAT-OUT-001: the render wrote this entry with a chapter-scoped
+    # casting digest, so the sample has to read it with one. Comparing
+    # against the whole-table hash rejected every entry the renderer
+    # had just written, and re-synthesized a chapter that was sitting
+    # in the cache.
+    chapter_casting_hash = casting_hash(project.casting, chapter=chapter)
+    params_hash = render_params_hash(
+        project.config, engine=engine, output_profile=output_profile
+    )
+
+    chapter_wav: Optional[Path] = None
     if manifest is not None:
         entry = manifest.get_entry(chapter_index)
         if entry is not None:
             try:
                 valid = entry.is_valid(
-                    chapter_text_hash(chapter),
-                    # FEAT-OUT-001: the render wrote this entry with a
-                    # chapter-scoped casting digest, so the sample has to
-                    # read it with one. Comparing against the whole-table
-                    # hash rejected every entry the renderer had just
-                    # written, and re-synthesized a chapter that was sitting
-                    # in the cache.
-                    casting_hash(project.casting, chapter=chapter),
-                    render_params_hash(
-                        project.config, engine=engine, output_profile=output_profile
-                    ),
+                    text_hash, chapter_casting_hash, params_hash,
                 )
             except Exception:
                 valid = False
@@ -2809,7 +2815,13 @@ def render_sample(
     # (F-12572710). Miss and re-render instead.
 
     if chapter_wav is None:
-        # Render the chapter fresh into the cache location.
+        # F-ff5a0ed1: a miss used to call render_chapter(..., cached_path)
+        # straight into the identity-keyed chapter_NNNN.wav and leave the
+        # ChapterCacheEntry's hashes/size_bytes untouched. Revert then
+        # reported Cached on the sample audio whenever size_bytes collided.
+        # Synthesize into the same per-process tmp as render_project, promote
+        # with os.replace, and rewrite the manifest so occupancy matches
+        # identity.
         if not chapter.is_compiled:
             raise RenderError(
                 f"Chapter {chapter_index} ({chapter.title!r}) is not compiled — "
@@ -2818,15 +2830,61 @@ def render_sample(
                 retryable=False,
             )
         cached_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = _chapter_tmp_path(cached_path)
+        promoted = False
+        file_size = 0
         logger.info(f"SAMPLE_RENDER: rendering chapter {chapter_index} for sample")
-        render_chapter(
-            chapter, project.casting, cached_path,
-            engine=engine,
-            # FT-CAST-026: the sample must use the same emphasis preset the
-            # book renders with, or the retail sample misrepresents the book.
-            emotion_preset=getattr(project.config, "emotion_preset", "neutral"),
-        )
+        try:
+            render_chapter(
+                chapter, project.casting, tmp_path,
+                engine=engine,
+                # FT-CAST-026: the sample must use the same emphasis preset the
+                # book renders with, or the retail sample misrepresents the book.
+                emotion_preset=getattr(project.config, "emotion_preset", "neutral"),
+            )
+            try:
+                file_size = tmp_path.stat().st_size
+            except OSError:
+                file_size = 0
+            if file_size < 1024:
+                raise RenderError(
+                    f"Chapter {chapter_index} audio file is empty "
+                    f"({file_size} bytes) - TTS may have failed or the "
+                    "disk may be full"
+                )
+            try:
+                os.replace(str(tmp_path), str(cached_path))
+            except OSError:
+                shutil.move(str(tmp_path), str(cached_path))
+            promoted = True
+        finally:
+            if not promoted:
+                tmp_path.unlink(missing_ok=True)
+
+        chapter.audio_path = cached_path
+        if manifest is None:
+            manifest = CacheManifest(book_title=project.title)
+        try:
+            size_bytes = cached_path.stat().st_size
+        except OSError:
+            size_bytes = file_size
+        manifest.set_entry(ChapterCacheEntry(
+            chapter_index=chapter_index,
+            text_hash=text_hash,
+            casting_hash=chapter_casting_hash,
+            render_params_hash=params_hash,
+            wav_path=str(cached_path),
+            duration_s=chapter.duration_seconds,
+            status="ok",
+            created_at=datetime.now(timezone.utc).isoformat(),
+            size_bytes=size_bytes,
+        ))
+        save_manifest(manifest, manifest_path)
         chapter_wav = cached_path
+        logger.info(
+            f"SAMPLE_CACHE_WRITE: chapter={chapter_index} "
+            f"wrote {cached_path} size_bytes={size_bytes}"
+        )
 
     # --- Output path / extension ---
     if output_path is None:

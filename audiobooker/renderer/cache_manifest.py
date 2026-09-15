@@ -36,7 +36,12 @@ logger = logging.getLogger("audiobooker.cache")
 # is the correct one to pay: the alternative is what shipped before this
 # bump, where switching to the 'literary' preset reported "Cached" on every
 # chapter and handed back the 'neutral' audio.
-MANIFEST_VERSION = 3
+#
+# v4 (wave-5 amend): dropped narrator_pause_ms, dialogue_pause_ms, and
+# sample_rate from render_params_hash (F-495d9640 / F-5055b6b8). They were
+# inverse-Vary members — hashed but never consumed by TTS. v3 entries were
+# written with the old formula, so they miss once.
+MANIFEST_VERSION = 4
 MANIFEST_FILENAME = "render_v1.json"
 
 # FT-RENDER-P-004: the utterance-level incremental cache lives in its OWN
@@ -303,8 +308,11 @@ def load_utterance_manifest(manifest_path: Path) -> Optional[UtteranceCacheManif
 
     A future-version manifest (version > UTTERANCE_MANIFEST_VERSION) is ignored
     rather than mis-read, mirroring the chapter loader's policy.
+
+    A missing live file is recovered from ``<name>.json.bak`` when present
+    (F-77b04dca — same interrupted-save shape as load_manifest / CACHE-A-003).
     """
-    if not manifest_path.exists():
+    if not _recover_live_from_bak(manifest_path):
         return None
     try:
         data = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -350,25 +358,37 @@ def save_utterance_manifest(
 # Atomic I/O
 # ---------------------------------------------------------------------------
 
+def _recover_live_from_bak(manifest_path: Path) -> bool:
+    """Restore ``manifest_path`` from ``.json.bak`` after an interrupted save.
+
+    ``save_manifest`` / ``save_utterance_manifest`` rename live → bak before
+    tmp → live. A crash between those two leaves no live file. Returns True
+    iff a live file exists after the attempt (already present, or recovered).
+    """
+    if manifest_path.exists():
+        return True
+    bak_path = manifest_path.with_suffix(".json.bak")
+    if not bak_path.exists():
+        return False
+    try:
+        os.rename(str(bak_path), str(manifest_path))
+        logger.warning(
+            f"Recovered manifest from backup after interrupted save: {bak_path}"
+        )
+        return True
+    except OSError as e:
+        logger.warning(f"Failed to recover manifest from {bak_path}: {e}")
+        return False
+
+
 def load_manifest(manifest_path: Path) -> Optional[CacheManifest]:
     """Load manifest from disk. Returns None if missing or corrupt."""
-    if not manifest_path.exists():
-        # CACHE-A-003: save_manifest moves the live manifest to <name>.json.bak
-        # before renaming the new tmp into place. A hard crash between those two
-        # renames leaves the live manifest missing but the .bak intact. Recover
-        # from it so the whole cache isn't orphaned.
-        bak_path = manifest_path.with_suffix(".json.bak")
-        if bak_path.exists():
-            try:
-                os.rename(str(bak_path), str(manifest_path))
-                logger.warning(
-                    f"Recovered manifest from backup after interrupted save: {bak_path}"
-                )
-            except OSError as e:
-                logger.warning(f"Failed to recover manifest from {bak_path}: {e}")
-                return None
-        else:
-            return None
+    # CACHE-A-003: save_manifest moves the live manifest to <name>.json.bak
+    # before renaming the new tmp into place. A hard crash between those two
+    # renames leaves the live manifest missing but the .bak intact. Recover
+    # from it so the whole cache isn't orphaned.
+    if not _recover_live_from_bak(manifest_path):
+        return None
     try:
         data = json.loads(manifest_path.read_text(encoding="utf-8"))
         manifest = CacheManifest.from_dict(data)

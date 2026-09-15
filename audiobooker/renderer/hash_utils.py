@@ -424,6 +424,15 @@ def render_params_hash(
     presets returned a byte-identical digest. Switching preset on a finished
     book reported "Cached" for every chapter, changed nothing, and exited 0.
 
+    Inverse-Vary knobs that do NOT belong here (F-495d9640 / F-5055b6b8):
+    ``narrator_pause_ms`` / ``dialogue_pause_ms`` never reach the synthesizer
+    (SSML still inserts hardcoded ``SPEAKER_CHANGE_BREAK_MS``; tagged-line
+    and incremental-stitch paths ignore them), and ``config.sample_rate`` is
+    a mastering-profile concern — ``TTSEngine.synthesize`` has no sample-rate
+    argument, engines pick their own rate, and assemblers resample from
+    ``output_profile``. Hashing them paid for a full TTS re-render of
+    identical PCM.
+
     Args:
         config: The project config.
         engine: Optional injected TTSEngine instance (or an engine name). When
@@ -438,9 +447,6 @@ def render_params_hash(
         config, "output_profile", "podcast"
     )
     obj = {
-        "sample_rate": config.sample_rate,
-        "narrator_pause_ms": config.narrator_pause_ms,
-        "dialogue_pause_ms": config.dialogue_pause_ms,
         "engine": identity["name"],
         "engine_version": identity["version"],
         "output_profile": profile,
