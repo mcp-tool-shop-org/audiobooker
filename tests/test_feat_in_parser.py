@@ -338,7 +338,7 @@ class TestTocPrefixSliceIsKept:
 
         _, chapters = parse_epub(path, min_chapter_words=20, use_toc="auto")
         joined = "\n".join(c.raw_text for c in chapters)
-        assert "keepers of the Ashgate bell" in joined.lower(), (
+        assert "keepers of the ashgate bell" in joined.lower(), (
             "prose before the first TOC anchor was dropped: "
             f"{[c.title for c in chapters]!r} / {joined[:200]!r}"
         )

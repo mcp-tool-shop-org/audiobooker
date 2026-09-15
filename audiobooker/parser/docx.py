@@ -166,7 +166,6 @@ def _cell_text(cell) -> str:
     unknown: dict[str, int] = {}
     for child in cell._element.iterchildren():
         tag = child.tag
-        local = _local_tag(tag)
         if tag == qn("w:p"):
             text = (Paragraph(child, cell).text or "").strip()
             if text:

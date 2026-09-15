@@ -167,13 +167,10 @@ class TestBookNLPAdapterMock:
         assert "Alice" in result.speakers
 
     def test_non_english_logs_warning(self):
-        """Non-English language triggers a warning log."""
+        """Non-English language is refused — BookNLP is English-only."""
         from audiobooker.nlp.booknlp_adapter import BookNLPAdapter
-        with patch("audiobooker.nlp.booknlp_adapter.logger") as mock_logger:
+        with pytest.raises(ValueError, match="English-only"):
             BookNLPAdapter(language_code="es")
-            if mock_logger.warning.called:
-                call_args = mock_logger.warning.call_args[0][0]
-                assert "English" in call_args or "es" in str(mock_logger.warning.call_args)
 
     def test_entity_dataclass_fields(self):
         from audiobooker.nlp.booknlp_adapter import Entity

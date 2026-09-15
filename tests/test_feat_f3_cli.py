@@ -216,8 +216,10 @@ class TestMake:
 
         assert code == 0
         assert mock_rp.called
-        # auto-cast + force are part of the shared per-book sequence.
-        assert mock_rp.call_args.kwargs.get("force") is True
+        # auto-cast is part of the shared per-book sequence. force defaults
+        # False so the pre-spend attribution/uncast gates can still fire
+        # (F-bf22f423); pass --force to skip them.
+        assert mock_rp.call_args.kwargs.get("force") is False
         assert mock_rp.call_args.kwargs.get("jobs") == 2
 
     def test_make_threads_acx_and_cover(self, tmp_path, monkeypatch):
