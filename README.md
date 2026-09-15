@@ -3,10 +3,7 @@
 </p>
 
 <p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/mcp-tool-shop-org/audiobooker/main/assets/audiobooker-logo-dark.png">
-    <img src="https://raw.githubusercontent.com/mcp-tool-shop-org/audiobooker/main/assets/audiobooker-logo.png" alt="Audiobooker" width="500" />
-  </picture>
+  <img src="https://raw.githubusercontent.com/mcp-tool-shop-org/audiobooker/main/assets/audiobooker-logo.png" alt="Audiobooker" width="480" />
 </p>
 
 <p align="center">
@@ -53,7 +50,7 @@ re-synthesizing the book.
 <details>
 <summary>Container details — tags, the cache, and file ownership</summary>
 
-- Tagged `latest`, `2`, `2.1` and the exact version, pushed to GHCR on every
+- Tagged `latest`, `3`, `3.0` and the exact version, pushed to GHCR on every
   release.
 - The entrypoint **is** `audiobooker`, so pass the subcommand straight after
   the image name — don't repeat the program name.
@@ -91,7 +88,7 @@ audiobooker new mybook.epub            # parse into chapters (EPUB/PDF/TXT/MD/DO
 audiobooker cast --interactive         # guided per-character casting
 audiobooker audition Sarah --render    # A/B candidate voices for one character
 audiobooker compile                    # detect dialogue, attribute speakers, infer emotion
-audiobooker report                     # what's weak? unknown-attribution rate + top lines
+audiobooker report                     # what's weak? unattributed + guessed rates, top lines
 audiobooker review-export              # human-editable script — fix attributions
 audiobooker review-import mybook_review.txt
 audiobooker render --acx               # render + master to ACX spec
@@ -110,12 +107,14 @@ audiobooker master-check mybook.m4b    # PASS/FAIL vs ACX loudness/peak/noise-fl
 - **Multi-voice synthesis** with explainable, ranked voice **suggestions** and an **`audition`** command to A/B candidates per character.
 - **Interactive casting**, **bulk `cast-fill`** by gender/role, **named cast presets** reusable across a series, and **CSV cast sheets** for collaborators.
 - **Dialogue detection + speaker attribution** (optional **BookNLP** co-reference), **alias auto-discovery**, and **emotion inference** with adjustable **intensity**, **scene-level mood**, and genre **preset packs**.
+- **Attribution you can audit.** Every line records *how* its speaker was decided — a speech tag, an inline override, co-reference, your own correction, or a bare alternating-turn guess — and `report` counts the guesses separately from the lines it could not attribute at all. A guess cannot improve the score, so the number goes down when the attribution gets worse, which is the only direction that is useful.
 
 ### Rendering & output
 - **M4B** (chapter markers + embedded cover + series metadata), **MP3**, **Opus**, **FLAC**, **WAV**; per-chapter export; **podcast/RSS** feed export.
   WAV has no chapter atom, so a WAV render says so plainly rather than reporting a failed chapter mux — reach for it when the audio is going into an editor.
 - **ACX-spec mastering** (`--acx`) + a **`master-check`** that reports PASS/FAIL on RMS loudness, peak, and noise floor; retail **`sample`** clips.
 - Parallel rendering, a **persistent render cache** with resume, dynamic progress + ETA, and structured failure reports.
+  The cache key covers everything that changes the audio — text, cast, voices, engine and version, profile, emotion preset and intensity — so a re-render that says "Cached" means it. An opt-in **per-utterance cache** (`utterance_cache`) narrows a re-render to the lines you actually edited.
 
 ### Workflow & ecosystem
 - **`make`** one-shot pipeline · **config file** (`.audiobookerrc` / `[tool.audiobooker]`) · **`--watch`** mode · **manifest-driven batch** · shell completion.
@@ -181,7 +180,7 @@ title is their decision, not a property of the file you just produced.
 | `cast-export` · `cast-import <file>` | Round-trip the cast as JSON/CSV — hand-edit, or reuse across editions |
 | `audition <char>` | A/B ranked candidate voices for one character (`--render`) |
 | `compile` | Detect dialogue, attribute speakers, infer emotion |
-| `report` | Compile quality: unknown rate, top unattributed lines, emotion mix |
+| `report` | Compile quality: unattributed rate, guessed rate, worst lines, emotion mix |
 | `review-export` · `review-import <file>` | Human-editable review round-trip |
 | `render` | Render the audiobook (`--acx`, `--format`, `--split`, `--bitrate`, `--engine`, `--watch`, `--cover`, `-j N`) |
 | `sample` · `master-check <file>` | Mastered retail sample · check against the ACX audio spec |

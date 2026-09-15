@@ -5509,11 +5509,53 @@ def cmd_report(args) -> int:
             print(json_mod.dumps(report, indent=2, ensure_ascii=False))
             return 0
 
-        unknown_pct = report["unknown_rate"] * 100
+        # FEAT-CAST-001: `unknown_rate` is the narration-diluted figure the
+        # report dict itself marks secondary -- add narration to a book and
+        # it falls without a single speaker being identified. The primary
+        # signal divides dialogue by dialogue. `compile` was moved to it;
+        # the command actually named `report` was still printing the other.
+        unknown_pct = report["dialogue_unknown_rate"] * 100
         _out(f"Compile report for {project.title}:\n")
         _out(f"  Total utterances:  {report['total_utterances']}")
         _out(f"  Dialogue / narration: {report['total_dialogue']} / {report['total_narration']}")
-        _out(f"  Unattributed rate: {unknown_pct:.1f}%")
+        _out(f"  Unattributed rate: {unknown_pct:.1f}%  (of dialogue)")
+
+        # The other half, and the half a user cannot otherwise discover:
+        # lines that DID get a speaker, chosen by alternating turns rather
+        # than by anything in the text. These never appear in the
+        # unattributed count -- a guess removes a line from it.
+        guessed = report["total_low_confidence"]
+        if guessed:
+            _out(
+                # ASCII on purpose: this is the primary quality readout and
+                # a stock Windows console is cp1252, where an em-dash
+                # degrades to a replacement character. _out no longer
+                # crashes on one, but mojibake in the headline number is
+                # still worse than a hyphen.
+                f"  Guessed speakers:  {guessed} "
+                f"({report['dialogue_low_confidence_rate']:.1%} of dialogue) "
+                "- attributed by alternating turns, not by the text"
+            )
+        _out(
+            f"  Attribution:       {report['attribution_quality'].upper()} "
+            f"({report['dialogue_unverified_rate']:.1%} of dialogue "
+            "unverified)"
+        )
+
+        sources = report.get("attribution_source_distribution") or {}
+        if sources:
+            _SOURCE_LABELS = {
+                "tag": "speech tag",
+                "turn": "alternating turn",
+                "nlp": "co-reference",
+                "inline": "inline override",
+                "user": "your correction",
+            }
+            parts = ", ".join(
+                f"{_SOURCE_LABELS.get(k, k)}: {v}"
+                for k, v in sorted(sources.items(), key=lambda x: -x[1])
+            )
+            _out(f"  Attributed by:     {parts}")
 
         emotion_dist = report.get("emotion_distribution") or {}
         if emotion_dist:
@@ -5533,6 +5575,32 @@ def cmd_report(args) -> int:
                 )
                 if item.get("context"):
                     _out(f"    context: {item['context']!r}")
+
+        # compile_report has built this list since FEAT-CAST-001 and nothing
+        # printed it. A rate tells a user they have a problem; these lines
+        # tell them where it is -- and unlike the unattributed ones, they
+        # are invisible in the review export, because they carry a
+        # confident-looking speaker name.
+        guesses = report.get("low_confidence") or []
+        if guesses:
+            _out(
+                "\nTop guessed lines (a speaker was assigned, but nothing "
+                "in the text says so):"
+            )
+            for item in guesses:
+                # No context line here, unlike the unattributed listing
+                # above. These lines sit in an unbroken run of dialogue --
+                # that IS why they were guessed -- so the surrounding text
+                # is the same few quotes every time and reads as noise.
+                # The line and the speaker put on it are the actionable part.
+                _out(
+                    f"  ch{item['chapter_index']} line {item['line_index']}: "
+                    f"{item['text']!r} -> {item['speaker']}"
+                )
+            _out(
+                "\nFix these with 'audiobooker review-export', an inline "
+                "[character] override, or by casting the missing speakers."
+            )
 
         return 0
 
