@@ -752,21 +752,27 @@ def read_folder_chapters(
     *,
     pattern: str = "*.txt;*.md",
     profile: Optional[LanguageProfile] = None,
+    chapter_delimiter: Optional[str] = None,
 ) -> list[tuple[str, str]]:
     """Read a directory of per-chapter files into ordered (title, text) pairs.
 
-    Each matching file becomes one chapter, in natural-sorted order so
-    "01_intro", "2_middle", "10_end" order numerically rather than
+    Each matching file becomes one chapter, including files in subdirectories
+    (``rglob``), in natural-sorted relative-path order so "01_intro",
+    "2_middle", "appendix/10_end" order numerically rather than
     lexicographically.
 
     Args:
         directory: Folder containing one file per chapter.
         pattern: Semicolon-separated glob(s) of files to include
             (default ``"*.txt;*.md"``). Globs are matched case-insensitively
-            against the filename.
+            against the filename and the relative path.
         profile: Language profile, threaded through for parity with the other
             parsers (Markdown stripping and frontmatter handling do not need it,
             but callers pass it uniformly).
+        chapter_delimiter: Ignored. Folder input is one file per chapter;
+            a delimiter regex cannot split a file that is already a chapter.
+            Passing it logs a warning so the advertised flag is not dropped
+            on the floor.
 
     Returns:
         List of ``(title, text)`` tuples in reading order. The title is derived
@@ -783,22 +789,38 @@ def read_folder_chapters(
     if not folder.is_dir():
         raise ValueError(f"Not a folder: {folder}")
 
+    if chapter_delimiter:
+        logger.warning(
+            "Folder input treats each matching file as one chapter and does "
+            "not split on chapter_delimiter (%r). Remove the flag or split "
+            "the files yourself.",
+            chapter_delimiter,
+        )
+
     globs = [g.strip() for g in pattern.split(";") if g.strip()]
     if not globs:
         globs = ["*.txt", "*.md"]
 
-    # Collect matching files. Match case-insensitively by lowercasing both the
-    # glob suffix and the filename so ".TXT"/".Md" are picked up on every OS.
+    # Collect matching files, including nested ones. Match case-insensitively
+    # against both the filename and the relative posix path so "*.txt" still
+    # hits appendix/99_appendix.txt and "appendix/*.txt" can pin a subfolder.
     import fnmatch
 
     seen: set[Path] = set()
     matched: list[Path] = []
-    for entry in folder.iterdir():
+    for entry in folder.rglob("*"):
         if not entry.is_file():
             continue
+        rel_parts = entry.relative_to(folder).parts
+        if any(part.startswith(".") for part in rel_parts):
+            continue
         name_lower = entry.name.lower()
+        rel_lower = entry.relative_to(folder).as_posix().lower()
         for g in globs:
-            if fnmatch.fnmatch(name_lower, g.lower()):
+            g_lower = g.lower()
+            if fnmatch.fnmatch(name_lower, g_lower) or fnmatch.fnmatch(
+                rel_lower, g_lower,
+            ):
                 if entry not in seen:
                     seen.add(entry)
                     matched.append(entry)
@@ -806,13 +828,15 @@ def read_folder_chapters(
 
     if not matched:
         raise ValueError(
-            f"No files matching {pattern!r} found in '{folder}'. "
-            "Folder input expects one text/Markdown file per chapter "
-            "(e.g. 01_intro.txt, 02_chapter.md). Check the folder path and the "
-            "--pattern glob."
+            f"No files matching {pattern!r} found in '{folder}' "
+            "(including subfolders). Folder input expects one text/Markdown "
+            "file per chapter (e.g. 01_intro.txt, appendix/99_appendix.txt). "
+            "Check the folder path and the pattern glob."
         )
 
-    matched.sort(key=lambda p: _natural_sort_key(p.stem))
+    matched.sort(
+        key=lambda p: _natural_sort_key(p.relative_to(folder).as_posix()),
+    )
 
     chapters: list[tuple[str, str]] = []
     for file_path in matched:
@@ -853,9 +877,10 @@ def read_folder_chapters(
         )
 
     profile_code = profile.code if profile is not None else "en"
+    nested = sum(1 for p in matched if p.parent != folder)
     logger.info(
-        "Read folder '%s': %d chapter file(s), profile=%s, pattern=%s",
-        folder.name, len(chapters), profile_code, pattern,
+        "Read folder '%s': %d chapter file(s) (%d nested), profile=%s, pattern=%s",
+        folder.name, len(chapters), nested, profile_code, pattern,
     )
 
     return chapters

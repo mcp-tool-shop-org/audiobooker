@@ -117,11 +117,20 @@ class HTMLTextExtractor(HTMLParser):
     # Block-level elements that should have newlines
     BLOCK_TAGS = {
         "p", "div", "h1", "h2", "h3", "h4", "h5", "h6",
-        "li", "tr", "blockquote", "pre", "br", "hr",
+        "li", "tr", "blockquote", "pre", "br", "hr", "table",
     }
 
-    # Tags to skip entirely
-    SKIP_TAGS = {"script", "style", "head", "meta", "link", "nav", "footer"}
+    # Tags to skip entirely. <footer> is NOT here: chapter-end notes belong
+    # in the narration (route real footnotes through footnote_behavior /
+    # aside+epub:type). <nav> is skipped but logged. Unclosed skip tags are
+    # force-closed in get_text() so they cannot eat the rest of the document.
+    SKIP_TAGS = {"script", "style", "head", "meta", "link", "nav"}
+
+    # Table cells: join with ", " and terminate each row with a full stop,
+    # mirroring parser.docx._table_to_speakable. Minified XHTML has no
+    # whitespace between <td>s, so we cannot wait for source spaces.
+    CELL_TAGS = {"td", "th"}
+    _ROW_END_PUNCT = (".", "!", "?", ":", ";")
 
     # Tags that always indicate footnote content (FT-CORE-019)
     FOOTNOTE_TAGS = {"aside"}
@@ -142,6 +151,12 @@ class HTMLTextExtractor(HTMLParser):
         self._footnote_stack: list[str] = []
         self._span_start_index: Optional[int] = None
         self._span_explicit = False
+        # Table-cell join state. A stack so a nested table inside a cell
+        # does not leak separators into the parent row.
+        self._cell_had_text: list[bool] = []
+        self._pending_cell_sep = False
+        self._row_has_cell = False
+        self._logged_nav = False
 
     # -- footnote classification -------------------------------------------
 
@@ -185,10 +200,53 @@ class HTMLTextExtractor(HTMLParser):
 
     # -- HTMLParser hooks ---------------------------------------------------
 
+    def _emit_cell_separator(self) -> None:
+        """Join the previous cell to this one with ', ' (no source whitespace)."""
+        self._pending_newline = False
+        self._pending_space = False
+        if not self._parts:
+            return
+        last = self._parts[-1]
+        if last.endswith((", ", ",", "\n")):
+            return
+        if last.endswith(" "):
+            self._parts[-1] = last.rstrip() + ", "
+            return
+        self._parts.append(", ")
+
+    def _terminate_row(self) -> None:
+        """End a table row with a full stop so TTS does not run rows together."""
+        self._pending_cell_sep = False
+        if self._row_has_cell and self._parts:
+            last = self._parts[-1].rstrip()
+            if last and not last.endswith(self._ROW_END_PUNCT):
+                self._parts.append(".")
+        self._row_has_cell = False
+        self._pending_newline = True
+        self._pending_space = False
+
     def handle_starttag(self, tag: str, attrs: list) -> None:
         tag = tag.lower()
         if tag in self.SKIP_TAGS:
+            if tag == "nav" and not self._logged_nav:
+                logger.info(
+                    "Skipping HTML <nav> element (navigation / table of contents)."
+                )
+                self._logged_nav = True
             self.skip_depth += 1
+            return
+
+        if tag in self.CELL_TAGS:
+            if self._pending_cell_sep:
+                self._emit_cell_separator()
+                self._pending_cell_sep = False
+            self._cell_had_text.append(False)
+            return
+
+        if tag == "tr":
+            self._pending_cell_sep = False
+            self._row_has_cell = False
+            self._pending_newline = True
             return
 
         kind = self._classify_footnote(tag, attrs)
@@ -209,6 +267,17 @@ class HTMLTextExtractor(HTMLParser):
         tag = tag.lower()
         if tag in self.SKIP_TAGS:
             self.skip_depth = max(0, self.skip_depth - 1)
+            return
+
+        if tag in self.CELL_TAGS:
+            had_text = self._cell_had_text.pop() if self._cell_had_text else False
+            if had_text:
+                self._pending_cell_sep = True
+                self._row_has_cell = True
+            return
+
+        if tag == "tr":
+            self._terminate_row()
             return
 
         # Close the matching OPEN footnote element (and anything malformed
@@ -257,6 +326,8 @@ class HTMLTextExtractor(HTMLParser):
 
         self._pending_space = trail_space
         self._parts.append(text)
+        if self._cell_had_text:
+            self._cell_had_text[-1] = True
 
     def get_text(self) -> str:
         """Get extracted text with normalized whitespace."""
@@ -265,6 +336,19 @@ class HTMLTextExtractor(HTMLParser):
         self._footnote_stack.clear()
         if self._span_start_index is not None:
             self._close_footnote_span()
+        # Same backstop for skip_depth: an unclosed <script>/<nav>/<style>
+        # must not keep the extractor in skip mode (the already-consumed
+        # inner text of a still-open skip tag is gone, but any caller that
+        # feeds more HTML after get_text, and the trailing-row terminator,
+        # see a clean slate).
+        if self.skip_depth:
+            logger.debug(
+                "Force-closing skip_depth=%d left open by malformed markup.",
+                self.skip_depth,
+            )
+            self.skip_depth = 0
+        if self._row_has_cell:
+            self._terminate_row()
 
         text = "".join(self._parts)
         # Normalize multiple newlines
@@ -369,26 +453,57 @@ def html_to_text(html_content: str, *, footnote_behavior: str = "inline") -> str
     return _strip_sentinels(text)
 
 
-def extract_title_from_html(html_content: str) -> Optional[str]:
+def _compose_extracted_title(
+    title: str,
+    profile: Optional[LanguageProfile],
+) -> str:
+    """Run a heading through compose_chapter_title when it matches a profile."""
+    from audiobooker.parser.text import compose_chapter_title, _get_chapter_patterns
+
+    for pat in _get_chapter_patterns(profile):
+        try:
+            compiled = re.compile(pat, re.IGNORECASE)
+        except re.error:
+            continue
+        match = compiled.match(title)
+        if match:
+            return compose_chapter_title(title, match)
+    return title
+
+
+def extract_title_from_html(
+    html_content: str,
+    *,
+    profile: Optional[LanguageProfile] = None,
+) -> Optional[str]:
     """
     Try to extract chapter title from HTML content.
 
-    Looks for h1, h2, h3 tags at the start of content.
+    Looks for h1, h2, h3 tags at the start of content. Nested markup inside
+    the heading (the normal EPUB/Calibre case: ``<h1><span>…</span></h1>``)
+    is flattened through :func:`html_to_text` so the title is not dropped.
+    When the flattened heading matches a language-profile chapter pattern,
+    :func:`compose_chapter_title` is applied so spine titles and TOC titles
+    share one rule.
     """
-    # Look for heading at start
+    # Capture inner HTML, not a single text node. Backreference the heading
+    # level so ``<h1>…</h1>`` cannot swallow a later ``</h2>``.
     patterns = [
-        r"<h[1-3][^>]*>([^<]+)</h[1-3]>",
-        r"<title>([^<]+)</title>",
+        r"<h([1-3])\b[^>]*>(.*?)</h\1>",
+        r"<title\b[^>]*>(.*?)</title>",
     ]
 
     for pattern in patterns:
-        match = re.search(pattern, html_content[:2000], re.IGNORECASE)
+        match = re.search(
+            pattern, html_content[:2000], re.IGNORECASE | re.DOTALL,
+        )
         if match:
-            title = match.group(1).strip()
-            # Clean up the title
-            title = re.sub(r"\s+", " ", title)
+            inner = match.group(match.lastindex or 1)
+            # Flatten nested tags; a heading fragment is not a full document.
+            title = html_to_text(inner)
+            title = re.sub(r"\s+", " ", title).strip()
             if title and len(title) < 200:
-                return title
+                return _compose_extracted_title(title, profile)
 
     return None
 
@@ -504,6 +619,7 @@ def _chapters_from_toc(
     keep_titled_short_chapters: bool,
     docs_by_name: dict,
     footnote_behavior: str = "inline",
+    profile: Optional[LanguageProfile] = None,
 ) -> Optional[list[Chapter]]:
     """Build chapters from flattened TOC entries (FT-PARSE-003).
 
@@ -591,6 +707,45 @@ def _chapters_from_toc(
             )
         positions = [e[0] for e in ordered]
         titles = [e[2] for e in ordered]
+
+        # Intra-document sibling of FEAT-IN-002: a TOC that names an anchor
+        # mid-file used to start the first slice at that anchor and silently
+        # delete the dedication / epigraph / kicker sitting at html[0:pos].
+        first_pos = positions[0] if positions else 0
+        if first_pos > 0:
+            prefix_html = content[:first_pos]
+            prefix_text = html_to_text(
+                prefix_html, footnote_behavior=footnote_behavior,
+            )
+            prefix_words = len(prefix_text.split())
+            if prefix_words > 0:
+                logger.warning(
+                    "EPUB document %r has %d word(s) before the first TOC "
+                    "anchor; that preamble is not named in the table of "
+                    "contents and would have been dropped. Recovering it. "
+                    "If it is not part of the book, exclude it with "
+                    "'chapters exclude'.",
+                    doc_name, prefix_words,
+                )
+                prefix_title = extract_title_from_html(
+                    prefix_html, profile=profile,
+                )
+                stand_alone = (
+                    prefix_words >= min_chapter_words
+                    or bool(prefix_title and keep_titled_short_chapters)
+                )
+                if stand_alone:
+                    chapters.append(Chapter(
+                        index=chapter_index,
+                        title=prefix_title or f"Chapter {chapter_index + 1}",
+                        raw_text=_strip_sentinels(prefix_text),
+                        source_file=doc_name,
+                    ))
+                    chapter_index += 1
+                else:
+                    # Too short to stand alone — narrate it with the first
+                    # named section rather than drop it.
+                    positions[0] = 0
 
         for k, entry_title in enumerate(titles):
             start = positions[k]
@@ -694,6 +849,7 @@ def _document_chapter(
     min_chapter_words: int,
     keep_titled_short_chapters: bool,
     footnote_behavior: str,
+    profile: Optional[LanguageProfile] = None,
 ) -> Optional[Chapter]:
     """Build one Chapter from a whole spine document, or None if too short."""
     content = item.get_content()
@@ -702,7 +858,7 @@ def _document_chapter(
 
     text = html_to_text(content, footnote_behavior=footnote_behavior)
     word_count = len(text.split())
-    title = extract_title_from_html(content)
+    title = extract_title_from_html(content, profile=profile)
 
     if word_count < min_chapter_words:
         if title and keep_titled_short_chapters:
@@ -732,6 +888,7 @@ def _reconcile_toc_with_spine(
     min_chapter_words: int,
     keep_titled_short_chapters: bool,
     footnote_behavior: str,
+    profile: Optional[LanguageProfile] = None,
 ) -> list[Chapter]:
     """Put TOC-derived chapters back in reading order and recover orphans.
 
@@ -802,6 +959,7 @@ def _reconcile_toc_with_spine(
             min_chapter_words=min_chapter_words,
             keep_titled_short_chapters=keep_titled_short_chapters,
             footnote_behavior=footnote_behavior,
+            profile=profile,
         )
         if built is not None:
             recovered.append(name)
@@ -1013,7 +1171,6 @@ def parse_epub(
     # splitting below, which is byte-for-byte identical to the historical
     # behavior. 'off' skips the TOC entirely.
     chapters: list[Chapter] = []
-    chapter_index = 0
     split_pattern = "spine/structure"
 
     if use_toc in ("auto", "on"):
@@ -1029,6 +1186,7 @@ def parse_epub(
                 keep_titled_short_chapters=keep_titled_short_chapters,
                 docs_by_name=docs_by_name,
                 footnote_behavior=footnote_behavior,
+                profile=profile,
             )
             if toc_chapters:
                 # FEAT-IN-002: the TOC decides titles and anchor slicing; the
@@ -1039,8 +1197,8 @@ def parse_epub(
                     min_chapter_words=min_chapter_words,
                     keep_titled_short_chapters=keep_titled_short_chapters,
                     footnote_behavior=footnote_behavior,
+                    profile=profile,
                 )
-                chapter_index = len(chapters)
                 split_pattern = "toc"
                 logger.info(
                     "Using EPUB table of contents for chapter boundaries "
@@ -1054,91 +1212,36 @@ def parse_epub(
                     "structure.",
                 )
 
-    # Extract chapters from spine (reading order) — runs when TOC splitting was
-    # off, absent, or unusable. This block is byte-for-byte identical to the
-    # pre-FT-PARSE-003 behavior.
-    for item in book.get_items_of_type(ebooklib.ITEM_DOCUMENT) if not chapters else ():
-        # Get HTML content
-        content = item.get_content()
-        if isinstance(content, bytes):
-            content = _decode_item_content(content, item.get_name())
-
-        # Convert to plain text
-        text = html_to_text(content, footnote_behavior=footnote_behavior)
-        word_count = len(text.split())
-
-        # Try to extract title (reuse cached content instead of calling get_content() again)
-        title = extract_title_from_html(content)
-
-        # Skip short sections (unless titled and keep_titled_short_chapters)
-        if word_count < min_chapter_words:
-            if title and keep_titled_short_chapters:
+    # Spine-ordered fallback. The previous ITEM_DOCUMENT walk used manifest /
+    # add-item order, so use_toc='off' narrated chapters out of reading order,
+    # included linear='no' documents, and served the nav document as a chapter
+    # titled with the book name. _spine_document_names already skips EpubNav
+    # and reports linear; _document_chapter is the same helper reconcile uses.
+    if not chapters:
+        docs_by_name = {
+            it.get_name(): it
+            for it in book.get_items_of_type(ebooklib.ITEM_DOCUMENT)
+        }
+        for name, linear in _spine_document_names(book):
+            if not linear:
                 logger.info(
-                    f"Keeping short titled section: {title!r} "
-                    f"({word_count} words < {min_chapter_words} threshold)"
-                )
-            else:
-                label = title or item.get_name()
-                logger.info(
-                    f"Skipping short section: {label!r} "
-                    f"({word_count} words < {min_chapter_words} threshold)"
+                    "Leaving non-linear document %r out of the chapter list.",
+                    name,
                 )
                 continue
-
-        if not title:
-            title = f"Chapter {chapter_index + 1}"
-
-        chapter = Chapter(
-            index=chapter_index,
-            title=title,
-            raw_text=_strip_sentinels(text),
-            source_file=item.get_name(),
-        )
-        chapters.append(chapter)
-        chapter_index += 1
-
-    # If no chapters found, try spine order
-    if not chapters:
-        for spine_item in book.spine:
-            item_id = spine_item[0] if isinstance(spine_item, tuple) else spine_item
-            item = book.get_item_with_id(item_id)
-
+            item = docs_by_name.get(name)
             if item is None:
                 continue
-
-            content = item.get_content()
-            if isinstance(content, bytes):
-                content = _decode_item_content(content, item.get_name())
-
-            text = html_to_text(content, footnote_behavior=footnote_behavior)
-            word_count = len(text.split())
-            title = extract_title_from_html(content)
-
-            if word_count < min_chapter_words:
-                if title and keep_titled_short_chapters:
-                    logger.info(
-                        f"Keeping short titled section: {title!r} "
-                        f"({word_count} words < {min_chapter_words} threshold)"
-                    )
-                else:
-                    label = title or item.get_name()
-                    logger.info(
-                        f"Skipping short section: {label!r} "
-                        f"({word_count} words < {min_chapter_words} threshold)"
-                    )
-                    continue
-
-            if not title:
-                title = f"Chapter {chapter_index + 1}"
-
-            chapter = Chapter(
-                index=chapter_index,
-                title=title,
-                raw_text=_strip_sentinels(text),
-                source_file=item.get_name(),
+            built = _document_chapter(
+                item,
+                index=len(chapters),
+                min_chapter_words=min_chapter_words,
+                keep_titled_short_chapters=keep_titled_short_chapters,
+                footnote_behavior=footnote_behavior,
+                profile=profile,
             )
-            chapters.append(chapter)
-            chapter_index += 1
+            if built is not None:
+                chapters.append(built)
 
     # F-CORE-B-004: Raise if no readable chapters found
     if not chapters:
