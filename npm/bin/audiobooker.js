@@ -52,21 +52,79 @@ const venvPython = IS_WIN
 const extras = (process.env.AUDIOBOOKER_INSTALL_EXTRAS || "").trim(); // e.g. "render"
 const installSpec = extras ? `${PKG}[${extras}]==${VERSION}` : `${PKG}==${VERSION}`;
 
+// Classifiers and the CI matrix stop at 3.12. requires-python is >=3.10.
+const PY_FLOOR_MINOR = 10;
+const PY_CI_CEILING_MINOR = 12;
+
+function parsePythonVersion(text) {
+  const m = String(text || "").match(/Python\s+(\d+)\.(\d+)/);
+  if (!m) return null;
+  return { major: parseInt(m[1], 10), minor: parseInt(m[2], 10) };
+}
+
+function meetsPythonFloor(v) {
+  // 3.10+ OR any 4.x. Do not use minor>=10 alone — that rejects 4.0.
+  return v.major > 3 || (v.major === 3 && v.minor >= PY_FLOOR_MINOR);
+}
+
+function aboveCiCeiling(v) {
+  return v.major > 3 || (v.major === 3 && v.minor > PY_CI_CEILING_MINOR);
+}
+
+function pythonCandidates() {
+  // Prefer CI-tested minors. Windows `py -3` is the newest 3.x (often 3.13+).
+  if (IS_WIN) {
+    return [
+      { cmd: "py", pre: ["-3.12"] },
+      { cmd: "py", pre: ["-3.11"] },
+      { cmd: "py", pre: ["-3.10"] },
+      { cmd: "py", pre: ["-3"] },
+      { cmd: "python", pre: [] },
+      { cmd: "python3", pre: [] },
+    ];
+  }
+  return [
+    { cmd: "python3.12", pre: [] },
+    { cmd: "python3.11", pre: [] },
+    { cmd: "python3.10", pre: [] },
+    { cmd: "python3", pre: [] },
+    { cmd: "python", pre: [] },
+  ];
+}
+
 function findPython() {
-  // Windows: prefer the py launcher, then python. POSIX: python3, then python.
-  const candidates = IS_WIN ? ["py", "python", "python3"] : ["python3", "python"];
-  for (const cmd of candidates) {
-    const args = cmd === "py" ? ["-3", "--version"] : ["--version"];
-    const r = spawnSync(cmd, args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
-    if (r.status === 0) {
-      const ver = (r.stdout || r.stderr || "").trim();
-      const m = ver.match(/Python\s+(\d+)\.(\d+)/);
-      if (m && parseInt(m[1], 10) >= 3 && parseInt(m[2], 10) >= 10) {
-        return cmd === "py" ? { cmd: "py", pre: ["-3"] } : { cmd, pre: [] };
-      }
+  let fallback = null;
+  for (const c of pythonCandidates()) {
+    const args = c.pre.length ? [...c.pre, "--version"] : ["--version"];
+    const r = spawnSync(c.cmd, args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+    if (r.status !== 0) continue;
+    const v = parsePythonVersion((r.stdout || r.stderr || "").trim());
+    if (!v || !meetsPythonFloor(v)) continue;
+    if (aboveCiCeiling(v)) {
+      if (!fallback) fallback = { cmd: c.cmd, pre: c.pre, version: v };
+      continue;
     }
+    return { cmd: c.cmd, pre: c.pre, version: v };
+  }
+  if (fallback) {
+    const v = fallback.version;
+    process.stderr.write(
+      `${TOOL}: warning: Python ${v.major}.${v.minor} is above the CI-tested ceiling 3.12; ` +
+      `classifiers and the CI matrix stop at 3.12. Prefer 3.10–3.12.\n`
+    );
+    return fallback;
   }
   return null;
+}
+
+function installedPackageVersion(pythonBin) {
+  const r = spawnSync(
+    pythonBin,
+    ["-c", "from importlib.metadata import version; print(version('audiobooker-ai'))"],
+    { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }
+  );
+  if (r.status !== 0) return null;
+  return (r.stdout || "").trim();
 }
 
 function readMeta() {
@@ -115,9 +173,9 @@ function bootstrap() {
   if (!py) {
     fail(
       "Python 3.10+ is required but was not found.",
-      "Install Python 3.10 or newer and try again:\n" +
+      "Install Python 3.10–3.12 (the CI-tested range) and try again:\n" +
       "  Windows:        winget install Python.Python.3.12   (or https://python.org)\n" +
-      "  macOS:          brew install python\n" +
+      "  macOS:          brew install python@3.12\n" +
       "  Ubuntu/Debian:  sudo apt install python3 python3-venv"
     );
   }
@@ -163,6 +221,19 @@ function bootstrap() {
       `Expected: ${venvBin}\n` +
       "Try a forced reinstall:\n" +
       `  AUDIOBOOKER_FORCE_REINSTALL=1 npx @mcptoolshop/${TOOL} --help`
+    );
+  }
+
+  // Occupancy of the entry point is not identity. action.yml refuses if
+  // importlib.metadata.version != pyproject; a PyPI/npm split must not be
+  // cached as a successful install.json.
+  const installed = installedPackageVersion(venvPython);
+  if (installed !== VERSION) {
+    fail(
+      `you asked for ${PKG}==${VERSION}; importlib.metadata reports ${installed || "(unreadable)"}.`,
+      "A PyPI/npm version split or a partial pip install can leave the entry point on disk while the distribution identity differs. Refusing to cache this occupancy in install.json.\n" +
+      `  AUDIOBOOKER_FORCE_REINSTALL=1 npx @mcptoolshop/${TOOL} --help\n` +
+      `  or: pip install ${installSpec} once PyPI has that version`
     );
   }
 

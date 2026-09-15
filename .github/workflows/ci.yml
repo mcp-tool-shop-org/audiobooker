@@ -75,7 +75,10 @@ jobs:
     strategy:
       matrix:
         python-version: ["3.10", "3.11", "3.12"]
-      fail-fast: true
+      # A 3.12/3.11 fail must not cancel 3.10 before its log exists.
+      # Same three cells, same billable minutes; not a second pytest leg.
+      # Re-run failed jobs can then start the cell that actually broke.
+      fail-fast: false
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -185,20 +188,22 @@ jobs:
           pip install pyright==1.1.414
 
       - name: CI policy assertions
-        # Planted-RED for the five ci-tooling amend gates. Restore a closed
-        # defect (input interpolation, unpinned action install, docker
-        # push: true, typecheck continue-on-error, stale pypa pin / missing
-        # preflight) and this step fails. Same typecheck job, not a new
-        # billable minute (GitHub rounds the job up from ~30s either way).
+        # Planted-RED for the ci-tooling amend gates. Restore a closed
+        # defect (|- interpolation, continue-on-error on a required job,
+        # fail-fast: true, MAX_ERRORS>82, OIDC/npm split, dispatch
+        # silent-green) and this step fails. Same typecheck job, not a
+        # new billable minute.
         run: python tools/check_ci_policy.py
 
       - name: Pyright type-check
-        # Required check. continue-on-error made it vacuous (82 residuals)
-        # still greened typecheck). The wrapper fails closed on NEW errors
-        # and caps known residuals at tools/check_pyright_gate.py
-        # MAX_ERRORS. Pay down types by lowering the cap; do not restore
-        # continue-on-error. No second pytest leg. Per-push minutes
-        # unchanged: still 5 jobs / 7 billable min (run 34922950012).
+        # Required check. continue-on-error made it vacuous (82 residuals
+        # still greened typecheck). The wrapper dumps every diagnostic,
+        # fails closed on NEW file:rule identities vs
+        # tools/pyright_baseline.txt, and caps count at MAX_ERRORS=82.
+        # Pay down types by lowering the cap and pruning the baseline;
+        # do not restore continue-on-error. No second pytest leg.
+        # Per-push minutes unchanged: still 5 jobs / 7 billable min
+        # (run 34922950012).
         run: python tools/check_pyright_gate.py audiobooker/
 
   dep-audit:
