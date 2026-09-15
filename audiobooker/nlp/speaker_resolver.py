@@ -133,6 +133,16 @@ class SpeakerResolver:
                 )
                 continue
 
+            skipped = getattr(result, "skipped_chunks", 0) or 0
+            if skipped:
+                skip_msg = (
+                    f"BookNLP skipped {skipped} chunk(s) on chapter "
+                    f"{chapter.index}"
+                )
+                if result.error:
+                    skip_msg = f"{skip_msg}: {result.error}"
+                stats.nlp_errors.append(skip_msg)
+
             # Build a lookup of quote positions → speakers from NLP
             nlp_attributions = self._build_attribution_map(result)
 
@@ -187,6 +197,14 @@ class SpeakerResolver:
     # as low-confidence so the CLI can surface them for a human spot-check.
     LOW_CONFIDENCE_BAND: float = 0.92
 
+    # Non-exact NLP fills are capped here — same ladder as turn-tracking
+    # (TURN_INFERENCE_CONFIDENCE = 0.25) — so they move unknown →
+    # low_confidence and cannot improve dialogue_unverified_rate.
+    NLP_FUZZY_CONFIDENCE: float = 0.25
+
+    # Backend scores at or below this are not usable attributions.
+    BACKEND_CONFIDENCE_FLOOR: float = 0.3
+
     @staticmethod
     def _normalize_for_match(text: str) -> str:
         """
@@ -204,13 +222,26 @@ class SpeakerResolver:
         text = re.sub(r"\s+", " ", text).strip()
         return text.casefold()
 
-    def _build_attribution_map(self, result: BookNLPResult) -> dict[str, str]:
-        """Build a map from normalized quote text -> speaker name."""
-        mapping: dict[str, str] = {}
+    def _build_attribution_map(
+        self, result: BookNLPResult,
+    ) -> dict[str, tuple[str, float]]:
+        """Build a map from normalized quote text -> (speaker, backend score).
+
+        Duplicate quote texts keep the higher backend confidence; they do
+        not last-writer-win. The backend score is kept so _match_utterance
+        can take min(text_ratio, backend_confidence).
+        """
+        mapping: dict[str, tuple[str, float]] = {}
         for quote in result.quotes:
             key = self._normalize_for_match(quote.quote_text)
-            if quote.speaker and quote.confidence > 0.3 and key:
-                mapping[key] = quote.speaker
+            if not quote.speaker or not key:
+                continue
+            backend = quote.confidence
+            if backend <= self.BACKEND_CONFIDENCE_FLOOR:
+                continue
+            existing = mapping.get(key)
+            if existing is None or backend > existing[1]:
+                mapping[key] = (quote.speaker, backend)
         return mapping
 
     # Minimum length for substring matching to avoid false positives (FT-CORE-022)
@@ -219,7 +250,7 @@ class SpeakerResolver:
     def _match_utterance(
         self,
         utterance: "Utterance",
-        nlp_attributions: dict[str, str],
+        nlp_attributions: dict[str, tuple[str, float]],
     ) -> Optional[tuple[str, float]]:
         """
         Try to match an utterance's text to an NLP-attributed quote.
@@ -229,31 +260,37 @@ class SpeakerResolver:
         minor whitespace, punctuation, and quote-character differences.
 
         FT-CORE-022: Also tries substring matching — if the NLP quote text
-        is a substring of the utterance (or vice versa), that's a high-
-        confidence match. Returns (speaker, confidence) tuple or None.
+        is a substring of the utterance (or vice versa), that's a match.
+        Confidence is min(text_ratio, backend_confidence). Non-exact fills
+        are then capped at NLP_FUZZY_CONFIDENCE so they cannot improve
+        attribution_quality the way turn-tracking used to.
         """
         text_norm = self._normalize_for_match(utterance.text)
         if not text_norm:
             return None
 
-        # Try exact match first (fast path)
-        if text_norm in nlp_attributions:
-            return nlp_attributions[text_norm], 1.0
+        # Try exact match first (fast path). Backend score is kept; BookNLP
+        # itself does not emit one so resolved quotes score 1.0.
+        exact = nlp_attributions.get(text_norm)
+        if exact is not None:
+            speaker, backend = exact
+            return speaker, min(1.0, backend)
 
         best_ratio = 0.0
         best_speaker: Optional[str] = None
+        best_backend = 1.0
 
-        for quote_key, speaker in nlp_attributions.items():
+        for quote_key, (speaker, backend) in nlp_attributions.items():
             # FT-CORE-022: Substring matching (bidirectional)
             if len(text_norm) >= self.SUBSTRING_MIN_LENGTH and len(quote_key) >= self.SUBSTRING_MIN_LENGTH:
                 if text_norm in quote_key or quote_key in text_norm:
-                    # Substring match — compute a confidence based on length overlap
                     shorter = min(len(text_norm), len(quote_key))
                     longer = max(len(text_norm), len(quote_key))
                     sub_ratio = shorter / longer
                     if sub_ratio > best_ratio:
-                        best_ratio = max(sub_ratio, 0.90)  # Substring is high confidence
+                        best_ratio = sub_ratio
                         best_speaker = speaker
+                        best_backend = backend
                     continue
 
             # Fuzzy match via SequenceMatcher
@@ -261,9 +298,11 @@ class SpeakerResolver:
             if ratio > best_ratio:
                 best_ratio = ratio
                 best_speaker = speaker
+                best_backend = backend
 
         if best_ratio >= self.FUZZY_THRESHOLD and best_speaker is not None:
-            return best_speaker, best_ratio
+            combined = min(best_ratio, best_backend)
+            return best_speaker, min(combined, self.NLP_FUZZY_CONFIDENCE)
 
         return None
 
