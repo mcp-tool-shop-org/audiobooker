@@ -1849,20 +1849,38 @@ def _render_project_impl(
                     pool.submit(_render_one_chapter, i, ch, th): i
                     for i, ch, th in chapters_to_render
                 }
-                for future in as_completed(futures):
-                    try:
-                        future.result()
-                    except RenderError:
-                        if not allow_partial:
-                            # Cancel remaining futures
-                            for f in futures:
-                                f.cancel()
-                            raise
-                    except Exception:
-                        if not allow_partial:
-                            for f in futures:
-                                f.cancel()
-                            raise
+                try:
+                    for future in as_completed(futures):
+                        try:
+                            future.result()
+                        except RenderError:
+                            if not allow_partial:
+                                # Cancel remaining futures
+                                for f in futures:
+                                    f.cancel()
+                                raise
+                        except Exception:
+                            if not allow_partial:
+                                for f in futures:
+                                    f.cancel()
+                                raise
+                except BaseException:
+                    # FEAT-PROD-001. KeyboardInterrupt and SystemExit are
+                    # BaseException, so neither clause above could see them —
+                    # a Ctrl-C fell straight through to this pool's implicit
+                    # shutdown(wait=True), which drains the ENTIRE queue
+                    # before the interrupt reaches the caller. Measured on a
+                    # 24-chapter run at --jobs 4: eight more chapters were
+                    # synthesized after the interrupt. Against a paid TTS API
+                    # that is money spent after the user said stop.
+                    #
+                    # Cancelling only affects QUEUED work. The `jobs` chapters
+                    # already in flight cannot be stopped without engine
+                    # cooperation, and waiting for them is correct — it is
+                    # what leaves the cache consistent for the resume.
+                    for f in futures:
+                        f.cancel()
+                    raise
         else:
             # Sequential rendering (default)
             for i, chapter, text_hash in chapters_to_render:

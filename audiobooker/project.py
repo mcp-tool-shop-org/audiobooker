@@ -2591,8 +2591,24 @@ class AudiobookProject:
         """
         from audiobooker.review import export_for_review
 
-        # Ensure compiled
-        if not all(c.is_compiled for c in self.chapters):
+        # Ensure compiled.
+        #
+        # FEAT-CAST-002: the `if not c.skip` is load-bearing and its absence
+        # destroyed review work. compile() deliberately never compiles a
+        # skipped chapter, so a predicate over EVERY chapter can never be
+        # satisfied once one is excluded — and excluding the front matter so
+        # the dedication is not narrated is the first thing anyone does with
+        # a real EPUB. Every subsequent export therefore recompiled, and
+        # compile() assigns `chapter.utterances = utterances` unconditionally,
+        # silently discarding whatever the human had just corrected. Round one
+        # of a review survived; round two did not, with exit code 0.
+        #
+        # Note this only stops the UNNECESSARY recompile. A legitimate one
+        # still overwrites review decisions, because nothing marks an
+        # utterance as human-reviewed — that is a real gap, and a capability
+        # rather than a bug, so it is recorded in the feature audit and not
+        # papered over here.
+        if not all(c.is_compiled for c in self.chapters if not c.skip):
             self.compile()
 
         if output_path is not None:
@@ -2808,8 +2824,12 @@ class AudiobookProject:
             "estimated_duration_minutes": round(self.estimated_duration_minutes, 1),
             "characters_cast": len(self.casting.characters),
             "uncast_speakers": list(self.get_uncast_speakers()),
-            "compiled": all(c.is_compiled for c in self.chapters),
-            "rendered": all(c.is_rendered for c in self.chapters),
+            # Skipped chapters are never compiled or rendered by design, so
+            # counting them made an excluded front matter chapter report a
+            # fully-compiled, fully-rendered book as neither (FEAT-CAST-002's
+            # cosmetic sibling — same confusion, no data loss).
+            "compiled": all(c.is_compiled for c in self.chapters if not c.skip),
+            "rendered": all(c.is_rendered for c in self.chapters if not c.skip),
             "output": portable_path(self.output_path, base),
         }
 
