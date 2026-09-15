@@ -5,6 +5,107 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+A five-wave dogfood swarm. 160+ findings, tests 1468 → 1708. Every
+CRITICAL/HIGH severity was re-rated by a model family that did not author the
+finding, and the fixes were written test-first with the failure observed
+before the fix.
+
+The through-line is worth stating, because it shaped what got found: **three
+separate defects were each hiding behind something that reported success.**
+
+### Fixed — data loss and silent wrong output
+
+- **`make` destroyed a hand-tuned project without asking.** Re-running it
+  overwrote hand-cast voices, pronunciation overrides and edited chapter
+  titles with a fresh auto-cast parse — and `batch *.epub` did it to every
+  project in a directory in one command. The ordering was the real defect, not
+  the missing prompt: a confirmation added without moving the *write* still
+  destroys the work on the happy path where the render later fails. `make` now
+  refuses when the target exists, and an authorised overwrite is staged beside
+  the original and moved into place only after the render returns.
+- **`compile()` returned normally when every chapter failed.** It recorded each
+  per-chapter exception, set `status='error'`, then unconditionally overwrote
+  that with `'idle'` ninety lines later and returned `None` exactly as a clean
+  run does. A book that produced zero utterances printed "Compiled 0
+  utterances" and exited 0. Total failure now raises; partial failures keep
+  `status='error'` and report which chapters failed.
+- **Spanish and Portuguese gave every line the previous speaker's voice.**
+  Attribution never fired on the em-dash (*raya*) form that modern Spanish
+  fiction uses almost exclusively, because the raya opener was being treated
+  as a quote delimiter while the gap matcher twelve lines away explicitly
+  treats it as an attributive separator. It failed silently and shifted the
+  whole chapter: only the *first* line was ever `unknown`.
+- **Loudness mastering silently vanished for every format but M4B.** The render
+  path discovered unsupported assembler options by calling and catching
+  `TypeError`, stripping from the end of a list — and `normalize` was last, so
+  it was always the first casualty. `--acx` forces normalisation on, so an
+  "ACX master" in MP3, Opus, FLAC or `--split` shipped with none, and the
+  check that exists to catch that could not fire.
+- **`--format wav` did not produce WAV.** It had no assembler and fell through
+  to the M4B one, writing AAC-in-MP4 bytes to a `.wav` path. It also skipped
+  the ffmpeg preflight, so a machine without ffmpeg rendered the whole book —
+  every second of it paid for — before failing at assembly.
+- **`render --clean-cache` ran before its own guards**, so a mistyped
+  `--cover`, a bad chapter index, or even `--dry-run` destroyed the cache.
+- **Every render crashed on a stock Windows console** with a
+  `UnicodeEncodeError` from the progress bar's spinner glyph, after the TTS
+  pass had already been paid for.
+- Project files no longer embed absolute paths, so a `.audiobooker` file
+  shared or attached to a bug report no longer carries the author's account
+  name. Paths are stored relative to the project file, or `~`-relative when
+  the target lives outside it, and projects are now portable between machines.
+
+### Fixed — the quality signal
+
+The unattributed-dialogue rate, the tool's only attribution-quality number,
+**improved as attribution degraded**. Narration inflated its denominator while
+three separate defects each converted a would-be `unknown` into an *accepted
+wrong speaker*, deflating the numerator. All four are fixed, the rate now
+divides dialogue by dialogue, and `compile` prints it.
+
+### Added
+
+- **WAV output** (`--format wav`) — a real assembler, PCM, reported honestly as
+  carrying no chapter markers rather than as a failed chapter mux.
+- **Opus and FLAC are selectable.** Both had working assemblers and were
+  advertised in the README, but `--format` refused them and the config
+  validator rejected `opus` outright.
+- `render` refuses a book whose attribution failed, rather than proceeding
+  into a paid TTS run; `--force` overrides.
+- `make --dry-run`, `make --overwrite-project`, `cache clean --dry-run` and
+  `cache clean -y`, and a `diagnose` that reports render-readiness and exits
+  non-zero when required components are missing.
+- `--jobs` serialises a TTS engine that has not declared itself thread-safe,
+  instead of entering one engine from N threads and producing interleaved
+  audio that passes every size and duration check.
+
+### Changed
+
+- `diagnose` exits non-zero when the machine cannot render. It previously
+  printed "All checks passed." with no ffmpeg and no voice engine installed.
+- `--format m4a` is no longer a whole-book option — it always meant one file
+  per chapter, and previously produced a single M4B under an `.m4a` name. It
+  remains available on `podcast --format`, whose accepted set was widened.
+- The README no longer claims ACX/Audible submittability. It documents the ACX
+  **audio spec** as a mastering target, states the RMS/peak/noise-floor
+  numbers that `master-check` actually measures, and says plainly that ACX's
+  standard submission flow is for human narration, pointing AI-narrated titles
+  at the routes that accept them.
+
+### Internal
+
+- One output-format table replaces six drifting allowlists.
+- Four hand-maintained copies of the version reduced to two derived ones.
+- A vacuous assertion sweep: four tests that could not fail in any
+  environment, one of which was standing over the Spanish attribution bug.
+- `tests/test_e2e_smoke.py` ran in no environment at all — skipped locally,
+  ignored in CI, and its Makefile target invoked by nothing.
+- `make audit` audited nothing: `--strict --skip-editable` turned the skip of
+  the repo's own editable install into a collection failure, exiting 1 after
+  one line and taking `make verify` with it.
+
 ## [2.1.1] - 2026-06-21
 
 ### Fixed

@@ -77,5 +77,13 @@ If a section doesn't apply, mark `SKIP:` with justification — don't leave it u
 
 **Skipping:**
 ```
-- [ ] `[pypi]` SKIP: not a Python project
+- [ ] `[vsix]` SKIP: not a VS Code extension
 ```
+
+The example used to read ``- [ ] `[pypi]` SKIP: not a Python project`` — which
+is false for *this* repo, since audiobooker ships to PyPI as `audiobooker-ai`.
+It was only ever illustrating the format, but a false line in a file whose
+whole job is truthful claims is the wrong thing to leave lying around: two
+real false SKIPs were found in this same document (`[npm]` "not an npm
+package", `[complex]` "not complex enough"), and both survived because nobody
+re-read them. The example now names something audiobooker genuinely is not.

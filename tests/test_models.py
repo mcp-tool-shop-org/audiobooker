@@ -406,7 +406,14 @@ class TestPathTraversalAndNullByte:
         project_file.write_text(json.dumps({
             "schema_version": 1,
             "title": "Evil Book 2",
-            "output_path": "C:/Users/../../../etc/shadow",
+            # The traversal is what this test asserts; the drive prefix is
+            # incidental. It deliberately does NOT use a Windows user-profile
+            # root, because that string matches the release identity
+            # scanner's home-path needle and made every scan of this repo
+            # report RESULT HIT on a fixture containing no identity at all.
+            # A hard-halt gate that always fires is one people learn to wave
+            # through. Keep a prefix that is not a home directory.
+            "output_path": "D:/data/../../../etc/shadow",
         }), encoding="utf-8")
         with pytest.raises(ValueError, match="traversal"):
             AudiobookProject.load(project_file)

@@ -63,7 +63,8 @@ Rendering also needs **FFmpeg** on PATH for M4B/MP3 assembly (`winget install ff
 - **Multi-voice casting** with explainable, ranked voice suggestions; `audiobooker audition <character>` lets you A/B candidate voices before you commit.
 - **Dialogue detection + speaker attribution** (optional BookNLP co-reference), emotion inference, and reusable pronunciation lexicons.
 - **Review-before-render**: export a human-editable script, fix attributions, re-import — nothing is silently changed.
-- **ACX / Audible mastering**: `render --acx` plus `master-check` reports PASS/FAIL on loudness, peak, and noise floor.
+- **ACX-spec mastering**: `render --acx` masters to the ACX audio target — RMS between −23 and −18 dBFS, peak at or below −3, noise floor at or below −60 — and `master-check` reports PASS/FAIL against those three measured limits.
+  Note that meeting the spec is not the same as being accepted: ACX's standard submission flow is for human narration. See the [main README](https://github.com/mcp-tool-shop-org/audiobooker#where-an-ai-narrated-audiobook-can-actually-go) for the routes that do take AI-narrated titles.
 - **Formats**: M4B (chapter markers + embedded cover + series metadata), MP3, Opus, FLAC; per-chapter export; retail sample clips.
 - **7 language profiles** (en/fr/de/es/ja/it/pt) and a per-book config file for set-and-forget defaults.
 
