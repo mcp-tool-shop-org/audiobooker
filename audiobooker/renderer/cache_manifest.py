@@ -45,7 +45,14 @@ MANIFEST_FILENAME = "render_v1.json"
 # manifests therefore continue to load byte-identically — bumping the chapter
 # MANIFEST_VERSION was deliberately avoided. The utterance manifest carries its
 # own independent version line.
-UTTERANCE_MANIFEST_VERSION = 1
+# v2 (wave-2 amend): utterance_hash now keys utterance_type and the
+# per-speaker delivery knobs (speed / pitch_shift / emphasis), and
+# UtteranceCacheEntry records size_bytes so a truncated WAV cannot be
+# stitched back into a chapter. v1 entries were written without those, so
+# they cannot prove their WAVs match the render about to run; every v1
+# entry misses once. The bump also stops an older audiobooker from
+# trusting a v2 manifest whose key schema it cannot reproduce.
+UTTERANCE_MANIFEST_VERSION = 2
 UTTERANCE_MANIFEST_FILENAME = "render_v2_utterance.json"
 
 
@@ -188,17 +195,39 @@ class UtteranceCacheEntry:
     wav_path: str
     duration_s: float = 0.0
     created_at: str = ""
+    # Byte size recorded at write time. 0 means "not recorded" (a v1
+    # manifest written before this field existed), which falls back to the
+    # old non-empty-only check rather than invalidating every legacy entry.
+    size_bytes: int = 0
 
     def is_valid(self) -> bool:
-        """Valid when the WAV still exists on disk and is non-empty."""
+        """Valid when the WAV still exists on disk and matches size_bytes."""
         wav = Path(self.wav_path)
         # No separate exists() call — see ChapterCacheEntry.is_valid above:
         # exists() stats, so a guard before the try lets the very errors this
         # block catches escape. stat() covers absence via FileNotFoundError.
         try:
-            return wav.stat().st_size > 0
-        except OSError:
+            actual_size = wav.stat().st_size
+        except FileNotFoundError:
             return False
+        except OSError as e:
+            logger.warning(f"Cached utterance WAV could not be stat'd ({e}): {self.wav_path}")
+            return False
+        if actual_size == 0:
+            logger.warning(f"Cached utterance WAV is empty (0 bytes): {self.wav_path}")
+            return False
+        # F-f0dd9a89: "non-empty" does not mean "complete". A kill mid-write
+        # leaves a truncated WAV that the next incremental render would
+        # stitch into the chapter. Compare against the size recorded when
+        # the file was written, matching ChapterCacheEntry.
+        if self.size_bytes and actual_size != self.size_bytes:
+            logger.warning(
+                f"Cached utterance WAV size changed since render "
+                f"({actual_size} bytes on disk, {self.size_bytes} recorded) — "
+                f"treating as truncated/corrupt: {self.wav_path}"
+            )
+            return False
+        return True
 
 
 @dataclass

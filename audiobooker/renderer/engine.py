@@ -15,7 +15,6 @@ import shutil
 import threading
 import time
 import uuid
-import wave
 from xml.sax.saxutils import escape as _xml_escape
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, asdict, field, replace
@@ -174,9 +173,55 @@ def _emphasis_for(
     return full_level
 
 
+def _pause_break_ms(text: str) -> int:
+    """Parse a PAUSE utterance's text (``pause:1000ms`` / ``pause:2s``) to ms.
+
+    Compile stores pauses as ``pause:{duration_ms}ms``. Unknown shapes fall
+    back to ``SPEAKER_CHANGE_BREAK_MS`` rather than speaking the marker.
+    """
+    raw = (text or "").strip().lower()
+    if raw.startswith("pause:"):
+        raw = raw[len("pause:"):]
+    if raw.endswith("ms"):
+        try:
+            return max(0, int(float(raw[:-2])))
+        except ValueError:
+            return SPEAKER_CHANGE_BREAK_MS
+    if raw.endswith("s"):
+        try:
+            return max(0, int(float(raw[:-1]) * 1000))
+        except ValueError:
+            return SPEAKER_CHANGE_BREAK_MS
+    try:
+        return max(0, int(float(raw)))
+    except ValueError:
+        return SPEAKER_CHANGE_BREAK_MS
+
+
+def _utterance_type_name(utt: object) -> str:
+    """``UtteranceType.value`` or empty for duck-typed / legacy utterances."""
+    ut = getattr(utt, "utterance_type", None)
+    if ut is None:
+        return ""
+    return getattr(ut, "value", ut) or ""
+
+
+def _ssml_voice_id(
+    speaker: str, voices: Optional[dict[str, str]]
+) -> Optional[str]:
+    """Resolve a <voice name> from a speaker→voice mapping."""
+    if not voices:
+        return None
+    if speaker in voices:
+        return voices[speaker]
+    from audiobooker.models import CastingTable
+    return voices.get(CastingTable.normalize_key(speaker))
+
+
 def preprocess_ssml(
     utterances: list["Utterance"],
     emotion_preset: str = "neutral",
+    voices: Optional[dict[str, str]] = None,
 ) -> str:
     """
     Transform utterances into an SSML document.
@@ -184,6 +229,9 @@ def preprocess_ssml(
     Inserts:
     - <speak> wrapper
     - <break> tags at paragraph boundaries (between utterances)
+    - <break> for UtteranceType.PAUSE (from ``pause:1000ms`` text)
+    - skipped DIRECTION / SFX (non-speech, matching utterances_to_script)
+    - <voice name> from the resolved voice id when ``voices`` is provided
     - <emphasis> for emotion-tagged text (FT-CAST-023: emphasis level scales
       with the utterance's intensity; FT-CAST-026: the base emphasis map is
       selected by ``emotion_preset``)
@@ -191,11 +239,15 @@ def preprocess_ssml(
 
     Regression contract: with ``emotion_preset='neutral'`` (default) and
     utterances whose ``intensity`` is None (or absent on legacy models), the
-    emphasis levels are byte-identical to the historical engine.
+    emphasis levels are byte-identical to the historical engine. Voice tags
+    are added only when ``voices`` is passed, so callers that omit it keep
+    the historical SSML.
 
     Args:
         utterances: List of Utterance objects to convert.
         emotion_preset: Emotion preset selecting the emphasis map (FT-CAST-026).
+        voices: Optional speaker→voice-id mapping. When given, each spoken
+            utterance is wrapped in ``<voice name="...">``.
 
     Returns:
         SSML string wrapped in <speak> tags.
@@ -207,6 +259,16 @@ def preprocess_ssml(
     prev_speaker: str | None = None
 
     for utt in utterances:
+        utt_type = _utterance_type_name(utt)
+
+        # F-82d65329: PAUSE must emit <break>, not spoken "pause:1000ms".
+        # DIRECTION is non-speech ([SFX] on the tagged-line path).
+        if utt_type == "pause":
+            parts.append(f'<break time="{_pause_break_ms(utt.text)}ms"/>')
+            continue
+        if utt_type == "direction":
+            continue
+
         # Insert paragraph break between speaker changes
         if prev_speaker is not None and utt.speaker != prev_speaker:
             parts.append(f'<break time="{SPEAKER_CHANGE_BREAK_MS}ms"/>')
@@ -226,8 +288,11 @@ def preprocess_ssml(
             level = _emphasis_for(utt.emotion, intensity, emotion_preset)
             text = f'<emphasis level="{level}">{text}</emphasis>'
 
-        # Wrap in prosody
-        parts.append(f'<prosody rate="{rate}">{text}</prosody>')
+        inner = f'<prosody rate="{rate}">{text}</prosody>'
+        voice_id = _ssml_voice_id(utt.speaker, voices)
+        if voice_id:
+            inner = f'<voice name="{_xml_escape(voice_id)}">{inner}</voice>'
+        parts.append(inner)
 
         prev_speaker = utt.speaker
 
@@ -289,7 +354,17 @@ def filter_chapters_by_selection(
     """
     if include_ranges:
         include_set = parse_chapter_ranges(include_ranges)
-        chapters = [ch for i, ch in enumerate(chapters) if i in include_set]
+        # F-0b11d4e5: filter by chapter.index, matching exclude_ranges.
+        # Enumerate position disagrees with chapter.index on a gapped or
+        # already-filtered list, so `--chapters 4` kept the wrong chapter
+        # while `--exclude-chapters 4` dropped the right one.
+        if any(getattr(ch, "index", None) is not None for ch in chapters):
+            chapters = [
+                ch for ch in chapters
+                if getattr(ch, "index", None) is not None and ch.index in include_set
+            ]
+        else:
+            chapters = [ch for i, ch in enumerate(chapters) if i in include_set]
 
     if exclude_ranges:
         exclude_set = parse_chapter_ranges(exclude_ranges)
@@ -651,12 +726,16 @@ def render_chapter(
         if engine is None:
             engine = get_default_engine()
 
+        voice_mapping = casting.get_voice_mapping()
+
         # FT-RENDER-015: Use SSML preprocessing if engine supports it
         if should_use_ssml(engine):
             # FT-CAST-026: select the emphasis map by the active emotion preset.
             # Defaults to 'neutral', which reproduces the historical emphasis
             # levels exactly (regression-critical).
-            script = preprocess_ssml(chapter.utterances, emotion_preset)
+            script = preprocess_ssml(
+                chapter.utterances, emotion_preset, voices=voice_mapping
+            )
             logger.info(f"RENDER_SSML: chapter={chapter.index} using SSML preprocessing")
         else:
             # FEAT-PROD-003 (adjacent find): `casting` used to be omitted here.
@@ -675,8 +754,6 @@ def render_chapter(
             # character whose delivery is retuned invalidates rather than
             # re-serving the old performance.
             script = utterances_to_script(chapter.utterances, casting)
-
-        voice_mapping = casting.get_voice_mapping()
 
         output_path = Path(output_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -905,7 +982,7 @@ def render_chapter_incremental(
             else 0
         )
         voice, _emotion = casting.get_voice(utt.speaker)
-        uhash = _utterance_hash(utt, voice, render_params_hash)
+        uhash = _utterance_hash(utt, voice, render_params_hash, casting=casting)
         # COORD-B-002 (wave 5): the ON-DISK filename only needs enough of the
         # hash to make a same-directory collision negligible -- it does NOT
         # need cache-key-grade uniqueness, because the cache key IS the full
@@ -959,7 +1036,9 @@ def render_chapter_incremental(
             # and intensity grading that only live in the SSML branch.
             from audiobooker.casting.dialogue import utterances_to_script
             if should_use_ssml(engine):
-                script = preprocess_ssml([utt], emotion_preset)
+                script = preprocess_ssml(
+                    [utt], emotion_preset, voices=voice_mapping
+                )
             else:
                 script = utterances_to_script([utt], casting)
             tmp = _chapter_tmp_path(target)
@@ -1009,12 +1088,17 @@ def render_chapter_incremental(
             total_duration += result.duration_seconds
             ordered_wavs.append(target)
 
+            try:
+                utt_size = target.stat().st_size
+            except OSError:
+                utt_size = 0
             manifest.set_entry(
                 UtteranceCacheEntry(
                     utterance_hash=uhash,
                     wav_path=str(target),
                     duration_s=result.duration_seconds,
                     created_at=datetime.now(timezone.utc).isoformat(),
+                    size_bytes=utt_size,
                 )
             )
             save_utterance_manifest(manifest, manifest_path)
@@ -1053,29 +1137,11 @@ def render_chapter_incremental(
 def _write_silence_wav(path: Path, duration_ms: int, like: Path) -> Path:
     """Write ``duration_ms`` of silence matching ``like``'s WAV format.
 
-    FEAT-PROD-011. The concat step runs ``-c copy``, which refuses to splice
-    streams whose parameters differ — so the silence has to match the
-    engine's own output exactly, not merely be a plausible WAV. Copying the
-    channel count, sample width and frame rate off a real neighbour is the
-    only way to guarantee that without knowing which engine produced it.
-
-    stdlib ``wave`` rather than an ``anullsrc`` ffmpeg call: it cannot
-    disagree with the source about a parameter it read from the source, and
-    it costs no subprocess.
+    FEAT-PROD-011 / F-671abba9. Canonical implementation lives in output.py
+    so chapter-concat silence and utterance-stitch silence cannot drift.
     """
-    with wave.open(str(like), "rb") as src:
-        nchannels = src.getnchannels()
-        sampwidth = src.getsampwidth()
-        framerate = src.getframerate()
-
-    nframes = int(round(framerate * duration_ms / 1000.0))
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with wave.open(str(path), "wb") as dst:
-        dst.setnchannels(nchannels)
-        dst.setsampwidth(sampwidth)
-        dst.setframerate(framerate)
-        dst.writeframes(b"\x00" * (nframes * nchannels * sampwidth))
-    return path
+    from audiobooker.renderer.output import _write_silence_wav as _impl
+    return _impl(path, duration_ms, like)
 
 
 def _stitch_utterance_wavs(
@@ -2620,7 +2686,9 @@ def render_sample(
 
     Args:
         project: AudiobookProject (chapters should be compiled).
-        from_chapter: Chapter index (0-based) to sample from.
+        from_chapter: Chapter identity (``chapter.index``, 0-based) to sample
+            from — not a list subscript. Matches ``render_project`` /
+            ``--from-chapter``.
         start_seconds: Offset into the chapter to start the sample.
         duration: Sample length in seconds (ACX retail samples are ~1-5 min).
         output_path: Output file path. Defaults to ``<title>_sample.<ext>``
@@ -2652,10 +2720,18 @@ def render_sample(
 
     if duration <= 0:
         raise ValueError(f"Sample duration must be positive, got {duration}.")
-    if from_chapter < 0 or from_chapter >= len(project.chapters):
+    # F-813e9865: from_chapter is chapter.index, not a list subscript.
+    # On a filtered/gapped list, project.chapters[from_chapter] would pick
+    # the wrong chapter (or IndexError) and then write chapter_0000.wav.
+    chapter = next(
+        (c for c in project.chapters if getattr(c, "index", None) == from_chapter),
+        None,
+    )
+    if chapter is None:
+        available = [getattr(c, "index", i) for i, c in enumerate(project.chapters)]
         raise RenderError(
-            f"Sample chapter index {from_chapter} out of range "
-            f"(0-{len(project.chapters) - 1}).",
+            f"Sample chapter index {from_chapter} not found "
+            f"(available: {available}).",
             code="SAMPLE_BAD_CHAPTER",
             retryable=False,
         )
@@ -2677,23 +2753,23 @@ def render_sample(
     sample_rate = profile["sample_rate"]
     loudnorm_filter = profile["loudnorm"]
 
-    chapter = project.chapters[from_chapter]
-
     # Resolve cache root for cache reuse.
     if cache_root is None:
         project_dir = _resolve_project_dir(project)
         cache_root = get_cache_root(project_dir)
 
     # --- Locate the chapter WAV: reuse cache when valid, else render fresh ---
+    # Identity is chapter.index (FEAT-PROD-012), never the list position.
+    chapter_index = chapter.index
     chapter_wav: Optional[Path] = None
-    cached_path = get_chapter_wav_path(cache_root, from_chapter)
+    cached_path = get_chapter_wav_path(cache_root, chapter_index)
     manifest_path = get_manifest_path(cache_root)
     manifest = load_manifest(manifest_path)
     # Tracks whether the cache had an OPINION about this chapter. An entry that
     # exists and failed validation is a positive REJECTION, not an absence.
     entry_rejected = False
     if manifest is not None:
-        entry = manifest.get_entry(from_chapter)
+        entry = manifest.get_entry(chapter_index)
         if entry is not None:
             try:
                 valid = entry.is_valid(
@@ -2714,12 +2790,12 @@ def render_sample(
             if valid:
                 chapter_wav = Path(entry.wav_path)
                 logger.info(
-                    f"SAMPLE_CACHE_HIT: chapter={from_chapter} reusing {chapter_wav}"
+                    f"SAMPLE_CACHE_HIT: chapter={chapter_index} reusing {chapter_wav}"
                 )
             else:
                 entry_rejected = True
                 logger.info(
-                    f"SAMPLE_CACHE_STALE: chapter={from_chapter} manifest entry "
+                    f"SAMPLE_CACHE_STALE: chapter={chapter_index} manifest entry "
                     f"failed validation — re-rendering instead of reusing "
                     f"{entry.wav_path!r}"
                 )
@@ -2741,7 +2817,7 @@ def render_sample(
         logger.warning(
             f"SAMPLE_CACHE_UNVERIFIED: reusing on-disk chapter WAV "
             f"{chapter_wav} — there is no cache manifest entry for chapter "
-            f"{from_chapter}, so it could not be verified against the current "
+            f"{chapter_index}, so it could not be verified against the current "
             f"text/casting. Run 'audiobooker render' if the sample sounds stale."
         )
 
@@ -2749,13 +2825,13 @@ def render_sample(
         # Render the chapter fresh into the cache location.
         if not chapter.is_compiled:
             raise RenderError(
-                f"Chapter {from_chapter} ({chapter.title!r}) is not compiled — "
+                f"Chapter {chapter_index} ({chapter.title!r}) is not compiled — "
                 f"compile the project before sampling.",
                 code="SAMPLE_NOT_COMPILED",
                 retryable=False,
             )
         cached_path.parent.mkdir(parents=True, exist_ok=True)
-        logger.info(f"SAMPLE_RENDER: rendering chapter {from_chapter} for sample")
+        logger.info(f"SAMPLE_RENDER: rendering chapter {chapter_index} for sample")
         render_chapter(
             chapter, project.casting, cached_path,
             engine=engine,
@@ -2802,7 +2878,7 @@ def render_sample(
         )
 
     logger.info(
-        f"SAMPLE_COMPLETE: output={output_path} chapter={from_chapter} "
+        f"SAMPLE_COMPLETE: output={output_path} chapter={chapter_index} "
         f"start={start_seconds:.1f}s duration={duration:.1f}s profile={output_profile}"
     )
     return output_path

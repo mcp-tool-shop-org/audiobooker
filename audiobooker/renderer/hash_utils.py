@@ -13,7 +13,7 @@ import os
 from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
-    from audiobooker.models import Chapter, CastingTable, ProjectConfig, Utterance
+    from audiobooker.models import Chapter, CastingTable, Character, ProjectConfig, Utterance
 
 
 def sha256_text(s: str) -> str:
@@ -52,6 +52,12 @@ def chapter_text_hash(chapter: "Chapter") -> str:
                 "text": u.text,
                 "emotion": u.emotion or "",
                 "intensity": getattr(u, "intensity", None),
+                # F-0da2d3a9: PAUSE/DIRECTION/FOOTNOTE vs speech with the same
+                # speaker+text is a different waveform (tagged-line path emits
+                # [PAUSE]/[SFX]; SSML emits <break> / skips). Leaving the type
+                # out reported Cached after a review flipped a pause into
+                # narration.
+                "type": _utterance_type_value(u),
             }
             for u in chapter.utterances
         ]
@@ -59,29 +65,84 @@ def chapter_text_hash(chapter: "Chapter") -> str:
     return sha256_text(chapter.raw_text)
 
 
+def _utterance_type_value(utterance: object) -> str:
+    """Stable string for Utterance.utterance_type (enum or duck-typed)."""
+    ut = getattr(utterance, "utterance_type", None)
+    if ut is None:
+        return ""
+    return getattr(ut, "value", ut) or ""
+
+
+def _delivery_knobs(character: Optional["Character"]) -> dict:
+    """Audio-affecting per-speaker synthesizer knobs, with Character defaults.
+
+    F-14251d01: utterances_to_script emits {speed}/{pitch}/{emphasis} whenever
+    a CastingTable is passed, but utterance_hash previously keyed only
+    speaker+text+emotion+intensity+voice+params. Retuning Character.speed
+    therefore missed the CHAPTER cache (casting_hash includes these) and then
+    HIT every utterance sub-cache, stitching the old-speed WAVs under the new
+    casting_hash.
+    """
+    if character is None:
+        return {"speed": 1.0, "pitch_shift": 0.0, "emphasis": 1.0}
+    return {
+        "speed": getattr(character, "speed", 1.0),
+        "pitch_shift": getattr(character, "pitch_shift", 0.0),
+        "emphasis": getattr(character, "emphasis", 1.0),
+    }
+
+
+def _character_for_speaker(
+    casting: Optional["CastingTable"], speaker: str
+) -> Optional["Character"]:
+    """Resolve the Character whose delivery knobs reach the synthesizer."""
+    if casting is None:
+        return None
+    key = casting.normalize_key(speaker)
+    if key in casting.characters:
+        return casting.characters[key]
+    return casting.resolve_alias(speaker)
+
+
 def utterance_hash(
     utterance: "Utterance",
     voice: str,
     render_params_hash: str,
+    casting: Optional["CastingTable"] = None,
+    *,
+    speed: Optional[float] = None,
+    pitch_shift: Optional[float] = None,
+    emphasis: Optional[float] = None,
 ) -> str:
     """FT-RENDER-P-004: per-utterance cache key.
 
     Combines everything that affects a single utterance's audio: its speaker,
-    text, emotion + graded intensity, the resolved voice ID, and the chapter's
-    render-params hash (sample rate / pauses). Two utterances that produce
-    byte-identical audio hash to the same key; changing any audio-affecting
-    field busts only that one utterance's sub-cache entry, leaving its
-    neighbors reusable.
+    text, emotion + graded intensity, utterance type (PAUSE vs speech), the
+    resolved voice ID, the per-speaker delivery knobs (speed / pitch_shift /
+    emphasis), and the chapter's render-params hash. Two utterances that
+    produce byte-identical audio hash to the same key; changing any
+    audio-affecting field busts only that one utterance's sub-cache entry.
 
     Args:
         utterance: The utterance to key.
         voice: The resolved voice ID for this utterance's speaker.
         render_params_hash: The chapter's render_params_hash (ties the
             utterance cache to the same TTS knobs the chapter cache uses).
+        casting: Optional CastingTable used to resolve per-speaker delivery
+            knobs when they are not passed explicitly.
+        speed / pitch_shift / emphasis: Explicit knobs; override the
+            resolved Character when given.
 
     Returns:
         Hex SHA-256 digest uniquely identifying this utterance's audio.
     """
+    knobs = _delivery_knobs(_character_for_speaker(casting, utterance.speaker))
+    if speed is not None:
+        knobs["speed"] = speed
+    if pitch_shift is not None:
+        knobs["pitch_shift"] = pitch_shift
+    if emphasis is not None:
+        knobs["emphasis"] = emphasis
     obj = {
         "speaker": utterance.speaker,
         "text": utterance.text,
@@ -89,8 +150,12 @@ def utterance_hash(
         # None intensity is preserved distinctly from 0.0 so a bare emotion and
         # a fully-graded one never collide.
         "intensity": getattr(utterance, "intensity", None),
+        "type": _utterance_type_value(utterance),
         "voice": voice,
         "params": render_params_hash,
+        "speed": knobs["speed"],
+        "pitch_shift": knobs["pitch_shift"],
+        "emphasis": knobs["emphasis"],
     }
     return sha256_json(obj)
 
@@ -208,6 +273,49 @@ def casting_hash(
 
 DEFAULT_ENGINE_NAME = "voice-soundboard"
 ENGINE_ENV_VAR = "AUDIOBOOKER_ENGINE"
+# Built-in wrapper class identity. Kept as a string pair so this module never
+# imports engine.py (engine.py imports hash_utils).
+_BUILTIN_ENGINE_IDENTITY = ("audiobooker.renderer.engine", "_VoiceSoundboardEngine")
+
+
+def _canonical_engine_instance_name(engine: object) -> str:
+    """Map an injected TTS engine instance to its cache-key name.
+
+    F-568f1603: CLI ``render --dry-run`` hashes the engine NAME string;
+    ``render --engine NAME`` hashes ``get_default_engine(name)`` (an
+    instance). Without this, ``voice-soundboard`` and
+    ``_VoiceSoundboardEngine()`` produced different render_params_hash
+    values, so dry-run and the real render disagreed about Cached.
+
+    Registered engines (entry-point name matches the class) hash as that
+    name. Anonymous injected fakes keep ``{module}.{qualname}``.
+    """
+    cls = type(engine)
+    module = getattr(cls, "__module__", "") or ""
+    qualname = getattr(cls, "__qualname__", "") or cls.__name__
+    if (module, qualname) == _BUILTIN_ENGINE_IDENTITY:
+        return DEFAULT_ENGINE_NAME
+
+    target = f"{module}:{qualname}"
+    try:
+        from importlib.metadata import entry_points
+        eps = entry_points()
+        if hasattr(eps, "select"):
+            selected = eps.select(group="audiobooker.tts_engines")
+        else:  # pragma: no cover - legacy dict API (3.10/3.11)
+            selected = eps.get("audiobooker.tts_engines", [])
+        for ep in selected:
+            value = getattr(ep, "value", None)
+            if value == target:
+                return ep.name
+            # Some EntryPoint objects expose module/attr instead of value.
+            ep_mod = getattr(ep, "module", None)
+            ep_attr = getattr(ep, "attr", None)
+            if ep_mod and ep_attr and f"{ep_mod}:{ep_attr}" == target:
+                return ep.name
+    except Exception:  # pragma: no cover - metadata reads must never crash a hash
+        pass
+    return f"{module}.{qualname}"
 
 
 def _engine_distribution_version(name: str) -> str:
@@ -259,14 +367,15 @@ def _resolve_engine_name(config: "ProjectConfig", engine: object = None) -> str:
         injected engine instance > project config (when non-default)
         > AUDIOBOOKER_ENGINE > 'voice-soundboard'
 
-    An injected instance is keyed by its class identity: two different engine
-    classes must never share a cache entry even when neither came from a name.
+    An injected instance is keyed by its registered entry-point / config name
+    when one exists (the built-in wrapper hashes as ``voice-soundboard``, not
+    ``audiobooker.renderer.engine._VoiceSoundboardEngine``). Class identity is
+    the fallback for anonymous injected fakes that have no entry point.
     """
     if engine is not None:
         if isinstance(engine, str):
             return engine
-        cls = type(engine)
-        return f"{cls.__module__}.{cls.__qualname__}"
+        return _canonical_engine_instance_name(engine)
 
     cfg_name = getattr(config, "tts_engine", None)
     if cfg_name and cfg_name != DEFAULT_ENGINE_NAME:

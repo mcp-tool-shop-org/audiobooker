@@ -11,6 +11,7 @@ import re
 import subprocess
 import tempfile
 import shutil
+import wave
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from email.utils import format_datetime
@@ -229,11 +230,58 @@ def _escape_concat_path(path: str) -> str:
     return path.replace("'", "'\\''")
 
 
+# Suffixes ffmpeg will infer a muxer from. Anything else (``.tmp``,
+# ``.wav.tmp``) needs an explicit ``-f``.
+_FFMPEG_KNOWN_AUDIO_SUFFIXES = frozenset({
+    ".wav", ".mp3", ".m4a", ".m4b", ".flac", ".ogg", ".opus", ".aac",
+    ".wma", ".aiff", ".aif",
+})
+
+
+def _ffmpeg_output_format_args(output_path: Path) -> list[str]:
+    """Return ``['-f', muxer]`` when the path suffix is not a known format.
+
+    F-671abba9: ffmpeg infers the muxer from the output extension. A concat
+    or silence target ending in ``.wav.tmp`` (or bare ``.tmp``) fails with
+    "Unable to find a suitable output format" — the same class of bug the
+    utterance stitch already closed with ``-f wav``.
+    """
+    suffix = output_path.suffix.lower()
+    if suffix in _FFMPEG_KNOWN_AUDIO_SUFFIXES:
+        return []
+    # Concat of chapter WAVs is itself a WAV, regardless of temp suffix.
+    return ["-f", "wav"]
+
+
+def _write_silence_wav(path: Path, duration_ms: int, like: Path) -> Path:
+    """Write ``duration_ms`` of silence matching ``like``'s WAV format.
+
+    F-671abba9 / FEAT-PROD-011: concat ``-c copy`` refuses mixed streams, so
+    inter-chapter silence must copy nchannels/sampwidth/framerate off a real
+    neighbour rather than a profile integer (ACX 44100 vs typical TTS 24000).
+    """
+    with wave.open(str(like), "rb") as src:
+        nchannels = src.getnchannels()
+        sampwidth = src.getsampwidth()
+        framerate = src.getframerate()
+
+    nframes = int(round(framerate * duration_ms / 1000.0))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with wave.open(str(path), "wb") as dst:
+        dst.setnchannels(nchannels)
+        dst.setsampwidth(sampwidth)
+        dst.setframerate(framerate)
+        dst.writeframes(b"\x00" * (nframes * nchannels * sampwidth))
+    return path
+
+
 def _generate_silence_file(
     output_path: Path,
     pause_ms: int,
     sample_rate: int = 24000,
     runner: Optional["FFmpegRunner"] = None,
+    *,
+    like: Optional[Path] = None,
 ) -> Path:
     """
     FT-RENDER-014: Generate a single reusable silence WAV file.
@@ -241,22 +289,34 @@ def _generate_silence_file(
     Args:
         output_path: Where to write the silence file.
         pause_ms: Duration of silence in milliseconds.
-        sample_rate: Audio sample rate (default: 24000 Hz).
+        sample_rate: Fallback rate when ``like`` is not a readable WAV.
         runner: Optional FFmpegRunner.
+        like: A neighbour chapter WAV whose format the silence must match.
+            Preferred over ``sample_rate`` so concat ``-c copy`` succeeds.
 
     Returns:
         Path to generated silence file.
     """
+    if like is not None:
+        try:
+            return _write_silence_wav(output_path, pause_ms, like)
+        except (OSError, wave.Error) as e:
+            logger.warning(
+                f"Could not match silence to {like} ({e}); falling back to lavfi"
+            )
+
     if runner is None:
         from audiobooker.renderer.ffmpeg_runner import RealFFmpegRunner
         runner = RealFFmpegRunner()
 
-    result = runner.run([
+    cmd = [
         "ffmpeg", "-y",
         "-f", "lavfi",
         "-i", f"anullsrc=r={sample_rate}:cl=mono:d={pause_ms / 1000}",
-        str(output_path),
-    ])
+    ]
+    cmd.extend(_ffmpeg_output_format_args(output_path))
+    cmd.append(str(output_path))
+    result = runner.run(cmd)
     if result.returncode != 0:
         raise RuntimeError(
             f"FFmpeg silence generation failed (rc={result.returncode}): "
@@ -284,7 +344,9 @@ def concatenate_audio_files(
         output_path: Output file path
         pause_ms: Pause between files in milliseconds
         runner: Optional FFmpegRunner for subprocess calls (defaults to RealFFmpegRunner).
-        sample_rate: Sample rate for silence generation (default: 24000 Hz).
+        sample_rate: Fallback sample rate if no neighbour WAV can be read
+            (default: 24000 Hz). Silence is matched to the first chapter WAV
+            when one exists.
 
     Returns:
         Path to concatenated file
@@ -304,12 +366,17 @@ def concatenate_audio_files(
 
     # F-RENDER-B-009: Wrap silence+concat gen in dedicated try/finally
     try:
-        # FT-RENDER-014: Generate a single silence file, reused for all gaps
+        # FT-RENDER-014: Generate a single silence file, reused for all gaps.
+        # Match the first chapter WAV's format so `-c copy` accepts the concat
+        # (profile sample_rate is the OUTPUT rate, not the TTS WAV rate).
         if pause_ms > 0 and len(audio_files) > 1:
             tmp_silence = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
             silence_path = Path(tmp_silence.name)
             tmp_silence.close()
-            _generate_silence_file(silence_path, pause_ms, sample_rate, runner)
+            _generate_silence_file(
+                silence_path, pause_ms, sample_rate, runner,
+                like=audio_files[0],
+            )
             escaped_silence = _escape_concat_path(silence_path.absolute().as_posix())
 
         # Create concat file list
@@ -331,14 +398,16 @@ def concatenate_audio_files(
                     f.write(f"file '{escaped_silence}'\n")
 
         # Concatenate
-        result = runner.run([
+        concat_cmd = [
             "ffmpeg", "-y",
             "-f", "concat",
             "-safe", "0",
             "-i", str(concat_file),
             "-c", "copy",
-            str(output_path),
-        ])
+        ]
+        concat_cmd.extend(_ffmpeg_output_format_args(output_path))
+        concat_cmd.append(str(output_path))
+        result = runner.run(concat_cmd)
 
         if result.returncode != 0:
             raise RuntimeError(f"FFmpeg concat failed: {result.stderr}")
@@ -694,6 +763,7 @@ def assemble_m4b(
           _generate_silence_file(
               silence_path, chapter_pause_ms,
               sample_rate=int(sample_rate), runner=runner,
+              like=audio_paths[0],
           )
 
       with open(concat_list_path, "w", encoding="utf-8") as f:
@@ -1138,6 +1208,7 @@ def _concat_to_single(
             _generate_silence_file(
                 silence_path, chapter_pause_ms,
                 sample_rate=int(sample_rate), runner=runner,
+                like=audio_paths[0],
             )
 
         with open(concat_list_path, "w", encoding="utf-8") as f:
