@@ -11,12 +11,13 @@ These are the fundamental units that flow through the system:
 
 import hashlib
 import logging
+import os
 import unicodedata
 import uuid
 from dataclasses import dataclass, field, replace
 from enum import Enum
 from pathlib import Path
-from typing import Optional
+from typing import ClassVar, Optional
 
 from audiobooker import formats as audio_formats
 from audiobooker.errors import ConfigValidationError
@@ -110,6 +111,144 @@ def _validated_path(raw: Optional[str]) -> Optional[Path]:
     if ".." in Path(raw).parts:
         raise ValueError(f"Path {raw!r} contains '..' traversal components")
     return Path(raw)
+
+
+# ---------------------------------------------------------------------------
+# CH-B-003 + COORD-B-001 (wave 5): portable, non-identifying stored paths.
+#
+# A .audiobooker file is a small JSON document that lives next to the book. It
+# gets committed, shared and attached to bug reports. Every path in it used to
+# be written exactly as given:
+#
+#   * absolute  -> "C:\\Users\\<account>\\Music\\book.m4b", i.e. the user's
+#     account name, shipped to whoever reads the file (COORD-B-001);
+#   * relative  -> "book_audio/chapter_000.wav", re-resolved against whatever
+#     directory the NEXT command happened to run from, so a render resumed
+#     from elsewhere could not find its own finished chapters (CH-B-003).
+#
+# Resolving everything to absolute fixes the second and worsens the first, so
+# both are fixed with one encoding, in this precedence:
+#
+#   1. under the project file's directory -> store relative to it. The anchor
+#      becomes the project file instead of the process CWD (which is what
+#      CH-B-003 actually needs) and the whole project becomes movable.
+#   2. otherwise under the user's home    -> store "~/Music/book.m4b". This is
+#      the branch that matters: a book whose audio lives in Music, Downloads
+#      or a shared drive is exactly the one whose path is most personal, and
+#      falling back to absolute here would close the easy half only.
+#   3. otherwise                          -> absolute, unavoidably. A path on
+#      another drive (D:\ when the project is on C:\) has no relative form and
+#      no home prefix; there is nothing left to reduce. It is also the one
+#      case that carries no account name, since it is rooted at a drive the
+#      user deliberately pointed us at.
+#
+# The relative form is written POSIX-style on every platform so a project file
+# authored on Windows still resolves on Linux. In memory paths stay absolute:
+# only the serialized form is portable.
+# ---------------------------------------------------------------------------
+
+
+def _looks_absolute(raw: str) -> bool:
+    """True when ``raw`` was written as an absolute path on EITHER platform.
+
+    ``Path.is_absolute()`` answers only for the running platform:
+    ``PurePosixPath("C:\\\\Users\\\\a").is_absolute()`` is False, and
+    ``PureWindowsPath("/home/a").is_absolute()`` is False as well (no drive).
+    Anchoring either of those under the project directory would invent a path
+    the user never wrote, so both spellings count as absolute here.
+    """
+    if not raw:
+        return False
+    if Path(raw).is_absolute():
+        return True
+    if raw[0] in "/\\":
+        return True  # POSIX-rooted, or a Windows UNC/rooted path
+    return len(raw) >= 3 and raw[1] == ":" and raw[2] in "/\\" and raw[0].isalpha()
+
+
+def portable_path(value: Optional[Path | str], base: Optional[Path]) -> Optional[str]:
+    """Encode an absolute path for storage in a project file.
+
+    Args:
+        value: The path to encode (absolute, as held in memory).
+        base: The project file's directory, or None to skip step 1.
+
+    Returns:
+        The stored string, or None when ``value`` is None.
+    """
+    if value is None:
+        return None
+    path = Path(os.path.abspath(Path(value)))
+
+    if base is not None:
+        base_abs = Path(os.path.abspath(Path(base)))
+        try:
+            rel = path.relative_to(base_abs)
+        except ValueError:
+            pass
+        else:
+            # relative_to is purely lexical and never yields '..', which
+            # matters: _validated_path rejects '..' on the way back in, so a
+            # naive os.path.relpath here would write files this loader
+            # refuses to open.
+            return _as_posix_str(rel)
+
+    try:
+        home_rel = path.relative_to(Path.home())
+    except (ValueError, RuntimeError):
+        # RuntimeError: Path.home() can fail when no home is resolvable.
+        pass
+    else:
+        rel_str = _as_posix_str(home_rel)
+        return "~" if rel_str == "." else f"~/{rel_str}"
+
+    return str(path)
+
+
+def _as_posix_str(rel: Path) -> str:
+    """Render a relative path with '/' separators on every platform."""
+    return rel.as_posix()
+
+
+def resolve_stored_path(
+    raw: Optional[str], base: Optional[Path]
+) -> Optional[Path]:
+    """Decode a path read from a project file, validating it first.
+
+    Accepts all three shapes :func:`portable_path` writes, plus the absolute
+    paths every project file written before schema v2 contains — read
+    compatibility with those is a requirement, not a nicety.
+
+    Args:
+        raw: The stored string.
+        base: The project file's directory. None means "no anchor", which
+            reproduces the pre-v2 behaviour exactly and is what standalone
+            ``Chapter.from_dict`` / ``BookMetadata.from_dict`` callers get.
+    """
+    path = _validated_path(raw)
+    if path is None:
+        return None
+
+    stored = str(raw)
+    if stored == "~" or stored.startswith("~/") or stored.startswith("~\\"):
+        return Path(os.path.abspath(path.expanduser()))
+    if _looks_absolute(stored):
+        return path
+    if base is None:
+        return path
+    return Path(os.path.abspath(Path(base) / path))
+
+
+def _resolved_source_file(raw: Optional[str]) -> Optional[str]:
+    """Expand a '~'-reduced ``Chapter.source_file`` back to an absolute path.
+
+    Only the '~' form is touched. A relative value here is an intra-EPUB
+    document name ("OEBPS/ch1.xhtml"), not a filesystem path, so it must come
+    back exactly as written — see :meth:`Chapter._portable_source_file`.
+    """
+    if not raw or not (raw == "~" or raw.startswith(("~/", "~\\"))):
+        return raw
+    return str(Path(os.path.abspath(Path(raw).expanduser())))
 
 
 class UtteranceType(Enum):
@@ -299,25 +438,64 @@ class Chapter:
         except OSError:
             return False
 
-    def to_dict(self) -> dict:
-        """Serialize to dictionary."""
+    def to_dict(self, base: Optional[Path] = None) -> dict:
+        """Serialize to dictionary.
+
+        Args:
+            base: The project file's directory. When given, ``audio_path``
+                (and ``source_file``, when it holds a filesystem path) are
+                written in the portable form described next to
+                :func:`portable_path`. When omitted the historical verbatim
+                form is written, so standalone callers are unaffected.
+        """
         return {
             "id": self.id,
             "index": self.index,
             "title": self.title,
             "raw_text": self.raw_text,
             "utterances": [u.to_dict() for u in self.utterances],
-            "source_file": self.source_file,
-            "audio_path": str(self.audio_path) if self.audio_path else None,
+            "source_file": self._portable_source_file(base),
+            "audio_path": (
+                portable_path(self.audio_path, base)
+                if (base is not None and self.audio_path)
+                else (str(self.audio_path) if self.audio_path else None)
+            ),
             "duration_seconds": self.duration_seconds,
             "skip": self.skip,
             "pause_before_ms": self.pause_before_ms,
             "pause_after_ms": self.pause_after_ms,
         }
 
+    def _portable_source_file(self, base: Optional[Path]) -> Optional[str]:
+        """Reduce ``source_file`` only when it is actually a filesystem path.
+
+        COORD-B-001 listed five leak sites; this is a sixth. The docx, pdf and
+        text parsers set ``source_file=str(path)`` — an absolute path, once per
+        chapter — so a 40-chapter DOCX project file carried the user's account
+        name 40 more times than the audit counted.
+
+        The field is polymorphic, which is why it is handled separately: the
+        EPUB parser puts an intra-archive document name in it ("OEBPS/ch1.xhtml"),
+        and pushing that through ``portable_path`` would absolutize a string
+        that was never a filesystem path. Only a value that is already written
+        as absolute is reduced; everything else round-trips byte-for-byte.
+        """
+        if base is None or not self.source_file:
+            return self.source_file
+        if not _looks_absolute(self.source_file):
+            return self.source_file
+        return portable_path(self.source_file, base)
+
     @classmethod
-    def from_dict(cls, data: dict) -> "Chapter":
-        """Deserialize from dictionary."""
+    def from_dict(cls, data: dict, base: Optional[Path] = None) -> "Chapter":
+        """Deserialize from dictionary.
+
+        Args:
+            data: The serialized chapter.
+            base: The project file's directory, used to resolve a stored
+                relative path back to an absolute one. None (the default)
+                keeps the pre-v2 behaviour for standalone callers.
+        """
         # F-CORE-B-007: Validate required keys
         for key in ("index", "title", "raw_text"):
             if key not in data:
@@ -330,7 +508,7 @@ class Chapter:
             index=data["index"],
             title=data["title"],
             raw_text=data["raw_text"],
-            source_file=data.get("source_file"),
+            source_file=_resolved_source_file(data.get("source_file")),
             # F-CORE-6: route through the same '..'/null-byte check that
             # AudiobookProject.load() applies to source_path/output_path, so
             # a project file cannot smuggle a traversal path in via
@@ -341,7 +519,7 @@ class Chapter:
             # behavior for "" byte-for-byte; only a real path string reaches
             # the validator.
             audio_path=(
-                _validated_path(data.get("audio_path"))
+                resolve_stored_path(data.get("audio_path"), base)
                 if data.get("audio_path")
                 else None
             ),
@@ -490,7 +668,17 @@ class CastingTable:
         unknown_character_behavior: How to handle unknown speakers
         fallback_voice_id: Ultimate fallback voice when nothing else matches
     """
-    _UNCAST_VOICE: str = "__uncast__"
+
+    # CH-B-014: ClassVar, not a bare annotation. Annotated inside a
+    # @dataclass this was a FIELD -- and, being declared first, it owned the
+    # first positional slot, so `CastingTable({"alice": char})` set the
+    # sentinel to a dict of Characters and left `characters` empty. It also
+    # showed up in dataclasses.fields(), asdict() and __repr__ of every
+    # casting table. ClassVar is the documented way to say "class constant"
+    # inside a dataclass; the attribute reads identically
+    # (self._UNCAST_VOICE / CastingTable._UNCAST_VOICE) at every existing
+    # call site.
+    _UNCAST_VOICE: ClassVar[str] = "__uncast__"
 
     characters: dict[str, Character] = field(default_factory=dict)
     default_narrator: str = "narrator"
@@ -1137,10 +1325,19 @@ class BookMetadata:
     narrator_name: str = ""
     publisher: str = ""
 
-    def to_dict(self) -> dict:
-        """Serialize to dictionary."""
+    def to_dict(self, base: Optional[Path] = None) -> dict:
+        """Serialize to dictionary.
+
+        Args:
+            base: The project file's directory. See :func:`portable_path`;
+                omitted means the historical verbatim form.
+        """
         return {
-            "cover_art_path": str(self.cover_art_path) if self.cover_art_path else None,
+            "cover_art_path": (
+                portable_path(self.cover_art_path, base)
+                if (base is not None and self.cover_art_path)
+                else (str(self.cover_art_path) if self.cover_art_path else None)
+            ),
             "genre": self.genre,
             "series": self.series,
             "series_index": self.series_index,
@@ -1150,15 +1347,22 @@ class BookMetadata:
         }
 
     @classmethod
-    def from_dict(cls, data: dict) -> "BookMetadata":
-        """Deserialize from dictionary."""
+    def from_dict(cls, data: dict, base: Optional[Path] = None) -> "BookMetadata":
+        """Deserialize from dictionary.
+
+        Args:
+            data: The serialized metadata.
+            base: The project file's directory, used to resolve a stored
+                relative path. None keeps the pre-v2 standalone behaviour.
+        """
         return cls(
             # F-CORE-6: same '..'/null-byte trust-boundary check load()
             # already applies to source_path/output_path (see
-            # _validated_path's docstring). The falsy guard preserves "" ->
-            # None byte-for-byte, matching the pre-fix behavior.
+            # _validated_path's docstring, which resolve_stored_path calls
+            # through). The falsy guard preserves "" -> None byte-for-byte,
+            # matching the pre-fix behavior.
             cover_art_path=(
-                _validated_path(data.get("cover_art_path"))
+                resolve_stored_path(data.get("cover_art_path"), base)
                 if data.get("cover_art_path")
                 else None
             ),
