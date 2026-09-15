@@ -706,12 +706,31 @@ class TestRenderLock:
     def test_stale_lock_from_a_dead_process_is_reclaimed(self, tmp_path: Path):
         cache_root = tmp_path / "cache"
         cache_root.mkdir(parents=True)
+        planted_token = "dead-process-token"
         (cache_root / engine_mod.LOCKFILE_NAME).write_text(
-            json.dumps({"pid": 999999, "started_at": "2020-01-01T00:00:00+00:00"}),
+            json.dumps({
+                "pid": 999999,
+                "token": planted_token,
+                "started_at": "2020-01-01T00:00:00+00:00",
+            }),
             encoding="utf-8",
         )
         lock = engine_mod._acquire_render_lock(cache_root)
-        engine_mod._release_render_lock(lock)
+        try:
+            assert lock.exists(), "reclaim returned a path that is not on disk"
+            data = json.loads(lock.read_text(encoding="utf-8"))
+            assert data.get("pid") == os.getpid(), (
+                "reclaim left the dead pid in place — a no-op that returned "
+                "the stale path would also have 'succeeded'"
+            )
+            token = data.get("token")
+            assert token, "reclaimed lock has no process identity token"
+            assert token != planted_token, (
+                "reclaim kept the planted token; the lock was unlinked or "
+                "returned without rewriting pid+token"
+            )
+        finally:
+            engine_mod._release_render_lock(lock)
 
     def test_lock_carries_a_process_identity_token(self, tmp_path: Path):
         cache_root = tmp_path / "cache"

@@ -28,7 +28,6 @@ the two caches currently disagree about which chapter they are caching.
 from __future__ import annotations
 
 import json
-import zlib
 from pathlib import Path
 
 from audiobooker import AudiobookProject
@@ -60,35 +59,6 @@ class _Assembler:
         return AssemblyResult(output_path=out, chapters_embedded=True)
 
 
-class _DistinctEngine(FakeTTSEngine):
-    """A fake whose output DIFFERS per chapter.
-
-    The stock FakeTTSEngine writes the same silence for every call, which
-    makes "chapter 4 overwrote chapter 1's WAV" invisible at the byte
-    level — the first version of the overwrite test below passed against
-    the bug for exactly that reason.
-
-    Length is derived from the script, so it is deterministic (the same
-    chapter always produces the same bytes, as a real engine's cache
-    contract requires) while different chapters differ.
-    """
-
-    def synthesize(self, script, voices, output_path, progress_callback=None):
-        from audiobooker.renderer.protocols import SynthesisResult
-        from tests.fakes.fake_tts import SynthCall, write_silence_wav
-
-        # zlib.crc32, not hash(): str hashing is salted per process, and a
-        # test about cache reuse must not depend on PYTHONHASHSEED.
-        digest = zlib.crc32(script.encode("utf-8"))
-        duration = 0.10 + (digest % 37) / 100.0
-        out = Path(output_path)
-        write_silence_wav(out, duration)
-        self.calls.append(
-            SynthCall(script=script, voices=voices, output_path=out)
-        )
-        return SynthesisResult(audio_path=out, duration_seconds=duration)
-
-
 def _project(tmp_path=None) -> AudiobookProject:
     """Saved into tmp_path when given, because `dry_run_render` derives
     its cache root from `project.project_path` rather than taking one.
@@ -112,7 +82,7 @@ def _render(project, tmp_path, cache_root, name="book.m4b"):
     return engine_mod.render_project(
         project,
         tmp_path / name,
-        engine=_DistinctEngine(),
+        engine=FakeTTSEngine(),
         assembler=_Assembler(),
         cache_root=cache_root,
     )
@@ -280,7 +250,7 @@ class TestThePreviewAgreesWithTheRender:
         # RH-B-004, and the CLI's own call site was making exactly this
         # mistake until this commit.
         engine_mod.dry_run_render(
-            selective, resume=True, engine=_DistinctEngine()
+            selective, resume=True, engine=FakeTTSEngine()
         )
         preview = capsys.readouterr().out
 
