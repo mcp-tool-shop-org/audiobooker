@@ -146,11 +146,64 @@ class TestBookNLPAdapterMock:
     """Tests for BookNLP adapter with mock backend."""
 
     def test_unavailable_returns_failure(self):
+        """F-4497a94d: unavailable is success=False, not a tautology on is_available().
+
+        ``success is False or not is_available()`` stays green when analyze()
+        lies with success=True in CI (BookNLP absent). Demand the fallback-lie
+        shape go RED: success is False and error names the missing backend.
+        """
         from audiobooker.nlp.booknlp_adapter import BookNLPAdapter
         adapter = BookNLPAdapter()
-        # BookNLP is not installed in test env
         result = adapter.analyze("Some text with dialogue.")
-        assert result.success is False or not adapter.is_available()
+        assert result.success is False
+        assert result.error
+        err = result.error.lower()
+        assert "booknlp" in err or "not installed" in err or "missing" in err
+
+    def test_oversize_paragraph_is_actually_split(self):
+        """A 20k-word unsplit paragraph must not be emitted as one OOM chunk."""
+        from audiobooker.nlp.booknlp_adapter import BookNLPAdapter
+        adapter = BookNLPAdapter(max_chunk_words=10000)
+        paragraph = " ".join(f"word{i}" for i in range(20000))
+        chunks = adapter._split_at_paragraphs(paragraph)
+        assert len(chunks) >= 2, (
+            "20k-word unsplit paragraph was not split "
+            f"(chunks={len(chunks)}, max_chunk_words={adapter.max_chunk_words})"
+        )
+        for chunk_text, _offset in chunks:
+            assert len(chunk_text.split()) <= adapter.max_chunk_words, (
+                f"chunk had {len(chunk_text.split())} words "
+                f"(cap {adapter.max_chunk_words})"
+            )
+
+    def test_chunked_path_fail_one_chunk_is_not_success(self):
+        """F-4497a94d: one failed BookNLP chunk must not merge as success=True."""
+        from audiobooker.nlp.booknlp_adapter import BookNLPAdapter, BookNLPResult
+
+        adapter = BookNLPAdapter(max_chunk_words=20)
+        adapter._available = True
+        calls: list[str] = []
+
+        def _run(text: str) -> BookNLPResult:
+            calls.append(text)
+            if len(calls) == 1:
+                return BookNLPResult(success=False, error="chunk boom")
+            return BookNLPResult(success=True, speakers=["Alice"])
+
+        adapter._run_analysis = _run  # type: ignore[method-assign]
+        text = ("Hello there Alice said something interesting.\n\n" * 8) + (
+            "Afterwards Bob replied with a different paragraph of words.\n\n" * 8
+        )
+        result = adapter.analyze(text)
+        assert len(calls) >= 2, (
+            "_analyze_chunked was not used "
+            f"(calls={len(calls)}, words={len(text.split())})"
+        )
+        assert result.success is False, (
+            "one failed chunk merged as success=True "
+            f"(skipped_chunks={result.skipped_chunks!r} error={result.error!r})"
+        )
+        assert "boom" in (result.error or "").lower() or result.skipped_chunks >= 1
 
     def test_adapter_protocol_compliance(self):
         from audiobooker.nlp.booknlp_adapter import BookNLPAdapter, NLPBackend

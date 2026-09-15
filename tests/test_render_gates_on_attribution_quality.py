@@ -15,6 +15,9 @@ The measured passage behind this reads `quality: ok` and
 
 from __future__ import annotations
 
+import json
+from types import SimpleNamespace
+
 from audiobooker.casting import compile_report
 from audiobooker.models import CastingTable, Chapter
 from audiobooker.parser.text import split_into_chapters
@@ -55,8 +58,6 @@ class TestTheGateWatchesTheRightNumber:
         )
 
     def test_render_refuses_a_chapter_that_is_mostly_guesswork(self):
-        from types import SimpleNamespace
-
         from audiobooker.cli import _check_dialogue_attribution_quality
 
         args = SimpleNamespace(force=False, silent=False, debug=False,
@@ -70,9 +71,76 @@ class TestTheGateWatchesTheRightNumber:
             "which a guess makes look BETTER"
         )
 
-    def test_force_still_overrides(self):
-        from types import SimpleNamespace
+    def test_render_refuses_guesswork_as_json(self, capsys):
+        """F-f9e7314c: gate refusals through _report_error so --json is parseable.
 
+        json_output=False cannot see a machine-readable refusal. Drive the
+        helper with json_output=True: stderr is one JSON object with
+        code/message/hint, stdout empty, rc==1.
+        """
+        from audiobooker.cli import _check_dialogue_attribution_quality
+
+        args = SimpleNamespace(force=False, silent=False, debug=False,
+                               json_output=True)
+        rc = _check_dialogue_attribution_quality(
+            args, [_chapter()], CastingTable()
+        )
+        assert rc == 1
+        captured = capsys.readouterr()
+        assert captured.out.strip() == "", captured.out
+        payload = json.loads(captured.err)
+        assert payload["code"]
+        assert payload["message"]
+        assert "hint" in payload
+
+    def test_cli_render_json_refuses_ledger_without_force(
+        self, tmp_path, capsys, monkeypatch
+    ):
+        """F-f9e7314c: ``render --json`` without --force on LEDGER is JSON.
+
+        --force belongs only on the bypass test. render_project / Project.render
+        must stay uncalled.
+        """
+        from audiobooker import AudiobookProject
+        from audiobooker.cli import main
+
+        project = AudiobookProject.from_string(
+            "Chapter 1: The Scale\n\n" + LEDGER,
+            title="Ledger",
+            author="Author",
+        )
+        project.compile()
+        for speaker in list(project.get_uncast_speakers()):
+            project.cast(speaker, "af_bella")
+        project.config.validate_voices_on_render = False
+        path = tmp_path / "ledger.audiobooker"
+        project.save(path)
+
+        calls: list = []
+
+        def _must_not_render(*a, **k):
+            calls.append((a, k))
+            raise AssertionError("render must be refused before synthesis")
+
+        monkeypatch.setattr(AudiobookProject, "render", _must_not_render)
+        monkeypatch.setattr(
+            "audiobooker.renderer.engine.render_project", _must_not_render
+        )
+
+        code = main(["render", "-p", str(path), "--json"])
+        assert code == 1
+        captured = capsys.readouterr()
+        assert captured.out.strip() == "", captured.out
+        payload = json.loads(captured.err)
+        assert payload["code"]
+        assert payload["message"]
+        assert "hint" in payload
+        assert not calls, (
+            "render --json without --force spent TTS on the LEDGER book "
+            f"(F-f9e7314c); calls={calls!r}"
+        )
+
+    def test_force_still_overrides(self):
         from audiobooker.cli import _check_dialogue_attribution_quality
 
         args = SimpleNamespace(force=True, silent=False, debug=False,

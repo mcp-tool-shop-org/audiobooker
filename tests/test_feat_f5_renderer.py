@@ -18,6 +18,7 @@ faked via a recording runner that materializes its output.
 
 from __future__ import annotations
 
+import inspect
 import os
 from pathlib import Path
 from xml.etree import ElementTree as ET
@@ -537,21 +538,64 @@ class TestUtteranceIncrementalCache:
     def test_chapter_cache_path_byte_identical_when_off(self, tmp_path):
         """render_chapter (the OFF/default path) ignores the utterance cache.
 
-        Running the historical render_chapter() must produce its single WAV via
-        one whole-chapter synthesize() call, regardless of any utterance cache
-        on disk — proving the default path is unaffected by FT-RENDER-P-004.
+        F-9f0bcda6: occupancy (exists + call-count) is not identity. Plant a
+        different script's WAV in the utterance cache, render_chapter, and
+        demand the output bytes equal a fresh whole-chapter FakeTTS
+        synthesize of the chapter script — and unequal to the planted WAV.
+        Restoring constant-silence FakeTTS, or deleting the ignore-cache
+        branch, must go RED.
         """
+        from audiobooker.renderer.cache_manifest import (
+            UtteranceCacheEntry,
+            UtteranceCacheManifest,
+            get_utterance_manifest_path,
+            get_utterance_wav_dir,
+            save_utterance_manifest,
+        )
         from audiobooker.renderer.engine import render_chapter
 
-        engine = FakeTTSEngine()
         chapter = _make_chapter()
-        out = tmp_path / "default.wav"
-        render_chapter(chapter, _make_casting(), out, engine=engine)
+        casting = _make_casting()
+        cache_root = tmp_path / "cache"
+        utt_dir = get_utterance_wav_dir(cache_root, chapter.index)
+        utt_dir.mkdir(parents=True, exist_ok=True)
+        planted = utt_dir / "utt_planted_other_script.wav"
+        write_silence_wav(planted, duration_s=0.9, marker=0xDEADBEEF)
+        planted_bytes = planted.read_bytes()
 
-        # The historical path makes exactly ONE synthesize call for the whole
-        # chapter (not one per utterance).
+        manifest = UtteranceCacheManifest()
+        manifest.set_entry(UtteranceCacheEntry(
+            utterance_hash="not-the-chapter-script",
+            wav_path=str(planted),
+            duration_s=0.9,
+            size_bytes=len(planted_bytes),
+        ))
+        save_utterance_manifest(
+            manifest, get_utterance_manifest_path(cache_root, chapter.index)
+        )
+
+        engine = FakeTTSEngine()
+        out = tmp_path / "default.wav"
+        kwargs = {}
+        if "cache_root" in inspect.signature(render_chapter).parameters:
+            kwargs["cache_root"] = cache_root
+        render_chapter(chapter, casting, out, engine=engine, **kwargs)
+
         assert len(engine.calls) == 1
         assert out.exists()
+        out_bytes = out.read_bytes()
+        assert out_bytes != planted_bytes, (
+            "render_chapter served the planted utterance-cache WAV — the "
+            "OFF path is not ignoring the utterance cache (F-9f0bcda6)"
+        )
+        fresh = tmp_path / "fresh.wav"
+        FakeTTSEngine().synthesize(
+            engine.calls[0].script, engine.calls[0].voices, fresh
+        )
+        assert out_bytes == fresh.read_bytes(), (
+            "render_chapter output is not a whole-chapter FakeTTS synthesize "
+            "of the chapter script (F-9f0bcda6 / FT-RENDER-P-004)"
+        )
 
     def test_old_utterance_manifest_future_version_ignored(self, tmp_path):
         """A future-version utterance manifest is ignored, not mis-read."""
@@ -945,3 +989,54 @@ class TestUtteranceCachePathLength:
         # The old-style file is what got reused -- left untouched, not
         # replaced by a new short-name file.
         assert old_style_wav.exists()
+
+    def test_one_byte_leftover_utterance_wav_is_a_miss(self, tmp_path):
+        """F-2d778457: a 1-byte leftover at the utterance path must resynthesize.
+
+        Occupancy (file exists) is not identity. Plant a 1-byte leftover with
+        a recorded size_bytes of a real WAV and demand utterances_synthesized==1.
+        """
+        from audiobooker.renderer.cache_manifest import (
+            UtteranceCacheEntry,
+            UtteranceCacheManifest,
+            get_utterance_manifest_path,
+            get_utterance_wav_dir,
+            save_utterance_manifest,
+        )
+
+        utt, uhash = _utterance_and_hash()
+        cache_root = tmp_path / "cache"
+        utt_dir = get_utterance_wav_dir(cache_root, 0)
+        utt_dir.mkdir(parents=True, exist_ok=True)
+        leftover = utt_dir / f"utt_{uhash[:16]}.wav"
+        leftover.write_bytes(b"X")
+
+        manifest = UtteranceCacheManifest()
+        manifest.set_entry(UtteranceCacheEntry(
+            utterance_hash=uhash,
+            wav_path=str(leftover),
+            duration_s=0.3,
+            size_bytes=48044,
+        ))
+        save_utterance_manifest(
+            manifest, get_utterance_manifest_path(cache_root, 0)
+        )
+
+        chapter = Chapter(index=0, title="Solo", raw_text="x")
+        chapter.utterances = [utt]
+        engine = FakeTTSEngine()
+        result = render_chapter_incremental(
+            chapter, _make_casting(), tmp_path / "chapter_0000.wav",
+            engine=engine,
+            cache_root=cache_root,
+            render_params_hash="paramhash",
+            runner=_StitchRunner(),
+        )
+        assert result.utterances_synthesized == 1, (
+            "1-byte leftover utterance WAV was reused as a cache hit "
+            f"(synthesized={result.utterances_synthesized} "
+            f"reused={result.utterances_reused} calls={len(engine.calls)}) "
+            "(F-2d778457)"
+        )
+        assert result.utterances_reused == 0
+        assert len(engine.calls) == 1
