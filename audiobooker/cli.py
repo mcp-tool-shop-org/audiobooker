@@ -63,9 +63,7 @@ from __future__ import annotations
 
 import argparse
 import logging as _logging_mod
-import os
 import re
-import shlex
 import sys
 import time
 from typing import TYPE_CHECKING
@@ -76,6 +74,7 @@ from pathlib import Path
 from typing import Optional
 
 from audiobooker import formats as audio_formats
+from audiobooker.shell_quote import quote_arg
 from audiobooker.errors import CompilationFailedError
 
 
@@ -159,35 +158,12 @@ def _out(*args, **kwargs) -> None:
         print(*args, **kwargs)
 
 
-# Characters a Windows shell leaves alone. Backslash is included because a
-# Windows path is nothing but backslashes and quoting every one of them would
-# make the common case uglier without making it safer.
-_WIN_SHELL_SAFE = re.compile(r"^[A-Za-z0-9_@%+=:,./\\-]+$")
-
-
-def _quote_arg(value) -> str:
-    """Quote one argument so the command we PRINT runs when it is pasted.
-
-    ``review-export`` named the review file from the book TITLE, so a book
-    called "The Midnight Garden" produced::
-
-        Then import: audiobooker review-import The Midnight Garden_review.txt
-
-    which argparse rejects — and then dumps all 34 subcommands at a user who
-    did nothing wrong. Any command we print as a next step has to survive
-    being pasted.
-
-    ``shlex.quote`` alone is not the answer on this platform: it is POSIX, it
-    treats ``\\`` as unsafe, so every Windows path comes back wrapped in
-    SINGLE quotes — which cmd.exe does not treat as quoting at all. So quote
-    only what needs it, the way the local shell expects.
-    """
-    text = str(value)
-    if os.name != "nt":
-        return shlex.quote(text)
-    if text and _WIN_SHELL_SAFE.match(text):
-        return text
-    return '"' + text.replace('"', '\\"') + '"'
+# The quoting rule moved to audiobooker/shell_quote.py. `review` prints the
+# same next-step command in the header of the file it writes, and `cli`
+# imports `review`, so the rule could not stay here without review either
+# importing cli back or keeping a second copy that drifts. Re-exported
+# under the old private name because the call sites and tests use it.
+_quote_arg = quote_arg
 
 
 def _emit_json(payload: dict) -> None:

@@ -48,6 +48,7 @@ from pathlib import Path
 from typing import Optional, TYPE_CHECKING
 
 from audiobooker.models import Utterance, UtteranceType
+from audiobooker.shell_quote import quote_arg
 
 if TYPE_CHECKING:
     from audiobooker.project import AudiobookProject
@@ -229,7 +230,17 @@ def export_for_review(project: "AudiobookProject", output_path: Optional[Path] =
     lines.append("#     how import matches each block back to its chapter. Change")
     lines.append("#     it and that chapter will be skipped on import.")
     lines.append("#")
-    lines.append(f"# After editing, import with: audiobooker review-import {output_path.name}")
+    # Quoted, because this is the copy of the command the user actually has
+    # in front of them — it sits at the top of the file they just opened to
+    # edit. review-export names the file from the book TITLE, so a book with
+    # a space in its name produced a command argparse rejects, and argparse
+    # answers a rejected argument by dumping all 34 subcommands. The CLI's
+    # own printed copy was fixed; this one was missed. Same helper, so the
+    # two cannot drift apart on one platform.
+    lines.append(
+        "# After editing, import with: audiobooker review-import "
+        f"{quote_arg(output_path.name)}"
+    )
     lines.append("")
 
     for chapter in project.chapters:
