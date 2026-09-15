@@ -19,7 +19,7 @@ audiobooker make mybook.epub --acx --format m4b
 audiobooker new mybook.epub        # parse (EPUB/PDF/DOCX/TXT/MD or a folder)
 audiobooker cast --interactive     # guided per-character casting
 audiobooker compile                # dialogue, speakers, emotion
-audiobooker report                 # unknown-attribution rate + weak lines
+audiobooker report                 # unattributed + guessed rates, worst lines
 audiobooker review-export          # human-editable script
 audiobooker review-import mybook_review.txt
 audiobooker render --acx

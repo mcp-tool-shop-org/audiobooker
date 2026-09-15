@@ -38,7 +38,7 @@ Every command supports `-h`/`--help`. Global flags (before or after the subcomma
 | Command | Description |
 |---------|-------------|
 | `compile` | Detect dialogue, attribute speakers, infer emotion. `--booknlp`, `--emotion-preset`. |
-| `report` | Compile quality: unknown-attribution rate, top weak lines, emotion mix (`--json`). |
+| `report` | Compile quality: unattributed rate, guessed-speaker count, attribution verdict, the worst lines of each kind, emotion mix (`--json`). |
 | `review-export` · `review-import <file>` | Human-editable review round-trip. |
 | `emotions` | List/override emotions; `emotions presets`; `emotions mood-span`. |
 | `pronunciation add\|remove\|list\|import\|export` | Pronunciation overrides + lexicon files (CSV/JSON, phoneme passthrough). |

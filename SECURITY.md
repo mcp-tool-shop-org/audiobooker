@@ -4,17 +4,19 @@
 
 | Version | Supported |
 |---------|-----------|
-| 2.1.x   | Yes       |
-| 2.0.x   | No — upgrade to 2.1.x |
-| 1.x     | No — upgrade to 2.1.x |
+| 3.0.x   | Yes       |
+| 2.x     | No — upgrade to 3.0.x |
+| 1.x     | No — upgrade to 3.0.x |
 | < 1.0   | No        |
 
 This table had no row for the 2.x line at all while 2.1.1 was the published
 version on both PyPI and npm, so it named 1.0.x as the supported release long
-after 1.x stopped being shipped.
+after 1.x stopped being shipped. It is updated as part of the release now, not
+as part of the next audit that notices.
 
 audiobooker is a small project: fixes land on the latest minor and are released
-from there. Upgrading within 2.x has no breaking changes.
+from there. Upgrading within 3.x has no breaking changes; the 2.x → 3.0 step
+does have some, and they are listed in the CHANGELOG.
 
 ## Reporting a Vulnerability
 
