@@ -109,3 +109,38 @@ class ConfigValidationError(AudiobookerError, ValueError):
             retryable=False,
         )
         AudiobookerError.__init__(self, detail)
+
+class CompilationFailedError(AudiobookerError, RuntimeError):
+    """Every chapter in the book failed to compile (CH-B-002).
+
+    Carries the shipcheck error shape (``code`` / ``message`` / ``hint`` /
+    ``retryable``) like the rest of ``audiobooker.errors``. It subclasses
+    ``RuntimeError`` so that ``except Exception`` call sites -- including
+    ``cli.main()``'s catch-all, which routes it through ``_report_error`` and
+    exits 2 -- keep working untouched.
+
+    Subclassing ``RuntimeError`` keeps every existing ``except Exception``
+    call site working untouched; ``cli.USER_ERROR_TYPES`` lists it explicitly
+    so a total compile failure exits 1 (the user's book did not compile) and
+    not 2 (audiobooker hit a bug).
+    """
+
+    def __init__(self, summary: str, *, chapter_count: int) -> None:
+        AudiobookerError.__init__(
+            self,
+            ErrorDetail(
+                code="COMPILE_ALL_CHAPTERS_FAILED",
+                message=(
+                    f"All {chapter_count} chapter(s) failed to compile, so the "
+                    f"project has no utterances to render: {summary}"
+                ),
+                hint=(
+                    "The failures above are per chapter — one shared cause is "
+                    "likely. Check that the source text parsed (audiobooker "
+                    "chapters), that --lang matches the book, and re-run with "
+                    "--debug for the full traceback."
+                ),
+                retryable=False,
+            ),
+        )
+        self.chapter_count = chapter_count

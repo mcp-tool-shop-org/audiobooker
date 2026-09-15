@@ -7,6 +7,7 @@ defaults to the real voice-soundboard DialogueEngine when none is provided.
 Supports persistent chapter cache with manifest-driven resume.
 """
 
+import errno
 import json
 import logging
 import os
@@ -817,8 +818,40 @@ def render_chapter_incremental(
     for idx, utt in enumerate(chapter.utterances):
         voice, _emotion = casting.get_voice(utt.speaker)
         uhash = _utterance_hash(utt, voice, render_params_hash)
-        target = utt_dir / f"utt_{uhash}.wav"
+        # COORD-B-002 (wave 5): the ON-DISK filename only needs enough of the
+        # hash to make a same-directory collision negligible -- it does NOT
+        # need cache-key-grade uniqueness, because the cache key IS the full
+        # `uhash` below (manifest.get_entry / UtteranceCacheEntry.utterance_
+        # hash), never the filename. The full 64-hex digest spent half of
+        # Windows' MAX_PATH for no correctness benefit: 68 of the ~91-char
+        # ``.wav.tmp`` scratch name was ``utt_`` + the digest alone. 16 hex
+        # chars (64 bits) reclaims 48 characters and is still enormously
+        # more than any one chapter's utterance count could plausibly
+        # collide against (birthday bound: >100,000 utterances in a single
+        # chapter for even a one-in-a-billion chance) -- but be precise
+        # about what a collision would actually do, since it is NOT the
+        # same failure as a full-hash collision: two different utterances
+        # whose first 16 hex chars matched would share one filename, so the
+        # SECOND one synthesized would silently overwrite the first's WAV
+        # on disk. The first entry's manifest record (keyed on the full,
+        # collision-free `uhash`) would still say "valid" -- is_valid() only
+        # stats the file, it never re-hashes its contents -- so this
+        # degrades to silently serving the wrong audio for the first
+        # utterance, not a clean cache miss. Negligible at book-sized
+        # utterance counts, but a real (if vanishingly unlikely) mechanism,
+        # so it is written down rather than hand-waved.
+        target = utt_dir / f"utt_{uhash[:16]}.wav"
 
+        # Backward compatibility: this does NOT invalidate anything already
+        # on disk. `entry.is_valid()` (UtteranceCacheEntry, cache_manifest.py)
+        # stats whatever path is stored in the OLD manifest's `wav_path` --
+        # it never recomputes a filename from the hash -- and every OLD
+        # entry was written with the full-hash filename, which still exists
+        # untouched. So an existing manifest keeps resolving its (longer,
+        # pre-fix) filenames exactly as before; only utterances synthesized
+        # from here on get the shorter name. No manifest version bump is
+        # needed because the on-disk filename was never part of the cache
+        # contract -- only `wav_path` (a stored, opaque string) is.
         entry = manifest.get_entry(uhash)
         if entry is not None and entry.is_valid():
             # Reuse the cached utterance WAV — no engine call.
@@ -840,6 +873,29 @@ def render_chapter_incremental(
                 )
             except Exception as e:
                 tmp.unlink(missing_ok=True)
+                # COORD-B-002: a too-long cache path surfaces as an ordinary
+                # OSError (e.g. FileNotFoundError: [Errno 2]) indistinguishable
+                # in type/errno from a real TTS engine failure -- reporting it
+                # as "failed to synthesize" sends the user to audit their
+                # voice model and audio setup, neither of which is broken.
+                # _diagnose_windows_path_length only speaks up when the
+                # evidence (a long failing path) actually supports it; it
+                # returns None for a genuine engine failure, which falls
+                # through to the original message unchanged.
+                path_diagnosis = _diagnose_windows_path_length(e)
+                if path_diagnosis:
+                    raise RenderError(
+                        f"Chapter {chapter.index} utterance {idx} "
+                        f"({utt.speaker!r}): {path_diagnosis}",
+                        code="CACHE_PATH_TOO_LONG",
+                        hint=(
+                            "Shorten the project's directory path, or enable "
+                            "Windows long-path support, then re-run. This is "
+                            "not a TTS/voice problem, so switching engines or "
+                            "voices will not help."
+                        ),
+                        retryable=False,
+                    ) from e
                 raise RenderError(
                     f"Chapter {chapter.index} utterance {idx} "
                     f"({utt.speaker!r}) failed to synthesize: {e}",
@@ -979,6 +1035,68 @@ def _chapter_tmp_path(target_path: Path) -> Path:
     """
     return target_path.with_name(
         f"{target_path.stem}.{os.getpid()}.{_PROCESS_TOKEN[:8]}{target_path.suffix}.tmp"
+    )
+
+
+# COORD-B-002 (wave 5): Windows' MAX_PATH is 260 characters (drive + '\' +
+# up to 259 usable chars + a NUL terminator). A cache path built under a
+# deeply-nested project directory (a synced OneDrive tree, a nested series
+# folder) can cross that line during ``render_chapter_incremental``.
+_WINDOWS_MAX_PATH = 260
+
+
+def _diagnose_windows_path_length(exc: BaseException) -> Optional[str]:
+    """Best-effort check for a Windows MAX_PATH overflow behind an OSError.
+
+    Measured directly (wave-5 COORD-B-002 probe, CPython 3.14 / Windows 11)
+    rather than assumed:
+
+    - A too-long path failing through a plain ``open()`` -- exactly what a
+      TTS engine does when it writes ``output_path`` -- comes back as
+      ``FileNotFoundError: [Errno 2] No such file or directory`` with
+      ``winerror`` sitting at ``None``.
+    - An ordinary, genuinely-missing parent directory (nothing to do with
+      length) produces the IDENTICAL exception type, errno, and winerror.
+    - Windows' one unambiguous code for this, ERROR_FILENAME_EXCED_RANGE
+      (WinError 206), showed up in testing for a long *nested-mkdir* chain
+      but NOT for an over-length leaf filename via ``open()`` -- so it
+      cannot be relied on as the trigger either; it is checked only as an
+      extra (never load-bearing) signal.
+
+    So there is no errno that unambiguously means "too long" for the case
+    this function exists to catch, and path length is a heuristic, not
+    proof: a very deep but otherwise valid project could raise this same
+    error for a reason that has nothing to do with length (a permissions
+    change, a vanished network mount). This function only speaks up when
+    the OS actually told us which path it choked on (``exc.filename``) and
+    that path is at or past the MAX_PATH ceiling -- and the message it
+    returns says "likely", never "is", for exactly that reason.
+
+    Returns a human-readable, hedged explanation when path length looks
+    responsible, else None -- meaning "say nothing", never a guessed cause.
+    """
+    if os.name != "nt" or not isinstance(exc, OSError):
+        return None
+
+    path = exc.filename
+    if not path:
+        return None
+    length = len(str(path))
+
+    is_unambiguous_winerror = getattr(exc, "winerror", None) == 206  # ERROR_FILENAME_EXCED_RANGE
+    if not is_unambiguous_winerror:
+        if exc.errno != errno.ENOENT or length < _WINDOWS_MAX_PATH:
+            return None
+
+    return (
+        f"likely a Windows path-length (MAX_PATH) problem, not a TTS engine "
+        f"failure: the cache path is {length} characters long (Windows' "
+        f"default ceiling is {_WINDOWS_MAX_PATH}). Move the project to a "
+        f"shorter directory, or enable Windows long-path support (Windows "
+        f"10 1607+: set HKLM\\SYSTEM\\CurrentControlSet\\Control\\FileSystem"
+        f"\\LongPathsEnabled to 1, then sign out/in -- Python has declared "
+        f"itself long-path-aware since 3.6, so the OS-level setting is the "
+        f"only piece missing once it's turned on)."
     )
 
 

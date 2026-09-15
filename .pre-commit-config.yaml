@@ -1,6 +1,17 @@
 repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.3.0
+    # CH-B-009 (wave 5 amend): was v0.3.0, while pyproject.toml's `dev` extra
+    # pins ruff==0.16.6 -- two different linters running against the same
+    # code depending on whether you invoke `pre-commit run` or `ruff check`
+    # directly. pyproject.toml's pin is the deliberate, load-bearing one (see
+    # the comment on that line): ruff 0.16.6 once took this repo's lint step
+    # from clean to 369 errors with no commit in between, which is exactly
+    # the failure mode a mismatched pre-commit hook would mask locally while
+    # CI (which installs the pyproject-pinned version) still saw it. Bump
+    # both together, deliberately, never independently -- confirmed
+    # `ruff check .` is clean under 0.16.6 (this repo's actual installed
+    # version) before making this change.
+    rev: v0.16.6
     hooks:
       - id: ruff
         args: [--fix]
