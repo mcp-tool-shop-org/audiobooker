@@ -43,9 +43,17 @@ def _write_project(tmp_path: Path, title: str = "Ecosystem Test") -> Path:
     """A tiny compiled project file on disk; returns its path."""
     from audiobooker.project import AudiobookProject
 
+    # PH-B-002 (wave 5, out-of-grant declared edit): the dialogue line used
+    # to be attributed only by a pronoun, which the attributor cannot resolve
+    # to a name — this fixture's one utterance was 100% unattributed, which
+    # is a genuinely 'failed' quality verdict, not a false positive. That was
+    # incidental filler text for these --engine-routing tests, not something
+    # they meant to exercise, so it is reworded to attribute by name rather
+    # than narrowing the new render gate to let a real 100%-unknown book
+    # through.
     project = AudiobookProject.from_string(
         "Chapter 1\n\nHello world. This is narration for the engine test.\n\n"
-        '"I am Alice," she said.',
+        '"I am Alice," said Alice.',
         title=title,
         author="Tester",
     )

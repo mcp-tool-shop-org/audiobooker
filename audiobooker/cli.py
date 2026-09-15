@@ -442,10 +442,11 @@ def create_parser() -> argparse.ArgumentParser:
         help="Output format (default: from project config, usually m4b)",
     )
     # FT-RENDER-011: Force past casting validation
+    # PH-B-002: also bypasses the dialogue-attribution quality gate.
     render_parser.add_argument(
         "--force",
         action="store_true",
-        help="Bypass casting completeness validation",
+        help="Bypass casting-completeness and attribution-quality validation",
     )
     # FT-RENDER-011: Convenience auto-cast before render
     render_parser.add_argument(
@@ -2193,6 +2194,49 @@ def cmd_compile(args) -> int:
                 "Run 'audiobooker report' for details."
             )
 
+        # PH-B-002: surface the dialogue attribution rate. compile_chapter()
+        # already computes this per chapter and logs it (PH-B-001/PH-B-002),
+        # but a log line is not the same as telling the user: --silent turns
+        # logging down to CRITICAL, and a WARNING-level log line is easy to
+        # miss among build output either way. This was the actual gap named
+        # by PH-B-002 — the number never reached the user until they listened
+        # to the finished, mis-cast book.
+        from audiobooker.casting import compile_report
+        quality_report = compile_report(project.chapters, project.casting)
+        quality = quality_report["quality"]
+        # A book with no dialogue at all (pure narration) has nothing to
+        # attribute — printing "0% unattributed" would just be noise.
+        if quality_report["total_dialogue"] > 0:
+            _out(
+                f"Dialogue attribution: "
+                f"{quality_report['total_dialogue_unknown']}/"
+                f"{quality_report['total_dialogue']} dialogue lines "
+                f"unattributed ({quality_report['dialogue_unknown_rate']:.0%})"
+            )
+        if quality != "ok":
+            behavior = project.casting.unknown_character_behavior
+            if quality == "failed":
+                urgency = "the book will render as a near-single-voice reading"
+            else:
+                urgency = "consider reviewing attribution before rendering"
+            _err(
+                f"WARNING: dialogue attribution is {quality.upper()} — "
+                f"{urgency} (unknown speakers fall back to {behavior!r}).",
+                args=args,
+            )
+            _err(
+                "Hint: check --lang, add inline [character] overrides, or "
+                "cast the missing speakers. Run 'audiobooker report' for the "
+                "worst offending lines.",
+                args=args,
+            )
+            if quality == "failed":
+                _err(
+                    "Hint: 'audiobooker render' will refuse to proceed at "
+                    "this quality level unless you pass --force.",
+                    args=args,
+                )
+
         # Show uncast speakers
         uncast = project.get_uncast_speakers()
         if uncast:
@@ -2445,6 +2489,83 @@ def _handle_clean_cache(args, project_path: Path) -> Optional[int]:
     return None
 
 
+def _check_dialogue_attribution_quality(args, chapters, casting) -> Optional[int]:
+    """PH-B-002: refuse to render when dialogue attribution has collapsed.
+
+    ``compile_chapter()`` (audiobooker/casting/dialogue.py) already computes
+    this per chapter via ``compile_report()`` and logs a warning/error at
+    compile time, but deliberately does NOT raise — changing what
+    compile_chapter returns would break every existing caller. ``render`` is
+    the chokepoint that assembles compile-then-synthesize, so it is the one
+    place left that can still refuse to spend a TTS run on a book whose
+    speakers are mostly wrong.
+
+    Same shape as ``cmd_podcast`` / the ``export-chapters`` guard: an
+    ``_err()`` naming the problem, an ``_err()`` hint, a non-zero return.
+    ``--force`` — render's existing flag, previously documented as bypassing
+    only casting-completeness validation — also bypasses this gate; that is
+    the established override convention in this CLI (see also ``cast
+    --force``), so this reuses it rather than adding a new flag.
+
+    Args:
+        args: Parsed CLI namespace for this render invocation (reads
+            ``args.force``; forwarded to ``_err()`` for consistent formatting).
+        chapters: The chapters actually about to be rendered (a single
+            chapter for ``render -c N``, the possibly `--chapters`-filtered
+            list for a full-book render). NOT necessarily project.chapters —
+            scoping to only what will render means an unrelated bad chapter
+            elsewhere in the book can never block (or a bad chapter outside
+            the filtered range can never silently pass).
+        casting: The project's CastingTable (for ``compile_report()`` and to
+            name the ``unknown_character_behavior`` fallback in the message).
+
+    Returns:
+        1 when quality is 'failed' and --force was not passed (after
+        printing the error + hint). None otherwise — including 'degraded',
+        which is a caller concern (see cmd_compile) but does not by itself
+        justify refusing a render — so the caller proceeds.
+    """
+    from audiobooker.casting import compile_report
+
+    report = compile_report(chapters, casting)
+    if report["quality"] != "failed" or getattr(args, "force", False):
+        return None
+
+    _err(
+        "Error: dialogue attribution failed the quality gate — "
+        f"{report['total_dialogue_unknown']}/{report['total_dialogue']} "
+        f"dialogue lines ({report['dialogue_unknown_rate']:.0%}) are "
+        "unattributed. Rendering now would pay for a full TTS run of a book "
+        "that comes out as a near-single-voice reading (unknown speakers "
+        f"fall back to {casting.unknown_character_behavior!r}).",
+        args=args,
+    )
+    _err(
+        "Hint: check --lang, add inline [character] overrides, or cast the "
+        "missing speakers, then re-run. Run 'audiobooker report' for the "
+        "worst offending lines, or pass --force to render anyway (e.g. the "
+        "book really is mostly narration).",
+        args=args,
+    )
+    return 1
+
+
+def _encodable_spinner() -> str:
+    """A spinner name whose frames this console can actually encode.
+
+    rich's default "dots" spinner uses braille (U+28xx). cp1252 -- the default
+    Windows console codepage -- cannot encode it, and rich does not substitute
+    ASCII for spinner frames the way it does for its own box and bar glyphs.
+    "line" is plain ASCII (-\\|/) and renders everywhere.
+    """
+    encoding = getattr(sys.stdout, "encoding", None) or "ascii"
+    try:
+        "\u280b".encode(encoding)
+    except (UnicodeEncodeError, LookupError):
+        return "line"
+    return "dots"
+
+
 def _cmd_render_once(args) -> int:
     """Render audiobook (single pass — the body shared by cmd_render/watch)."""
     from audiobooker import AudiobookProject
@@ -2545,14 +2666,27 @@ def _cmd_render_once(args) -> int:
             # were all settled by _validate_single_chapter_render() above.
             _out(f"Rendering chapter {args.chapter}...")
             output = _single_chapter_output(args)
+
+            # Compile on demand — moved ahead of the engine branch below
+            # (PH-B-002) so the attribution-quality gate can run before
+            # EITHER branch renders, not just the explicit-engine one.
+            chapter = project.chapters[args.chapter]
+            if not chapter.is_compiled:
+                project.compile_chapter(args.chapter)
+
+            # PH-B-002: refuse before spending a TTS run if this chapter's
+            # dialogue attribution has collapsed. Scoped to just this
+            # chapter — the rest of the book, compiled or not, has no
+            # bearing on whether THIS render should proceed.
+            rc = _check_dialogue_attribution_quality(args, [chapter], project.casting)
+            if rc is not None:
+                return rc
+
             if tts_engine is not None:
                 # FT-ENGINE-001: thread the resolved engine through the
                 # module-level render_chapter (project.render_chapter takes no
-                # engine). Compile on demand to mirror its behavior.
+                # engine).
                 from audiobooker.renderer.engine import render_chapter as _render_chapter
-                chapter = project.chapters[args.chapter]
-                if not chapter.is_compiled:
-                    project.compile_chapter(args.chapter)
                 path = _render_chapter(
                     chapter, project.casting, Path(output), engine=tts_engine
                 )
@@ -2594,6 +2728,19 @@ def _cmd_render_once(args) -> int:
                 dry_run_render(project, resume=resume, from_chapter=from_chapter)
                 return 0
 
+            # PH-B-002: ensure compiled, then refuse before spending a TTS run
+            # if attribution has collapsed. Must run BEFORE the needs_direct /
+            # project.render() split below — project.render() would otherwise
+            # compile internally as a side effect of rendering, after we
+            # would already have committed to proceeding.
+            uncompiled = [c for c in project.chapters if not c.is_compiled and not c.skip]
+            if uncompiled:
+                project.compile()
+
+            rc = _check_dialogue_attribution_quality(args, project.chapters, project.casting)
+            if rc is not None:
+                return rc
+
             # FT-RENDER-018: Audiobook playback-length estimate.
             # This is PLAYBACK length (words/wpm), NOT render wall-clock, which
             # depends entirely on the TTS backend and hardware — relabel so the
@@ -2625,10 +2772,22 @@ def _cmd_render_once(args) -> int:
             # FT-RENDER-005: Rich progress bar (conditional import)
             progress_bar = None
             progress_task = None
+
+            def _plain_progress(current, total, status):
+                print(f"  [{current}/{total}] {status}")
+
             try:
                 from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TimeRemainingColumn
                 progress_bar = Progress(
-                    SpinnerColumn(),
+                    # rich's default spinner is "dots", drawn with braille
+                    # (U+28xx), which cp1252 cannot encode -- and cp1252 is the
+                    # DEFAULT Windows console codepage. The spinner therefore
+                    # raised UnicodeEncodeError on a stock Windows console for
+                    # every render, healthy book or not, after the user had
+                    # already paid for the TTS pass. BarColumn is fine: rich
+                    # substitutes ASCII for its own glyphs, but it does not do
+                    # that for spinner frames.
+                    SpinnerColumn(spinner_name=_encodable_spinner()),
                     TextColumn("[bold]{task.description}"),
                     BarColumn(),
                     TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
@@ -2639,13 +2798,34 @@ def _cmd_render_once(args) -> int:
                 progress_task = progress_bar.add_task("Rendering...", total=len(project.chapters))
 
                 def progress(current, total, status):
-                    progress_bar.update(progress_task, completed=current, description=status[:60])
+                    # A progress INDICATOR must never be able to abort the
+                    # render it is reporting on. If drawing fails for any
+                    # reason, drop to plain lines and keep going.
+                    try:
+                        progress_bar.update(
+                            progress_task, completed=current,
+                            description=status[:60],
+                        )
+                    except Exception:
+                        _plain_progress(current, total, status)
 
-            except ImportError:
+            except Exception as _progress_err:
+                # Deliberately broad, and NOT just ImportError: the original
+                # clause caught only a missing `rich`, so an encoding failure
+                # while STARTING the bar escaped and killed the render.
+                if not isinstance(_progress_err, ImportError):
+                    _logging_mod.getLogger(__name__).debug(
+                        "Progress bar unavailable (%s); using plain output.",
+                        _progress_err,
+                    )
+                if progress_bar is not None:
+                    try:
+                        progress_bar.stop()
+                    except Exception:
+                        pass
                 progress_bar = None
-
-                def progress(current, total, status):
-                    print(f"  [{current}/{total}] {status}")
+                progress_task = None
+                progress = _plain_progress
 
             try:
                 # OUTPUT-F1: Any of cover/normalize/acx/bitrate/split requires a
@@ -2660,10 +2840,9 @@ def _cmd_render_once(args) -> int:
                 )
                 if needs_direct:
                     from audiobooker.renderer.engine import render_project
-                    # Ensure compiled
-                    uncompiled = [c for c in project.chapters if not c.is_compiled and not c.skip]
-                    if uncompiled:
-                        project.compile()
+                    # PH-B-002: compilation now happens unconditionally above,
+                    # before the attribution-quality gate — nothing left to
+                    # ensure here.
                     # Call defensively: a concurrently-evolving renderer with an
                     # older signature may not yet accept the v2.1 kwargs.
                     direct_kwargs = dict(
