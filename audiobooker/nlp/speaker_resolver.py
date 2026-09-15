@@ -60,24 +60,29 @@ class SpeakerResolver:
     Args:
         mode: "on" | "off" | "auto" (default "auto").
         adapter: Injected NLP backend (defaults to BookNLPAdapter).
+        language_code: ISO code passed to BookNLPAdapter. BookNLP is
+            English-only; non-English is auto-off rather than English NLP,
+            and mode=on raises the adapter's ValueError (F-79363bb9).
     """
 
     def __init__(
         self,
         mode: str = "auto",
         adapter: Optional[NLPBackend] = None,
+        language_code: str = "en",
     ) -> None:
         if mode not in ("on", "off", "auto"):
             raise ValueError(f"Invalid booknlp_mode: {mode!r}. Must be on|off|auto.")
 
         self.mode = mode
         self._adapter = adapter
+        self.language_code = language_code or "en"
 
     @property
     def adapter(self) -> NLPBackend:
-        """Lazy-create adapter on first access."""
+        """Lazy-create adapter on first access, with the resolver's language."""
         if self._adapter is None:
-            self._adapter = BookNLPAdapter()
+            self._adapter = BookNLPAdapter(language_code=self.language_code)
         return self._adapter
 
     def resolve(
@@ -103,6 +108,19 @@ class SpeakerResolver:
             logger.info("BookNLP resolution disabled (mode=off)")
             return stats
 
+        # F-79363bb9: BookNLPAdapter() defaulted to English, so a non-English
+        # book never hit the English-only guard. Auto-off rather than running
+        # English NLP; mode=on constructs the adapter so the existing
+        # ValueError fires on this path.
+        if self._adapter is None and self.language_code != "en":
+            if self.mode == "auto":
+                logger.info(
+                    "BookNLP skipped — language_code=%r is not English; "
+                    "using heuristic attribution",
+                    self.language_code,
+                )
+                return stats
+
         if self.mode == "auto" and not self.adapter.is_available():
             logger.info("BookNLP not available — using heuristic attribution")
             return stats
@@ -113,8 +131,7 @@ class SpeakerResolver:
                 "Install with: pip install booknlp"
             )
 
-        # NLP is available and enabled
-        stats.nlp_used = True
+        from audiobooker.casting.dialogue import LOW_CONFIDENCE_THRESHOLD
 
         for chapter in chapters:
             if not chapter.utterances:
@@ -143,14 +160,39 @@ class SpeakerResolver:
                     skip_msg = f"{skip_msg}: {result.error}"
                 stats.nlp_errors.append(skip_msg)
 
+            quotes_usable = sum(
+                1 for q in result.quotes if q.speaker and q.quote_text
+            )
+            # F-503cd84c / Lock B1: empty quotes after a claimed success must
+            # not look like a successful NLP pass (Ewaschuk implicit 200).
+            if quotes_usable == 0:
+                stats.nlp_errors.append(
+                    result.error
+                    or (
+                        f"BookNLP returned no usable quotes on chapter "
+                        f"{chapter.index}"
+                    )
+                )
+                logger.warning(
+                    "BookNLP returned no usable quotes on chapter %s — "
+                    "keeping heuristic attributions.",
+                    chapter.index,
+                )
+                continue
+
+            stats.nlp_used = True
+
             # Build a lookup of quote positions → speakers from NLP
             nlp_attributions = self._build_attribution_map(result)
 
-            # Try to improve "unknown" utterances
+            # Improve unknown utterances, and turn-tracking guesses below
+            # LOW_CONFIDENCE_THRESHOLD (F-79363bb9). Tagged attributions stay.
             for utterance in chapter.utterances:
                 stats.utterances_examined += 1
 
-                if utterance.speaker != "unknown":
+                if not self._nlp_may_overwrite(
+                    utterance, LOW_CONFIDENCE_THRESHOLD,
+                ):
                     stats.speakers_unchanged += 1
                     continue
 
@@ -158,6 +200,9 @@ class SpeakerResolver:
                 match_result = self._match_utterance(utterance, nlp_attributions)
                 if match_result is not None:
                     improved, confidence = match_result
+                    # Fuzzy NLP fills are already capped at NLP_FUZZY_CONFIDENCE
+                    # so overwriting a turn guess cannot raise confidence above
+                    # that cap. Exact matches keep the backend score (1.0).
                     utterance.speaker = improved
                     # FEAT-CAST-001: record WHERE this speaker came from. The
                     # resolver already computed a confidence and kept it only
@@ -189,6 +234,24 @@ class SpeakerResolver:
             f"unchanged={stats.speakers_unchanged} chapters={stats.chapters_processed}"
         )
         return stats
+
+    @staticmethod
+    def _nlp_may_overwrite(utterance: "Utterance", low_confidence: float) -> bool:
+        """True when NLP is allowed to stamp this utterance.
+
+        Unknown lines are the original fill target. F-79363bb9 also lets NLP
+        correct a turn-tracking guess below LOW_CONFIDENCE_THRESHOLD; tagged
+        / inline / user attributions are left alone.
+        """
+        if utterance.speaker == "unknown":
+            return True
+        if (
+            utterance.attribution_source == "turn"
+            and utterance.confidence is not None
+            and utterance.confidence < low_confidence
+        ):
+            return True
+        return False
 
     # Minimum fuzzy match ratio for FT-CORE-009
     FUZZY_THRESHOLD: float = 0.85
@@ -574,13 +637,28 @@ def suggest_aliases(
                         co_counts[cand_key][display] += mentions
 
     # Optional BookNLP coref corroboration.
+    # F-79363bb9: BookNLP is English-only. A non-English profile used to
+    # construct BookNLPAdapter() with the default language_code='en' and run
+    # English NLP. Skip rather than that; an injected adapter is honored.
     coref_pairs: set[tuple[str, str]] = set()
     if use_booknlp:
-        backend = adapter or BookNLPAdapter()
-        try:
-            available = backend.is_available()
-        except Exception:  # pragma: no cover - defensive
-            available = False
+        backend = adapter
+        if backend is None:
+            lang = getattr(profile, "code", "en") or "en"
+            if lang == "en":
+                backend = BookNLPAdapter(language_code="en")
+            else:
+                logger.info(
+                    "FT-NLP-025: BookNLP skipped — profile %r is not English",
+                    lang,
+                )
+                backend = None
+        available = False
+        if backend is not None:
+            try:
+                available = backend.is_available()
+            except Exception:  # pragma: no cover - defensive
+                available = False
         if available:
             for chapter in chapters:
                 text = getattr(chapter, "raw_text", "") or ""
