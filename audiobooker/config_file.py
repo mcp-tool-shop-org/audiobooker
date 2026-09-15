@@ -31,11 +31,13 @@ ProjectConfig or touch argparse.
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 from pathlib import Path
 from typing import Any, Callable, Optional
 
 from audiobooker.errors import ConfigValidationError
+from audiobooker.models import ProjectConfig
 
 logger = logging.getLogger("audiobooker.config_file")
 
@@ -112,39 +114,30 @@ _ALIAS_TO_FIELD: dict[str, str] = {
 }
 
 # Canonical ProjectConfig fields that may be set directly from a config file.
-# Kept in sync with audiobooker.models.ProjectConfig dataclass fields. We do
-# NOT import ProjectConfig at module load to keep this module dependency-light
-# and side-effect free; the set is small and stable.
+#
+# CH-B-006 (wave 5 amend): this used to be a hand-typed frozenset "kept in
+# sync with audiobooker.models.ProjectConfig dataclass fields" by a comment
+# alone, on the claim that "the set is small and stable." It wasn't stable --
+# it silently fell three fields behind (emotion_preset, tts_engine,
+# utterance_cache) when those were added to ProjectConfig. The real
+# consequence: a config file setting any of those three did not error. It
+# hit the `else` branch in _map_table below, logged a routine-looking
+# "ignoring unknown config key" warning (easy to miss -- Python logging is
+# silent by default unless configured), and the setting was silently
+# dropped. Someone could set `emotion_preset = "dramatic"` in
+# .audiobookerrc, see no error, and never get the preset they asked for.
+#
+# Fix: derive this set from ProjectConfig's actual dataclass fields instead
+# of re-typing them, so it cannot fall behind again -- there is nothing left
+# to keep "in sync" by hand. The dependency-light/side-effect-free goal in
+# the module docstring is about avoiding THIRD-PARTY deps and file I/O, not
+# our own sibling modules: audiobooker.models is a leaf with respect to this
+# module (it does not import config_file, directly or transitively -- see
+# audiobooker/models.py's own imports), so this does not introduce an import
+# cycle, and models.py itself does nothing at import time beyond defining
+# classes and a logger.
 _PASSTHROUGH_FIELDS: frozenset[str] = frozenset(
-    {
-        "chapter_pause_ms",
-        "narrator_pause_ms",
-        "dialogue_pause_ms",
-        "sample_rate",
-        "output_format",
-        "fallback_voice_id",
-        "validate_voices_on_render",
-        "estimated_wpm",
-        "min_chapter_words",
-        "keep_titled_short_chapters",
-        "language_code",
-        "booknlp_mode",
-        "emotion_mode",
-        "emotion_confidence_threshold",
-        "global_speed",
-        "pronunciation_overrides",
-        "clean_text",
-        "normalize_text",
-        "parallel_compile",
-        "compile_workers",
-        "user_emotion_rules",
-        "footnote_behavior",
-        "output_profile",
-        "aac_bitrate",
-        "mp3_bitrate",
-        "use_toc",
-        "phoneme_overrides",
-    }
+    f.name for f in dataclasses.fields(ProjectConfig)
 )
 
 
@@ -199,6 +192,51 @@ def _require_unit_interval(field: str, value: Any, key: str, origin: str) -> Non
         )
 
 
+def _require_range(lo: float, hi: float) -> Callable[[str, Any, str, str], None]:
+    """Build a validator requiring a number in the closed interval [lo, hi].
+
+    CH-B-008 (wave 5 amend): added for ``global_speed`` (alias "speed"),
+    ProjectConfig's ONE numeric field that had no boundary validator here --
+    the global config surface has 9 numeric fields total (chapter_pause_ms,
+    narrator_pause_ms, dialogue_pause_ms, sample_rate, estimated_wpm,
+    min_chapter_words, compile_workers, emotion_confidence_threshold,
+    global_speed) and only 8 were covered before this fix.
+
+    The consequence was worse for this field than for the other 8: those are
+    range-checked in ProjectConfig.__post_init__ (audiobooker/models.py) via
+    ``_check_positive_int``/``_check_non_negative_int``/``_check_unit_interval``
+    helpers that all guard with ``isinstance`` first, so a wrong TYPE from a
+    config file (e.g. ``workers = "four"``) still raised a clean
+    ConfigValidationError even before F-CORE-2 added a boundary check --
+    just one without the config file's name attached. global_speed's own
+    check in __post_init__ has no such guard:
+    ``if not (0.5 <= self.global_speed <= 2.0)``. Given a string (e.g. a
+    config file with ``speed = "fast"``), that comparison itself raises a
+    bare, unhandled ``TypeError`` ("'<=' not supported between instances of
+    'float' and 'str'") -- not a ConfigValidationError, not a message that
+    mentions the config file, just a raw traceback out of ProjectConfig
+    construction. An out-of-range but correctly-typed value (``speed = 5.0``)
+    at least raised a clean-ish ValueError, but still without naming the
+    file it came from.
+
+    The 0.5/2.0 bounds are intentionally duplicated (not imported) from
+    ProjectConfig.__post_init__: that check is inline in an ``if`` statement
+    there, not an importable named constant, and this module does not own
+    models.py this wave. If either bound changes, the other must be updated
+    to match -- both are load-bearing for the same fact.
+    """
+
+    def _validator(field: str, value: Any, key: str, origin: str) -> None:
+        if not _is_numberlike(value) or not (lo <= value <= hi):
+            raise ConfigFileError(
+                f"Invalid value for {key!r} in {origin}: {field} must be a "
+                f"number between {lo} and {hi}, got {value!r}.",
+                hint=f"Set {key!r} to a value between {lo} and {hi} in {origin}.",
+            )
+
+    return _validator
+
+
 # field name -> validator(field, value, key, origin). Keyed by the CANONICAL
 # ProjectConfig field name (post-alias-resolution), so both a friendly alias
 # (e.g. "workers") and the canonical key (e.g. "compile_workers") are checked
@@ -212,6 +250,9 @@ _NUMERIC_VALIDATORS: dict[str, Callable[[str, Any, str, str], None]] = {
     "dialogue_pause_ms": _require_non_negative_int,
     "min_chapter_words": _require_non_negative_int,
     "emotion_confidence_threshold": _require_unit_interval,
+    # CH-B-008 (wave 5 amend): bounds match ProjectConfig.__post_init__'s
+    # `if not (0.5 <= self.global_speed <= 2.0)` in audiobooker/models.py.
+    "global_speed": _require_range(0.5, 2.0),
 }
 
 # Non-config keys recognized as structured sections (returned as-is, not
