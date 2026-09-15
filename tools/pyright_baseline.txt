@@ -18,9 +18,11 @@ audiobooker/cli.py:reportOptionalMemberAccess
 audiobooker/models.py:reportArgumentType
 audiobooker/nlp/booknlp_adapter.py:reportMissingImports
 audiobooker/parser/docx.py:reportAttributeAccessIssue
+audiobooker/parser/docx.py:reportMissingImports
 audiobooker/parser/epub.py:reportArgumentType
 audiobooker/parser/pdf.py:reportArgumentType
 audiobooker/parser/pdf.py:reportAttributeAccessIssue
+audiobooker/parser/pdf.py:reportMissingImports
 audiobooker/project.py:reportArgumentType
 audiobooker/project.py:reportAttributeAccessIssue
 audiobooker/project.py:reportOptionalOperand

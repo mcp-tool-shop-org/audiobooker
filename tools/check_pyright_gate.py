@@ -26,13 +26,13 @@ import pathlib
 import subprocess
 import sys
 
-# Measured 2026-09-15 after Stage C nlp-attrib merge (pyright 1.1.414,
-# typeCheckingMode=basic): 99 errors. The isolate ci-tooling worktree
-# recorded 82 before that merge landed. Identity baseline is the real
-# gate; this count cap tracks current instance total. Ratchet down; never
-# up without a measured re-count. tools/check_ci_policy.py refuses above
-# this literal.
-MAX_ERRORS = 99
+# CI typecheck (run 34939760039, pyright on ubuntu, `[dev]` only, no
+# pdf/docx extras): 105 errors / 35 file:rule. Local-with-extras measured
+# 99 — the +6 and two new identities are reportMissingImports for fitz and
+# python-docx, which CI does not install. Cap tracks the CI environment the
+# required check actually runs. Identity baseline is the real gate.
+# tools/check_ci_policy.py refuses above this literal.
+MAX_ERRORS = 105
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 BASELINE_PATH = ROOT / "tools" / "pyright_baseline.txt"
 
