@@ -739,6 +739,70 @@ class TestUtteranceCachePathLength:
         assert result.utterances_synthesized == 1
         assert out.exists()
 
+    def test_directory_chain_overflow_is_structured_not_a_raw_oserror(
+        self, tmp_path
+    ):
+        """The cache DIRECTORY chain can overflow before any filename exists.
+
+        One level deeper than COORD-B-002. That finding was about the leaf
+        filename and the try/except around engine.synthesize(); this is the
+        `utt_dir.mkdir(parents=True)` call that runs first, and it was the
+        only failure path in render_chapter_incremental that did not produce
+        a structured RenderError.
+
+        RED before the fix: a raw FileNotFoundError/OSError propagates, with
+        no code, no hint, and nothing pointing at path length — the caller
+        gets a bare stack trace where every other failure here is actionable.
+        """
+        if os.name != "nt":
+            pytest.skip("Windows MAX_PATH overflow is platform-specific")
+
+        from audiobooker.renderer.cache_manifest import (
+            get_cache_root,
+            get_utterance_wav_dir,
+        )
+        from audiobooker.renderer.engine import RenderError
+
+        utt, _ = _utterance_and_hash()
+        suffix_len = _fixed_suffix_len()
+
+        # Overflow the DIRECTORY itself, not the leaf: aim utt_dir past
+        # MAX_PATH while keeping project_dir comfortably creatable.
+        dir_target = WINDOWS_MAX_PATH + 12
+        project_dir = _grow_dir(
+            tmp_path, max(dir_target - suffix_len, len(str(tmp_path)) + 1)
+        )
+        assert len(str(project_dir)) < WINDOWS_MAX_PATH, (
+            "harness bug: project_dir itself is uncreatable, so the test "
+            "would fail in _grow_dir rather than in the code under test"
+        )
+
+        cache_root = get_cache_root(project_dir)
+        utt_dir = get_utterance_wav_dir(cache_root, 0)
+        assert len(str(utt_dir)) > WINDOWS_MAX_PATH, (
+            "harness bug: the directory chain does not actually overflow, "
+            "so mkdir() would succeed and this tests nothing"
+        )
+
+        chapter = Chapter(index=0, title="Solo", raw_text="x")
+        chapter.utterances = [utt]
+
+        with pytest.raises(RenderError) as excinfo:
+            render_chapter_incremental(
+                chapter, _make_casting(), project_dir / "chapter_0000.wav",
+                engine=FakeTTSEngine(),
+                cache_root=cache_root,
+                render_params_hash="paramhash",
+                runner=_StitchRunner(),
+            )
+
+        err = excinfo.value
+        assert err.code == "CACHE_PATH_TOO_LONG"
+        # Hedged, never asserted as certain — path length is a heuristic.
+        assert "likely" in str(err).lower()
+        # And it must NOT blame synthesis: nothing was ever synthesized.
+        assert "failed to synthesize" not in str(err).lower()
+
     def test_diagnosis_names_path_length_when_still_too_long(self, tmp_path):
         """Even after reclaiming budget, a pathological project dir can still
         overflow. When it does, the error must name the real cause (a

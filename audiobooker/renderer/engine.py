@@ -801,7 +801,48 @@ def render_chapter_incremental(
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     utt_dir = get_utterance_wav_dir(cache_root, chapter.index)
-    utt_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        utt_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        # COORD-B-002 follow-up. The sibling fix below guards the per-utterance
+        # WAV *filename* overflowing MAX_PATH. This is one level up: on a deep
+        # enough project the cache DIRECTORY CHAIN alone
+        # (<project>/.audiobooker/cache/chapters/chapter_NNNN_utterances)
+        # exceeds the ceiling, and mkdir fails before any filename exists.
+        #
+        # It was the only failure path in this function that produced a raw,
+        # unstructured OSError — every other one raises a RenderError with a
+        # code and a hint, so the caller got a bare stack trace exactly where
+        # the cause is least guessable.
+        #
+        # Same code as the filename case: it is one problem with one remedy,
+        # and splitting it would make callers handle two codes for it. The
+        # MESSAGE differs, because there is no utterance index yet — nothing
+        # has been read or synthesized at this point, so naming one would be
+        # inventing detail.
+        path_diagnosis = _diagnose_windows_path_length(e)
+        if path_diagnosis:
+            raise RenderError(
+                f"Chapter {chapter.index}: the render cache directory could "
+                f"not be created — {path_diagnosis}",
+                code="CACHE_PATH_TOO_LONG",
+                hint=(
+                    "Shorten the project's directory path, or enable Windows "
+                    "long-path support, then re-run. Nothing has been "
+                    "rendered yet, so no work is lost."
+                ),
+                retryable=False,
+            ) from e
+        raise RenderError(
+            f"Chapter {chapter.index}: could not create the render cache "
+            f"directory {utt_dir}: {e}",
+            code="CACHE_DIR_UNWRITABLE",
+            hint=(
+                "Check that the project directory exists and is writable, "
+                "and that no other process is holding it open."
+            ),
+            retryable=True,
+        ) from e
     manifest_path = get_utterance_manifest_path(cache_root, chapter.index)
 
     manifest = load_utterance_manifest(manifest_path)
