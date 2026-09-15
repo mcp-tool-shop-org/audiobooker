@@ -1244,30 +1244,155 @@ class AudiobookProject:
     # Pronunciation Overrides (FT-CORE-011)
     # -------------------------------------------------------------------------
 
-    def add_pronunciation(self, word: str, replacement: str) -> None:
+    def add_pronunciation(self, word: str, replacement: str) -> list[int]:
         """
         Add a pronunciation override.
 
         Before utterance creation in compile, the word will be substituted
         with the replacement text (whole-word, case-insensitive).
 
+        FEAT-PROD-002 — overrides added AFTER compile
+        ---------------------------------------------
+        Overrides are applied in ``_preprocess_text``, which only runs during
+        compile. Adding one to a finished book therefore used to be a total
+        no-op end to end: ``render()``'s gate found nothing uncompiled, every
+        chapter's ``chapter_text_hash`` was unchanged so every chapter
+        cache-hit, and the name came out of the speakers mispronounced — with
+        the CLI reporting success. Hearing a name wrong is the single most
+        likely reason anyone re-renders a finished book, and it was the one
+        edit the pipeline dropped.
+
+        The fix applies the new override to the ALREADY-COMPILED utterance
+        text, in place, right here. That is the shape
+        ``text_cleaners.apply_pronunciation_overrides`` itself recommends
+        ("the right long-term shape is to apply overrides at RENDER time, on
+        utterance text, where attribution has already happened") and it is
+        strictly better than clearing the chapters for recompile: a recompile
+        would re-derive every utterance from raw text and silently discard
+        imported review edits, emotion overrides and mood spans across the
+        whole book. Rewriting the text changes ``chapter_text_hash``, so the
+        affected chapters miss the cache and re-render while every other
+        chapter still hits.
+
+        A word that names a cast character (or one of their aliases) is
+        REFUSED, exactly as it is at compile time (PH-B-005) — rewriting it
+        would un-cast them.
+
         Args:
             word: The word to replace (e.g., "Hermione")
             replacement: The phonetic replacement (e.g., "Her-MY-oh-nee")
+
+        Returns:
+            The indices of the chapters whose compiled text changed, so a
+            caller (``pronunciation add``) can say how much will re-render
+            instead of printing a bare success.
         """
         if not word or not word.strip():
             raise ValueError("Pronunciation word must not be empty.")
         if not replacement or not replacement.strip():
             raise ValueError("Pronunciation replacement must not be empty.")
-        self.config.pronunciation_overrides[word.strip()] = replacement.strip()
+        word = word.strip()
+        replacement = replacement.strip()
+        self.config.pronunciation_overrides[word] = replacement
         self.modified_at = datetime.now().isoformat()
+        return self._apply_override_to_compiled(word, replacement)
 
-    def remove_pronunciation(self, word: str) -> None:
+    def _apply_override_to_compiled(self, word: str, replacement: str) -> list[int]:
+        """Rewrite one override into already-compiled utterance text.
+
+        Returns the indices of the chapters that actually changed. Chapters
+        that are not compiled are left alone: ``compile()`` will apply the
+        override from ``_preprocess_text`` when it runs.
+
+        Two things are done ONCE here rather than per utterance, because
+        ``apply_pronunciation_overrides`` is written for whole-document text
+        and both of its diagnostics are per-call:
+
+        * the PH-B-005 protected-name refusal, so a refused override logs one
+          ERROR instead of one per utterance in the book;
+        * the "override never matched" warning, which would otherwise fire for
+          every utterance that simply does not contain the word — measured at
+          8 spurious warnings on a 10-utterance two-chapter book, which under
+          the CLI's default WARNING level is noise that buries the real one.
+
+        The pre-filter reuses ``_override_pattern`` rather than approximating
+        it with a substring test: that helper IS the definition of "this
+        override matches this text" (it drops the ``\\b`` anchors for CJK,
+        kana, Hangul and Thai keys, where a word boundary can never assert
+        anything), so borrowing it is the only way the filter cannot drift
+        away from the matcher it is filtering for.
+        """
+        from audiobooker.models import normalize_speaker_key
+        from audiobooker.parser.text_cleaners import (
+            _override_pattern,
+            apply_pronunciation_overrides,
+        )
+
+        if normalize_speaker_key(word) in self.casting.protected_names():
+            logger.error(
+                f"Pronunciation override {word!r} names a CAST CHARACTER (or "
+                f"one of their aliases) and was refused. Rewriting it would "
+                f"leave every line they speak unattributed. Set the "
+                f"pronunciation on the character instead."
+            )
+            return []
+
+        try:
+            matcher = _re.compile(_override_pattern(word), _re.IGNORECASE)
+        except _re.error as e:
+            logger.warning(
+                f"Pronunciation override {word!r} could not be compiled "
+                f"({e}) — no compiled chapters were changed."
+            )
+            return []
+
+        one = {word: replacement}
+        # Passing the (already-cleared) protected set rather than None also
+        # silences the _looks_like_proper_noun advisory, which fires on any
+        # capitalized key — i.e. on exactly the proper nouns this feature
+        # exists for — and would otherwise print once per utterance.
+        protected = self.casting.protected_names()
+        affected: list[int] = []
+        for chapter in self.chapters:
+            if not chapter.is_compiled:
+                continue
+            changed = False
+            for utt in chapter.utterances:
+                if not matcher.search(utt.text):
+                    continue
+                new_text = apply_pronunciation_overrides(
+                    utt.text, one, protected_names=protected
+                )
+                if new_text != utt.text:
+                    utt.text = new_text
+                    changed = True
+            if changed:
+                affected.append(chapter.index)
+        if affected:
+            logger.info(
+                f"PRONUNCIATION_APPLIED: {word!r} -> {replacement!r} in "
+                f"{len(affected)} compiled chapter(s): {affected}"
+            )
+        return affected
+
+    def remove_pronunciation(self, word: str) -> list[int]:
         """
         Remove a pronunciation override.
 
+        FEAT-PROD-002: removal is the one direction that cannot be undone in
+        place — the original spelling is gone from the compiled utterances
+        and only ``raw_text`` still holds it. Affected chapters are therefore
+        cleared so ``render()``'s compile gate re-derives them (that gate
+        tests ``is_compiled``, which is ``len(utterances) > 0``). Scoped to
+        chapters whose raw text actually contains the word, so removing an
+        override that only ever fired in chapter 3 does not throw away
+        chapter 20's review edits.
+
         Args:
             word: The word to remove from overrides
+
+        Returns:
+            The indices of the chapters cleared for recompile.
 
         Raises:
             KeyError: If the word is not in the overrides
@@ -1280,6 +1405,36 @@ class AudiobookProject:
             )
         del self.config.pronunciation_overrides[key]
         self.modified_at = datetime.now().isoformat()
+
+        # Same matcher the override itself used, so "which chapters did this
+        # fire in" gets the same answer going out as it did going in.
+        from audiobooker.parser.text_cleaners import _override_pattern
+
+        try:
+            pattern = _re.compile(_override_pattern(key), _re.IGNORECASE)
+        except _re.error:  # pragma: no cover - key compiled fine on the way in
+            pattern = _re.compile(_re.escape(key), _re.IGNORECASE)
+        affected: list[int] = []
+        for chapter in self.chapters:
+            if not chapter.is_compiled:
+                continue
+            if pattern.search(chapter.raw_text):
+                chapter.utterances = []
+                affected.append(chapter.index)
+        if affected:
+            # WARNING, not INFO: review edits, emotion overrides and mood
+            # spans live directly on chapter.utterances (review.py writes
+            # them there and nowhere else), so clearing a chapter discards
+            # them. It is unavoidable — only raw_text still holds the
+            # original spelling — but it must not be silent.
+            logger.warning(
+                f"PRONUNCIATION_REMOVED: {key!r} — chapter(s) {affected} were "
+                f"cleared and will recompile from their raw text on the next "
+                f"render. Any imported review edits, emotion overrides or "
+                f"mood spans in those chapters are discarded; every other "
+                f"chapter is untouched."
+            )
+        return affected
 
     # -------------------------------------------------------------------------
     # Voice Preview (FT-CORE-005)

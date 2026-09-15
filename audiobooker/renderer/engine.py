@@ -17,7 +17,7 @@ import time
 import uuid
 from xml.sax.saxutils import escape as _xml_escape
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass, asdict, field
+from dataclasses import dataclass, asdict, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Callable, TYPE_CHECKING
@@ -651,7 +651,22 @@ def render_chapter(
             script = preprocess_ssml(chapter.utterances, emotion_preset)
             logger.info(f"RENDER_SSML: chapter={chapter.index} using SSML preprocessing")
         else:
-            script = utterances_to_script(chapter.utterances)
+            # FEAT-PROD-003 (adjacent find): `casting` used to be omitted here.
+            # utterances_to_script only emits the per-character {speed:1.4}
+            # {pitch:-0.3} {emphasis:1.7} hints when it is given a casting
+            # table, so Character.speed / pitch_shift / emphasis — validated in
+            # models.py, round-tripped through casting JSON and CSV, and
+            # emitted by the utterance-level incremental path, which DOES pass
+            # casting — reached synthesis from nowhere on the default render
+            # path. The two paths also disagreed about it, so opting into the
+            # utterance cache silently changed the audio.
+            #
+            # Byte-identical for a default cast: the hint is only emitted when
+            # a value differs from its default (speed != 1.0, pitch_shift !=
+            # 0.0, emphasis != 1.0). casting_hash now keys all three, so a
+            # character whose delivery is retuned invalidates rather than
+            # re-serving the old performance.
+            script = utterances_to_script(chapter.utterances, casting)
 
         voice_mapping = casting.get_voice_mapping()
 
@@ -746,6 +761,7 @@ def render_chapter_incremental(
     render_params_hash: str,
     runner: Optional[Callable] = None,
     progress_callback: Optional[Callable[[int, int], None]] = None,
+    emotion_preset: str = "neutral",
 ) -> IncrementalRenderResult:
     """
     FT-RENDER-P-004: Render a chapter utterance-by-utterance with a sub-cache.
@@ -770,6 +786,10 @@ def render_chapter_incremental(
         runner: Injected FFmpegRunner-like callable holder for the concat step
             (defaults to RealFFmpegRunner). Tests pass a fake.
         progress_callback: Callback(current_utterance, total_utterances).
+        emotion_preset: FT-CAST-026 emotion preset selecting the SSML emphasis
+            map, mirroring ``render_chapter``. FEAT-PROD-009: without this the
+            opt-in path silently dropped the project's preset, so turning the
+            cache on quietly reverted every emphasis level to 'neutral'.
 
     Returns:
         IncrementalRenderResult with the stitched WAV path, duration, and
@@ -903,8 +923,18 @@ def render_chapter_incremental(
             # Synthesize just this utterance. A single-utterance script keeps the
             # engine contract identical to the chapter path (same tagged-line
             # format), only narrower in scope.
+            #
+            # FEAT-PROD-009: "identical to the chapter path" has to include
+            # WHICH format. render_chapter picks SSML for an SSML-capable
+            # engine and the tagged-line script otherwise; this path always
+            # chose the tagged-line script, so opting into the cache changed
+            # the markup handed to the engine — and dropped the emotion preset
+            # and intensity grading that only live in the SSML branch.
             from audiobooker.casting.dialogue import utterances_to_script
-            script = utterances_to_script([utt], casting)
+            if should_use_ssml(engine):
+                script = preprocess_ssml([utt], emotion_preset)
+            else:
+                script = utterances_to_script([utt], casting)
             tmp = _chapter_tmp_path(target)
             try:
                 result = engine.synthesize(
@@ -1029,6 +1059,18 @@ def _stitch_utterance_wavs(
             "-safe", "0",
             "-i", str(concat_file),
             "-c", "copy",
+            # FEAT-PROD-009: name the output format explicitly. ffmpeg infers
+            # it from the output EXTENSION, and the render path hands this
+            # function a per-process scratch name ending in ".wav.tmp"
+            # (_chapter_tmp_path) — ".tmp" is not a format ffmpeg knows, so
+            # every real stitch would have died on "Unable to find a suitable
+            # output format". It never surfaced because nothing called this
+            # function outside tests, and the tests inject a fake runner that
+            # writes the file itself. The output is a WAV by construction
+            # (these are the engine's own per-utterance WAVs, concatenated
+            # with -c copy), so stating it costs nothing and removes the
+            # dependency on how the caller spells its temp file.
+            "-f", "wav",
             str(output_path),
         ])
         if result.returncode != 0:
@@ -1318,6 +1360,132 @@ def _validate_project_voices(project: "AudiobookProject", engine=None) -> None:
     validator(engine=engine)
 
 
+# FEAT-PROD-004: the output destination is the one preflight nobody wrote.
+# The gauntlet above this checks casting completeness, every voice ID, the
+# ffmpeg binary, dialogue-attribution quality and even that --cover exists --
+# and then synthesizes the entire book before discovering it cannot write the
+# file. Measured on a 6-chapter book: all three unwritable-destination cases
+# (missing parent directory, destination is a directory, parent path is a
+# file) synthesized 6/6 chapters first and escaped as a bare FileNotFoundError
+# or PermissionError with no code, no hint, and nothing saying the chapters
+# are cached and a corrected re-run is nearly free.
+_WRITE_PROBE_NAME = ".audiobooker-write-probe"
+
+
+def _preflight_output_destination(output_path: Path, *, split: bool = False) -> None:
+    """Fail fast when the finished book could not be written where it is going.
+
+    Runs BEFORE the render loop, so a typo'd path costs nothing instead of a
+    whole book's synthesis. Deliberately non-destructive: an existing output
+    file is opened for append and closed, never truncated, and the writability
+    probe is a uniquely-named temp file in the parent directory that is
+    removed again. A missing parent directory is CREATED rather than rejected
+    -- ffmpeg cannot create one, and refusing a path the user obviously meant
+    would be worse than making it.
+
+    Args:
+        output_path: The final output path the assembler will be handed.
+        split: True when the AAC split assembler is used, which treats
+            ``output_path`` as a base name and writes a DIRECTORY from its
+            stem. The thing that must be writable is then the parent and the
+            stem-directory, not a file at ``output_path``.
+
+    Raises:
+        RenderError: code ``OUTPUT_UNWRITABLE``, naming the destination and
+            the specific reason, with a hint that says the cached chapters
+            survive a corrected re-run.
+    """
+    output_path = Path(output_path)
+    target = output_path.parent / output_path.stem if split else output_path
+    parent = target.parent if not split else output_path.parent
+
+    def _fail(reason: str, cause: Optional[BaseException] = None) -> None:
+        raise RenderError(
+            f"Cannot write the audiobook to {output_path}: {reason}",
+            code="OUTPUT_UNWRITABLE",
+            retryable=True,
+            hint=(
+                "Fix the --output path (or the directory it lives in) and "
+                "re-run. Nothing has been synthesized yet; any chapters "
+                "already in the render cache are reused, so a corrected "
+                "re-run costs almost nothing."
+            ),
+            cause=str(cause) if cause is not None else None,
+        ) from cause
+
+    # 1. The parent directory must exist, or be creatable.
+    #
+    # Creating it beats rejecting it: no assembler in renderer/output.py does
+    # (grep for parent.mkdir there — nothing), so a missing directory is
+    # today a hard failure at the very end, and the path the user typed is
+    # almost always the path they meant. But creating a directory tree from a
+    # TYPO silently is its own trap, so the recovery is logged at WARNING
+    # rather than INFO: the CLI configures logging at WARNING by default, so
+    # this is the one level where "I made a directory for you" actually
+    # reaches the person who can tell a typo from an intention.
+    if not parent.exists():
+        try:
+            parent.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            path_diagnosis = _diagnose_windows_path_length(e)
+            if path_diagnosis:
+                _fail(path_diagnosis, e)
+            _fail(
+                f"its directory {parent} does not exist and could not be "
+                f"created ({e.strerror or e})",
+                e,
+            )
+        logger.warning(
+            f"RENDER_OUTPUT_DIR_CREATED: {parent} did not exist and was "
+            f"created for the output {output_path.name!r}. If that is not "
+            f"where you meant the book to go, stop now — nothing has been "
+            f"synthesized yet."
+        )
+    elif not parent.is_dir():
+        # A FILE sits where the directory should be. mkdir would raise
+        # FileExistsError, which reads as "already there" -- say what is
+        # actually wrong instead.
+        _fail(f"{parent} is a file, not a directory")
+
+    # 2. The destination itself must not already be a directory. ffmpeg's
+    #    error for this is a bare PermissionError on Windows, which sends the
+    #    user looking for an ACL problem that does not exist.
+    if not split and target.is_dir():
+        _fail(f"{target} is an existing directory, not a file")
+
+    # 3. The parent must actually accept a new file. os.access() is advisory
+    #    on Windows (it reports the read-only ATTRIBUTE, not the ACL), so
+    #    probe by creating and removing a real file.
+    probe = parent / f"{_WRITE_PROBE_NAME}-{uuid.uuid4().hex[:8]}"
+    try:
+        probe.touch()
+    except OSError as e:
+        path_diagnosis = _diagnose_windows_path_length(e)
+        if path_diagnosis:
+            _fail(path_diagnosis, e)
+        _fail(f"its directory {parent} is not writable ({e.strerror or e})", e)
+    finally:
+        try:
+            probe.unlink(missing_ok=True)
+        except OSError:  # pragma: no cover - best effort cleanup
+            logger.debug(f"Could not remove write probe {probe}")
+
+    # 4. An EXISTING output file must be replaceable. Append mode neither
+    #    truncates nor changes the file; it just proves the handle can be had
+    #    (a read-only file, or one held open by a player, fails here).
+    if not split and target.exists():
+        try:
+            with open(target, "ab"):
+                pass
+        except OSError as e:
+            _fail(
+                f"the existing file cannot be overwritten ({e.strerror or e})",
+                e,
+            )
+
+    logger.debug(f"RENDER_PREFLIGHT_OUTPUT_OK: {output_path}")
+
+
 # ---------------------------------------------------------------------------
 # Render summary (returned to caller for user-facing messages)
 # ---------------------------------------------------------------------------
@@ -1450,6 +1618,8 @@ def _render_project_impl(
     output_profile: str = "podcast",
     split: bool = False,
     validate_voices: bool = True,
+    utterance_cache: Optional[bool] = None,
+    stitch_runner: Optional[Callable] = None,
     **kwargs,
 ) -> "RenderSummary":
     """
@@ -1490,6 +1660,19 @@ def _render_project_impl(
             already ran the gate pass False (``Project.render`` does) so the
             registry is not queried twice. NOT the same knob as ``force``,
             which only bypasses casting *completeness*.
+        utterance_cache: FEAT-PROD-009 / FT-RENDER-P-004 — synthesize one
+            utterance at a time and sub-cache each one, so editing a single
+            line of dialogue in chapter 30 re-synthesizes that line instead of
+            3,000 words. ``None`` (the default) reads
+            ``project.config.utterance_cache``, which is the documented opt-in
+            and defaults to False; pass True/False to override it for one
+            render. Before this wave nothing read the flag and nothing called
+            ``render_chapter_incremental`` — the feature was complete, tested,
+            listed in CHANGELOG 2.1.0 and advertised in the README, and
+            unreachable.
+        stitch_runner: Injected FFmpegRunner-like holder used for the
+            utterance concat step when ``utterance_cache`` is on. Tests pass a
+            fake; None uses the real ffmpeg.
 
     Returns:
         RenderSummary with the output path and per-chapter accounting.
@@ -1507,7 +1690,7 @@ def _render_project_impl(
         assemble_wav as _wav_assembler,
     )
     from audiobooker.renderer.cache_manifest import (
-        CacheManifest, ChapterCacheEntry,
+        CacheManifest, ChapterCacheEntry, MANIFEST_VERSION,
         load_manifest, save_manifest,
         get_cache_root, get_chapter_wav_path, get_manifest_path,
     )
@@ -1583,6 +1766,12 @@ def _render_project_impl(
 
     output_path = Path(output_path)
 
+    # FEAT-PROD-004: the destination gate. Placed with the other cheap,
+    # local preflights and BEFORE the lockfile and the render loop, for the
+    # same reason they are: a book costs hours and (against a paid TTS API)
+    # money, and "where does this go" is answerable in microseconds.
+    _preflight_output_destination(output_path, split=split)
+
     # FT-RENDER-M-002: Auto-cover. When no cover was supplied, fall back to the
     # project's metadata cover_art_path if that file exists, and log which
     # source we used so it's never a silent surprise.
@@ -1629,13 +1818,41 @@ def _render_project_impl(
         f"cache={cache_root} resume={resume} jobs={jobs} format={fmt}"
     )
 
+    # FEAT-PROD-009: resolve the utterance-cache opt-in BEFORE the params
+    # hash, because the hash keys it — the two synthesis strategies do not
+    # produce the same waveform, so toggling the flag must miss.
+    if utterance_cache is None:
+        utterance_cache = bool(getattr(project.config, "utterance_cache", False))
+    effective_config = project.config
+    if utterance_cache != bool(getattr(project.config, "utterance_cache", False)):
+        # An explicit kwarg override must reach the hash too, without
+        # mutating the caller's config object.
+        effective_config = replace(project.config, utterance_cache=utterance_cache)
+
     # Compute current hashes. The engine and the effective output profile are
     # part of the render-params key — rendering the same text with a different
     # TTS engine or a different mastering profile must not hit the cache.
-    current_casting_hash = casting_hash(project.casting)
+    #
+    # FEAT-OUT-001: the casting digest is computed PER CHAPTER (see
+    # _chapter_casting_hash below), scoped to the speakers that chapter
+    # actually contains. There is deliberately no whole-table value cached
+    # here any more: keeping one invites exactly the bug this fixes — a
+    # later edit reaching for the convenient module-level name and writing a
+    # book-wide digest into a per-chapter cache entry.
     current_params_hash = render_params_hash(
-        project.config, engine=engine, output_profile=output_profile
+        effective_config, engine=engine, output_profile=output_profile
     )
+
+    def _chapter_casting_hash(chapter: "Chapter") -> str:
+        """Per-chapter casting digest (FEAT-OUT-001).
+
+        Recasting one character used to re-render the whole book: measured on
+        a two-chapter book where Bob speaks in one, changing only Bob's voice
+        re-synthesized both. Scoping the digest to the chapter's own speakers
+        (plus the narrator and fallback, which any uncast speaker resolves
+        through) makes that one chapter.
+        """
+        return casting_hash(project.casting, chapter=chapter)
 
     # RH-B-003: --jobs N used to call synthesize() on ONE shared engine
     # instance from N pool workers with no thread-safety contract anywhere.
@@ -1670,6 +1887,19 @@ def _render_project_impl(
     manifest = load_manifest(manifest_path) if resume else None
     if manifest is None:
         manifest = CacheManifest(book_title=project.title)
+    elif manifest.version < MANIFEST_VERSION:
+        # A pre-v3 manifest still LOADS (load_manifest only refuses FUTURE
+        # versions) and every one of its entries misses on the new hashes, so
+        # the cache self-heals. But entries written from here on are v3-keyed,
+        # and leaving the file stamped v2 would advertise a schema it no
+        # longer holds — the "an older audiobooker refuses a manifest it
+        # cannot reproduce" guarantee only works if the stamp is honest.
+        logger.info(
+            f"RENDER_CACHE_UPGRADE: manifest v{manifest.version} -> "
+            f"v{MANIFEST_VERSION}; entries keyed under the old schema "
+            f"re-render once."
+        )
+        manifest.version = MANIFEST_VERSION
 
     summary = RenderSummary(
         output_path=output_path,
@@ -1717,11 +1947,12 @@ def _render_project_impl(
                 continue
 
             current_text_hash = chapter_text_hash(chapter)
+            chapter_casting_hash = _chapter_casting_hash(chapter)
 
             # Check cache
             if resume:
                 existing = manifest.get_entry(i)
-                if existing and existing.is_valid(current_text_hash, current_casting_hash, current_params_hash):
+                if existing and existing.is_valid(current_text_hash, chapter_casting_hash, current_params_hash):
                     chapter.audio_path = Path(existing.wav_path)
                     chapter.duration_seconds = existing.duration_s
                     tracker.mark_cached(i, chapter.title, existing.duration_s)
@@ -1733,11 +1964,15 @@ def _render_project_impl(
                         progress_callback(i + 1, len(project.chapters), status)
                     continue
 
-            chapters_to_render.append((i, chapter, current_text_hash))
+            chapters_to_render.append(
+                (i, chapter, current_text_hash, chapter_casting_hash)
+            )
 
         # ---- Phase 2: Render chapters (sequential or parallel) ----
 
-        def _render_one_chapter(i: int, chapter: "Chapter", text_hash: str) -> None:
+        def _render_one_chapter(
+            i: int, chapter: "Chapter", text_hash: str, chapter_casting_hash: str
+        ) -> None:
             """Render a single chapter, updating shared state thread-safely."""
             tracker.start_chapter(i, chapter.title, word_count=chapter.word_count)
 
@@ -1755,10 +1990,30 @@ def _render_project_impl(
 
             start = time.time()
             try:
-                render_chapter(
-                    chapter, project.casting, tmp_path,
-                    engine=render_engine, emotion_preset=emotion_preset,
-                )
+                if utterance_cache:
+                    # FEAT-PROD-009: the opt-in utterance-level path. It keeps
+                    # its own namespaced manifest (render_v2_utterance.json)
+                    # per chapter, so the chapter cache below is written
+                    # exactly as it always was and a project that turns the
+                    # flag back off resumes from it unchanged.
+                    inc = render_chapter_incremental(
+                        chapter, project.casting, tmp_path,
+                        engine=render_engine,
+                        cache_root=cache_root,
+                        render_params_hash=current_params_hash,
+                        runner=stitch_runner,
+                        emotion_preset=emotion_preset,
+                    )
+                    logger.info(
+                        f"RENDER_UTTERANCE_CACHE: chapter={i} "
+                        f"synthesized={inc.utterances_synthesized} "
+                        f"reused={inc.utterances_reused}/{inc.utterances_total}"
+                    )
+                else:
+                    render_chapter(
+                        chapter, project.casting, tmp_path,
+                        engine=render_engine, emotion_preset=emotion_preset,
+                    )
 
                 try:
                     os.replace(str(tmp_path), str(target_path))
@@ -1781,7 +2036,7 @@ def _render_project_impl(
                 entry = ChapterCacheEntry(
                     chapter_index=i,
                     text_hash=text_hash,
-                    casting_hash=current_casting_hash,
+                    casting_hash=chapter_casting_hash,
                     render_params_hash=current_params_hash,
                     wav_path=str(target_path),
                     duration_s=chapter.duration_seconds,
@@ -1828,7 +2083,7 @@ def _render_project_impl(
                     i, chapter, e, text_hash,
                     tmp_path, tracker, manifest, manifest_path,
                     manifest_lock, failure_report, summary,
-                    current_casting_hash, current_params_hash,
+                    chapter_casting_hash, current_params_hash,
                     allow_partial,
                 )
 
@@ -1837,7 +2092,7 @@ def _render_project_impl(
                     i, chapter, e, text_hash,
                     tmp_path, tracker, manifest, manifest_path,
                     manifest_lock, failure_report, summary,
-                    current_casting_hash, current_params_hash,
+                    chapter_casting_hash, current_params_hash,
                     allow_partial,
                 )
 
@@ -1846,8 +2101,8 @@ def _render_project_impl(
             logger.info(f"RENDER_PARALLEL: {jobs} workers for {len(chapters_to_render)} chapters")
             with ThreadPoolExecutor(max_workers=jobs) as pool:
                 futures = {
-                    pool.submit(_render_one_chapter, i, ch, th): i
-                    for i, ch, th in chapters_to_render
+                    pool.submit(_render_one_chapter, i, ch, th, chash): i
+                    for i, ch, th, chash in chapters_to_render
                 }
                 try:
                     for future in as_completed(futures):
@@ -1883,8 +2138,8 @@ def _render_project_impl(
                     raise
         else:
             # Sequential rendering (default)
-            for i, chapter, text_hash in chapters_to_render:
-                _render_one_chapter(i, chapter, text_hash)
+            for i, chapter, text_hash, chapter_chash in chapters_to_render:
+                _render_one_chapter(i, chapter, text_hash, chapter_chash)
 
         # Verify all chapters are ready for assembly
         ok_paths = []
@@ -2310,7 +2565,13 @@ def render_sample(
             try:
                 valid = entry.is_valid(
                     chapter_text_hash(chapter),
-                    casting_hash(project.casting),
+                    # FEAT-OUT-001: the render wrote this entry with a
+                    # chapter-scoped casting digest, so the sample has to
+                    # read it with one. Comparing against the whole-table
+                    # hash rejected every entry the renderer had just
+                    # written, and re-synthesized a chapter that was sitting
+                    # in the cache.
+                    casting_hash(project.casting, chapter=chapter),
                     render_params_hash(
                         project.config, engine=engine, output_profile=output_profile
                     ),
@@ -2722,8 +2983,11 @@ def dry_run_render(
     cache_root = get_cache_root(project_dir)
     manifest_path = get_manifest_path(cache_root)
 
-    current_casting_hash = casting_hash(project.casting)
     # RH-B-004: same arguments as the real render, or the preview lies.
+    # FEAT-OUT-001: which means the casting digest must be scoped per chapter
+    # here too — a dry run that used the whole-table hash would predict a full
+    # re-render after a single recast while the real render only touched the
+    # chapters that character speaks in.
     current_params_hash = render_params_hash(
         project.config, engine=engine, output_profile=output_profile
     )
@@ -2743,7 +3007,11 @@ def dry_run_render(
 
         if resume and manifest:
             existing = manifest.get_entry(i)
-            if existing and existing.is_valid(current_text_hash, current_casting_hash, current_params_hash):
+            if existing and existing.is_valid(
+                current_text_hash,
+                casting_hash(project.casting, chapter=chapter),
+                current_params_hash,
+            ):
                 cached.append((i, chapter.title, chapter.word_count))
                 continue
 
