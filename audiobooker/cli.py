@@ -343,6 +343,55 @@ def _report_error(e: BaseException, args: "argparse.Namespace | None" = None) ->
         traceback.print_exc()
 
 
+def _cli_error(
+    code: str,
+    message: str,
+    hint: str = "",
+    *,
+    retryable: bool = False,
+) -> "BaseException":
+    """A structured CLI refusal. Lives here so errors.py stays out of this domain."""
+    from audiobooker.errors import AudiobookerError, ErrorDetail
+
+    return AudiobookerError(
+        ErrorDetail(
+            code=code,
+            message=message,
+            hint=hint,
+            retryable=retryable,
+        )
+    )
+
+
+def _refuse(
+    args: "argparse.Namespace | None",
+    *,
+    code: str,
+    message: str,
+    hint: str = "",
+) -> int:
+    """Pre-spend refusal via ``_report_error``: JSON on stderr under --json.
+
+    Gate helpers used to ``_err`` English and return 1, so ``render --json``
+    on a refused book left stdout empty and stderr unparseable. One chokepoint
+    keeps the four-key object on the JSON path and the prose Error/Hint lines
+    on the human path.
+    """
+    _report_error(_cli_error(code, message, hint), args)
+    return 1
+
+
+def _refuse_chapter_index(args, index: int, total: int) -> int:
+    """Bounds refusal matching ``_check_single_chapter_flags`` (0-based range)."""
+    where = f"0-{total - 1}" if total else "the project has no chapters"
+    return _refuse(
+        args,
+        code="CHAPTER_INDEX_OUT_OF_RANGE",
+        message=f"Chapter index {index} out of range ({where}).",
+        hint="Pass a 0-based chapter index in that range.",
+    )
+
+
 def _audiobooker_file_completer(prefix, **kwargs):
     """FT-CLI-004: argcomplete completer suggesting *.audiobooker files.
 
@@ -919,6 +968,16 @@ def create_parser() -> argparse.ArgumentParser:
         "--json", dest="json_output", action="store_true",
         help="Emit the per-book results array as JSON",
     )
+    # Same override as `render --force`: batch used to hardcode force=True
+    # and skip the attribution / uncast gates on the one-command spend path.
+    batch_parser.add_argument(
+        "--force",
+        action="store_true",
+        help=(
+            "Render anyway when a speaker with dialogue is uncast or when "
+            "attribution quality has failed (same override as render --force)"
+        ),
+    )
     # FT-ENGINE-001: pluggable TTS engine for every book in the batch.
     batch_parser.add_argument(
         "--engine",
@@ -998,6 +1057,14 @@ def create_parser() -> argparse.ArgumentParser:
         "-o", "--output",
         help="Output file path (default: sample.<ext>)",
     )
+    sample_parser.add_argument(
+        "--force",
+        action="store_true",
+        help=(
+            "Synthesize the sample chapter anyway when attribution quality "
+            "has failed or a speaker with dialogue is uncast"
+        ),
+    )
     # FT-ENGINE-001: render the sample through a specific TTS engine.
     sample_parser.add_argument(
         "--engine",
@@ -1071,6 +1138,14 @@ def create_parser() -> argparse.ArgumentParser:
         action="store_true",
         dest="no_render",
         help="Skip rendering; build the feed from already-rendered chapter audio",
+    )
+    podcast_parser.add_argument(
+        "--force",
+        action="store_true",
+        help=(
+            "Render anyway when a speaker with dialogue is uncast or when "
+            "attribution quality has failed (same override as render --force)"
+        ),
     )
     podcast_parser.add_argument(
         "--engine",
@@ -1439,6 +1514,16 @@ def create_parser() -> argparse.ArgumentParser:
         "--engine",
         metavar="NAME",
         help="TTS engine to render with (default: voice-soundboard)",
+    )
+    # Same override as `render --force`. make used to hardcode force=True
+    # after auto-cast, so a guessed-attribution book spent a full TTS run.
+    make_parser.add_argument(
+        "--force",
+        action="store_true",
+        help=(
+            "Render anyway when a speaker with dialogue is uncast or when "
+            "attribution quality has failed (same override as render --force)"
+        ),
     )
 
     # --- FT-CAST-019: audition (rank candidate voices for one speaker) ---
@@ -2626,12 +2711,7 @@ def _check_single_chapter_flags(args, project) -> Optional[int]:
     # project.render_chapter path had none, and neither rejected negatives).
     total = len(project.chapters)
     if chapter_index < 0 or chapter_index >= total:
-        where = f"0-{total - 1}" if total else "the project has no chapters"
-        _err(
-            f"Error: Chapter index {chapter_index} out of range ({where}).",
-            args=args,
-        )
-        return 1
+        return _refuse_chapter_index(args, chapter_index, total)
 
     # Incompatible flags — fail fast and name them all at once.
     conflicts = [
@@ -2641,17 +2721,18 @@ def _check_single_chapter_flags(args, project) -> Optional[int]:
     if getattr(args, "jobs", 1) and getattr(args, "jobs", 1) > 1:
         conflicts.append("-j/--jobs")
     if conflicts:
-        _err(
-            "Error: these flags apply to a full-book render and cannot be "
-            f"honored with -c/--chapter: {', '.join(conflicts)}",
-            args=args,
+        return _refuse(
+            args,
+            code="SINGLE_CHAPTER_INCOMPATIBLE_FLAGS",
+            message=(
+                "these flags apply to a full-book render and cannot be "
+                f"honored with -c/--chapter: {', '.join(conflicts)}"
+            ),
+            hint=(
+                "drop -c to render the whole book with those options, or "
+                "drop the options to render one chapter to a plain WAV."
+            ),
         )
-        _err(
-            "Hint: drop -c to render the whole book with those options, or "
-            "drop the options to render one chapter to a plain WAV.",
-            args=args,
-        )
-        return 1
 
     for attr, flag in _SINGLE_CHAPTER_NO_OP:
         if getattr(args, attr, False):
@@ -2896,8 +2977,9 @@ def _check_dialogue_attribution_quality(args, chapters, casting) -> Optional[int
     place left that can still refuse to spend a TTS run on a book whose
     speakers are mostly wrong.
 
-    Same shape as ``cmd_podcast`` / the ``export-chapters`` guard: an
-    ``_err()`` naming the problem, an ``_err()`` hint, a non-zero return.
+    Same shape as ``cmd_podcast`` / the ``export-chapters`` guard: a
+    structured refusal through ``_report_error`` (JSON on stderr under
+    ``--json``), a hint, a non-zero return.
     ``--force`` — render's existing flag, previously documented as bypassing
     only casting-completeness validation — also bypasses this gate; that is
     the established override convention in this CLI (see also ``cast
@@ -2949,25 +3031,26 @@ def _check_dialogue_attribution_quality(args, chapters, casting) -> Optional[int
     unknown = report["total_dialogue_unknown"]
     total = report["total_dialogue"]
 
-    _err(
-        "Error: dialogue attribution failed the quality gate - "
-        f"{guessed + unknown}/{total} dialogue lines ({unverified:.0%}) have "
-        "no attribution in the text. "
-        f"{guessed} were guessed by alternating turns and {unknown} are "
-        "unattributed. Rendering now would pay for a full TTS run of a book "
-        "whose speakers are largely invented (unknown speakers fall back to "
-        f"{casting.unknown_character_behavior!r}).",
-        args=args,
+    return _refuse(
+        args,
+        code="ATTRIBUTION_QUALITY_FAILED",
+        message=(
+            "dialogue attribution failed the quality gate - "
+            f"{guessed + unknown}/{total} dialogue lines ({unverified:.0%}) have "
+            "no attribution in the text. "
+            f"{guessed} were guessed by alternating turns and {unknown} are "
+            "unattributed. Rendering now would pay for a full TTS run of a book "
+            "whose speakers are largely invented (unknown speakers fall back to "
+            f"{casting.unknown_character_behavior!r})."
+        ),
+        hint=(
+            "a guessed line is not visible in the unattributed count - run "
+            "'audiobooker report' and check the low-confidence lines, or "
+            "'review-export' to fix them by hand. Check --lang if the book is "
+            "not English. Pass --force to render anyway (e.g. the book really is "
+            "mostly narration)."
+        ),
     )
-    _err(
-        "Hint: a guessed line is not visible in the unattributed count - run "
-        "'audiobooker report' and check the low-confidence lines, or "
-        "'review-export' to fix them by hand. Check --lang if the book is "
-        "not English. Pass --force to render anyway (e.g. the book really is "
-        "mostly narration).",
-        args=args,
-    )
-    return 1
 
 
 def _uncast_dialogue_speakers(project, chapters) -> dict[str, int]:
@@ -3040,22 +3123,39 @@ def _check_uncast_dialogue_speakers(args, project, chapters) -> Optional[int]:
         return None
 
     total = sum(offenders.values())
-    _err(
-        f"Error: {len(offenders)} speaker(s) own {total} dialogue line(s) but "
-        "have no voice assigned, so they would be read in the fallback voice "
-        f"({project.casting.unknown_character_behavior!r}):",
-        args=args,
+    listed = "\n".join(
+        f"  {speaker}: {lines} dialogue line(s)"
+        for speaker, lines in sorted(
+            offenders.items(), key=lambda kv: (-kv[1], kv[0])
+        )
     )
-    for speaker, lines in sorted(offenders.items(), key=lambda kv: (-kv[1], kv[0])):
-        _err(f"  {speaker}: {lines} dialogue line(s)", args=args)
-    _err(
-        "Hint: cast them (audiobooker cast <speaker> <voice>), auto-cast them "
-        "(audiobooker cast-apply --auto), or pass --force to render anyway. "
-        "A speaker you do not recognise is usually a typo in an imported "
-        "review file - check 'audiobooker speakers'.",
-        args=args,
+    return _refuse(
+        args,
+        code="UNCAST_DIALOGUE_SPEAKER",
+        message=(
+            f"{len(offenders)} speaker(s) own {total} dialogue line(s) but "
+            "have no voice assigned, so they would be read in the fallback voice "
+            f"({project.casting.unknown_character_behavior!r}):\n{listed}"
+        ),
+        hint=(
+            "cast them (audiobooker cast <speaker> <voice>), auto-cast them "
+            "(audiobooker cast-apply --auto), or pass --force to render anyway. "
+            "A speaker you do not recognise is usually a typo in an imported "
+            "review file - check 'audiobooker speakers'."
+        ),
     )
-    return 1
+
+
+def _pre_spend_gates(args, project, chapters) -> Optional[int]:
+    """The two CLI gates that must run before any TTS spend. Or None.
+
+    ``cmd_render`` had these; make/batch/podcast/sample did not, so the
+    production sequence that actually burns a book skipped them.
+    """
+    rc = _check_dialogue_attribution_quality(args, chapters, project.casting)
+    if rc is not None:
+        return rc
+    return _check_uncast_dialogue_speakers(args, project, chapters)
 
 
 def _encodable_spinner() -> str:
@@ -3142,8 +3242,12 @@ def _cmd_render_once_inner(args, AudiobookProject, RenderError) -> int:
         # produce a coverless book.
         cover_flag = getattr(args, "cover", None)
         if cover_flag and not Path(cover_flag).exists():
-            _err(f"Error: Cover art file not found: {cover_flag}")
-            return 1
+            return _refuse(
+                args,
+                code="COVER_NOT_FOUND",
+                message=f"Cover art file not found: {cover_flag}",
+                hint="Pass a path to an existing JPG/PNG, or omit --cover.",
+            )
 
         # CLI-3 / CLI-5: everything below used to live in the `else:` branch of
         # `if args.chapter is not None:`, so `render -c N` ran straight past the
@@ -3205,17 +3309,11 @@ def _cmd_render_once_inner(args, AudiobookProject, RenderError) -> int:
             if not chapter.is_compiled:
                 project.compile_chapter(args.chapter)
 
-            # PH-B-002: refuse before spending a TTS run if this chapter's
-            # dialogue attribution has collapsed. Scoped to just this
-            # chapter — the rest of the book, compiled or not, has no
-            # bearing on whether THIS render should proceed.
-            rc = _check_dialogue_attribution_quality(args, [chapter], project.casting)
-            if rc is not None:
-                return rc
-
-            # FEAT-UX-002: and refuse if a named speaker in THIS chapter owns
-            # dialogue with no voice — same scoping rationale as above.
-            rc = _check_uncast_dialogue_speakers(args, project, [chapter])
+            # PH-B-002 / FEAT-UX-002: refuse before spending a TTS run if
+            # this chapter's dialogue attribution has collapsed, or a named
+            # speaker owns dialogue with no voice. Scoped to just this
+            # chapter — the rest of the book has no bearing on THIS render.
+            rc = _pre_spend_gates(args, project, [chapter])
             if rc is not None:
                 return rc
 
@@ -3229,7 +3327,22 @@ def _cmd_render_once_inner(args, AudiobookProject, RenderError) -> int:
                 )
             else:
                 path = project.render_chapter(args.chapter, output)
-            _out(f"Output: {path}")
+
+            # FEAT-UX-004 sibling: full-book --json emits a payload; the
+            # paid single-chapter branch used to return 0 with empty stdout
+            # because _QUIET swallowed "Output: {path}".
+            if getattr(args, "json_output", False):
+                _emit_json({
+                    "path": str(path),
+                    "output": str(path),
+                    "chapter": {
+                        "index": chapter.index,
+                        "number": chapter.index + 1,
+                    },
+                    "complete": True,
+                })
+            else:
+                _out(f"Output: {path}")
 
             # CLI-5: --notify is advertised on `render` but was read only in
             # the full-book branch, so a single-chapter render never notified.
@@ -3284,13 +3397,7 @@ def _cmd_render_once_inner(args, AudiobookProject, RenderError) -> int:
             if uncompiled:
                 project.compile()
 
-            rc = _check_dialogue_attribution_quality(args, project.chapters, project.casting)
-            if rc is not None:
-                return rc
-
-            # FEAT-UX-002: a typo'd speaker name is a wrong voice in the
-            # finished book — refuse before the TTS run, not after.
-            rc = _check_uncast_dialogue_speakers(args, project, project.chapters)
+            rc = _pre_spend_gates(args, project, project.chapters)
             if rc is not None:
                 return rc
 
@@ -5936,6 +6043,8 @@ def _process_book(
     review: bool = False,
     phase_log: bool = True,
     label: str = "make",
+    force: bool = False,
+    args=None,
 ) -> dict:
     """Create + compile + auto-cast + render a single source file.
 
@@ -5982,6 +6091,10 @@ def _process_book(
             --json` passes False so the phase lines cannot land in the
             payload stream.
         label: the command name to quote back in the refusal message.
+        force: user --force. Previously hardcoded True at render_project so
+            make/batch skipped both CLI gates and engine casting validation.
+        args: the parsed CLI namespace when called from make/batch, so
+            --json refusals go through _report_error.
 
     Returns:
         A result dict: {file, name, status, output, error, duration_s}.
@@ -6108,7 +6221,9 @@ def _process_book(
                 f"attribution {quality_report['total_dialogue_unknown']}/"
                 f"{quality_report['total_dialogue']} unattributed "
                 f"({quality_report['dialogue_unknown_rate']:.0%}, "
-                f"{quality_report['quality']})",
+                f"{quality_report['quality']}; "
+                f"attribution_quality {quality_report['attribution_quality']}, "
+                f"unverified {quality_report['dialogue_unverified_rate']:.0%})",
             )
         else:
             _phase(None, f"Compiled {total_utterances} utterance(s) (no dialogue)")
@@ -6191,6 +6306,27 @@ def _process_book(
             book_result["duration_s"] = _time.time() - book_start
             return book_result
 
+        # Pre-spend gates AFTER auto-cast (uncast is what would actually
+        # render) and AFTER --dry-run/--review (those do not spend TTS).
+        # Restoring force=True-unconditional at render_project must fail
+        # the planted-RED make test: a guessed-dialogue book must not
+        # reach render_project without --force.
+        effective_force = bool(force or getattr(args, "force", False))
+        gate_args = argparse.Namespace(
+            force=effective_force,
+            json_output=bool(getattr(args, "json_output", False)),
+            debug=bool(getattr(args, "debug", False)),
+        )
+        rc = _pre_spend_gates(gate_args, project, project.chapters)
+        if rc is not None:
+            book_result["status"] = "refused"
+            book_result["error"] = (
+                "attribution or uncast-dialogue gate refused the render "
+                "(pass --force to override)"
+            )
+            book_result["duration_s"] = _time.time() - book_start
+            return book_result
+
         # Step 4: Save project.
         #
         # CLIUX-C-001: the ORDERING is the finding. Save was step 4 and render
@@ -6217,7 +6353,7 @@ def _process_book(
             md_cover = str(project.metadata.cover_art_path)
         render_kwargs = dict(
             jobs=jobs,
-            force=True,  # skip casting validation in batch/make
+            force=effective_force,
             output_format=out_fmt,
             cover_art=md_cover,
             output_profile=project.config.output_profile,
@@ -6521,6 +6657,8 @@ def cmd_batch(args) -> int:
             # stdout is the payload stream.
             phase_log=not json_output,
             label="batch",
+            force=bool(getattr(args, "force", False)),
+            args=args,
         )
         status = book_result["status"]
         if status == "success":
@@ -6533,8 +6671,10 @@ def cmd_batch(args) -> int:
         elif status == "failed":
             _out(f"  FAILED: {book_result['error']}")
         elif status == "refused":
-            # The refusal detail was already printed by _process_book.
-            _out("  REFUSED: existing project left untouched")
+            # Overwrite, attribution, or uncast — detail already printed.
+            _out(
+                f"  REFUSED: {book_result.get('error') or 'stopped before render'}"
+            )
         elif status == "skipped":
             _out(f"  Skipped: {book_result['error']}")
         else:
@@ -6656,6 +6796,8 @@ def _run_make_once(args) -> dict:
         # FEAT-UX-003: stop after compile + cast and write the review file.
         review=bool(getattr(args, "review", False)),
         label="make",
+        force=bool(getattr(args, "force", False)),
+        args=args,
     )
 
 
@@ -6670,8 +6812,12 @@ def cmd_make(args) -> int:
     """
     source = Path(args.source)
     if not source.exists():
-        _err(f"Error: Source file not found: {source}")
-        return 1
+        return _refuse(
+            args,
+            code="FILE_NOT_FOUND",
+            message=f"Source file not found: {source}",
+            hint="Pass a path to an existing EPUB/DOCX/TXT/MD/PDF or a chapter folder.",
+        )
 
     # FT-CLI-008: watch mode — re-run make whenever the source mtime changes.
     if getattr(args, "watch", False):
@@ -6777,9 +6923,9 @@ def cmd_preview(args) -> int:
         chapter_idx = args.chapter
         target_seconds = args.seconds
 
-        if chapter_idx >= len(project.chapters):
-            _err(f"Error: Chapter {chapter_idx} not found (only {len(project.chapters)} chapters)")
-            return 1
+        total = len(project.chapters)
+        if chapter_idx < 0 or chapter_idx >= total:
+            return _refuse_chapter_index(args, chapter_idx, total)
 
         chapter = project.chapters[chapter_idx]
 
@@ -6791,8 +6937,12 @@ def cmd_preview(args) -> int:
             chapter = project.chapters[chapter_idx]
 
         if not chapter.utterances:
-            _err(f"Error: Chapter {chapter_idx} has no utterances after compilation")
-            return 1
+            return _refuse(
+                args,
+                code="CHAPTER_EMPTY",
+                message=f"Chapter {chapter_idx} has no utterances after compilation",
+                hint="Compile the project first, or pick a chapter that has text.",
+            )
 
         # Estimate how many utterances fit in target_seconds
         # Rough heuristic: 150 words per minute, ~5 chars per word
@@ -6872,14 +7022,29 @@ def cmd_sample(args) -> int:
         output = getattr(args, "output", None)
 
         if from_chapter < 0 or from_chapter >= len(project.chapters):
-            # Residual 4: an error line printed with a bare print() bypasses
-            # the _err chokepoint and lands in a piped stdout.
-            _err(
-                f"Error: Chapter {from_chapter} not found "
-                f"(project has {len(project.chapters)} chapters)",
-                args=args,
+            # Keep "not found" in the message — existing tests match it —
+            # but route through _report_error so --json is parseable.
+            return _refuse(
+                args,
+                code="CHAPTER_INDEX_OUT_OF_RANGE",
+                message=(
+                    f"Chapter {from_chapter} not found "
+                    f"(project has {len(project.chapters)} chapters)"
+                ),
+                hint="Pass a 0-based --from-chapter index in range.",
             )
-            return 1
+
+        chapter = project.chapters[from_chapter]
+        if not chapter.is_compiled:
+            project.compile_chapter(from_chapter)
+            chapter = project.chapters[from_chapter]
+
+        # Cache-miss sample synthesizes a whole chapter. Gate it the same
+        # way as render; --force is the override. A cache hit of guessed
+        # audio is still guessed audio, so the gate is not cache-conditional.
+        rc = _pre_spend_gates(args, project, [chapter])
+        if rc is not None:
+            return rc
 
         _out(f"Rendering sample from chapter {from_chapter}...")
         _out(f"  Start: {start_seconds:.0f}s  Duration: {duration:.0f}s  Profile: {output_profile}")
@@ -7056,7 +7221,8 @@ def cmd_podcast(args) -> int:
          the iTunes RSS 2.0 XML to podcast.xml (or -o).
 
     Flags: --base-url (prepended to each enclosure URL), -o (output XML path),
-    --format (per-chapter audio format), -j/--jobs, --no-render, --engine.
+    --format (per-chapter audio format), -j/--jobs, --no-render, --force,
+    --engine.
     """
     from audiobooker import AudiobookProject
     from audiobooker.renderer.engine import RenderError
@@ -7082,11 +7248,15 @@ def cmd_podcast(args) -> int:
                 project.compile()
                 project.save()
 
+            rc = _pre_spend_gates(args, project, project.chapters)
+            if rc is not None:
+                return rc
+
             _out(f"Rendering {len(project.chapters)} chapter file(s) ({fmt})...")
             render_kwargs = dict(
                 resume=True,
                 jobs=getattr(args, "jobs", 1),
-                force=True,
+                force=bool(getattr(args, "force", False)),
                 output_format=fmt,
                 split=True,
             )
