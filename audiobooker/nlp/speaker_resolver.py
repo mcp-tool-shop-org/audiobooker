@@ -659,7 +659,7 @@ def suggest_aliases(
                 available = backend.is_available()
             except Exception:  # pragma: no cover - defensive
                 available = False
-        if available:
+        if available and backend is not None:
             for chapter in chapters:
                 text = getattr(chapter, "raw_text", "") or ""
                 if not text.strip():

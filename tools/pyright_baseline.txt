@@ -21,10 +21,8 @@ audiobooker/parser/docx.py:reportAttributeAccessIssue
 audiobooker/parser/epub.py:reportArgumentType
 audiobooker/parser/pdf.py:reportArgumentType
 audiobooker/parser/pdf.py:reportAttributeAccessIssue
-audiobooker/project.py:reportAbstractUsage
 audiobooker/project.py:reportArgumentType
 audiobooker/project.py:reportAttributeAccessIssue
-audiobooker/project.py:reportCallIssue
 audiobooker/project.py:reportOptionalOperand
 audiobooker/renderer/engine.py:reportArgumentType
 audiobooker/renderer/engine.py:reportAssignmentType
@@ -36,6 +34,5 @@ audiobooker/renderer/engine.py:reportReturnType
 audiobooker/renderer/hash_utils.py:reportOptionalMemberAccess
 audiobooker/renderer/output.py:reportArgumentType
 audiobooker/renderer/output.py:reportOptionalMemberAccess
-audiobooker/renderer/protocols.py:reportUndefinedVariable
 audiobooker/review.py:reportArgumentType
 audiobooker/review.py:reportOptionalMemberAccess
