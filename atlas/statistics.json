@@ -1,0 +1,1425 @@
+{
+  "authorship": {
+    "parts": [],
+    "places": []
+  },
+  "boundaries": [
+    {
+      "breakage": {
+        "coChangesOnly": [],
+        "collapsed": false,
+        "confidence": "low",
+        "importsAndCoChanges": [],
+        "importsOnly": []
+      },
+      "cohesion": null,
+      "cohesionDropped": false,
+      "confidence": "low",
+      "highWater": null,
+      "name": ".github",
+      "qualifyingSourceCommits": 0,
+      "rebaseline": null
+    },
+    {
+      "breakage": {
+        "coChangesOnly": [],
+        "collapsed": false,
+        "confidence": "low",
+        "importsAndCoChanges": [],
+        "importsOnly": []
+      },
+      "cohesion": null,
+      "cohesionDropped": false,
+      "confidence": "low",
+      "highWater": null,
+      "name": "assets",
+      "qualifyingSourceCommits": 0,
+      "rebaseline": null
+    },
+    {
+      "breakage": {
+        "coChangesOnly": [],
+        "collapsed": false,
+        "confidence": "low",
+        "importsAndCoChanges": [],
+        "importsOnly": [
+          "examples",
+          "tests"
+        ]
+      },
+      "cohesion": 1,
+      "cohesionDropped": false,
+      "confidence": "full",
+      "highWater": null,
+      "name": "audiobooker",
+      "qualifyingSourceCommits": 59,
+      "rebaseline": null
+    },
+    {
+      "breakage": {
+        "coChangesOnly": [],
+        "collapsed": false,
+        "confidence": "low",
+        "importsAndCoChanges": [],
+        "importsOnly": []
+      },
+      "cohesion": null,
+      "cohesionDropped": false,
+      "confidence": "low",
+      "highWater": null,
+      "name": "docs",
+      "qualifyingSourceCommits": 0,
+      "rebaseline": null
+    },
+    {
+      "breakage": {
+        "coChangesOnly": [],
+        "collapsed": false,
+        "confidence": "low",
+        "importsAndCoChanges": [],
+        "importsOnly": []
+      },
+      "cohesion": null,
+      "cohesionDropped": false,
+      "confidence": "low",
+      "highWater": null,
+      "name": "examples",
+      "qualifyingSourceCommits": 0,
+      "rebaseline": null
+    },
+    {
+      "breakage": {
+        "coChangesOnly": [],
+        "collapsed": false,
+        "confidence": "low",
+        "importsAndCoChanges": [],
+        "importsOnly": []
+      },
+      "cohesion": null,
+      "cohesionDropped": false,
+      "confidence": "low",
+      "highWater": null,
+      "name": "npm",
+      "qualifyingSourceCommits": 4,
+      "rebaseline": null
+    },
+    {
+      "breakage": {
+        "coChangesOnly": [],
+        "collapsed": false,
+        "confidence": "low",
+        "importsAndCoChanges": [],
+        "importsOnly": []
+      },
+      "cohesion": null,
+      "cohesionDropped": false,
+      "confidence": "low",
+      "highWater": null,
+      "name": "root",
+      "qualifyingSourceCommits": 0,
+      "rebaseline": null
+    },
+    {
+      "breakage": {
+        "coChangesOnly": [],
+        "collapsed": false,
+        "confidence": "low",
+        "importsAndCoChanges": [],
+        "importsOnly": []
+      },
+      "cohesion": null,
+      "cohesionDropped": false,
+      "confidence": "low",
+      "highWater": null,
+      "name": "site",
+      "qualifyingSourceCommits": 5,
+      "rebaseline": null
+    },
+    {
+      "breakage": {
+        "coChangesOnly": [],
+        "collapsed": false,
+        "confidence": "low",
+        "importsAndCoChanges": [],
+        "importsOnly": []
+      },
+      "cohesion": null,
+      "cohesionDropped": false,
+      "confidence": "full",
+      "highWater": null,
+      "name": "tests",
+      "qualifyingSourceCommits": 50,
+      "rebaseline": null
+    },
+    {
+      "breakage": {
+        "coChangesOnly": [],
+        "collapsed": false,
+        "confidence": "low",
+        "importsAndCoChanges": [],
+        "importsOnly": []
+      },
+      "cohesion": null,
+      "cohesionDropped": false,
+      "confidence": "low",
+      "highWater": null,
+      "name": "tools",
+      "qualifyingSourceCommits": 6,
+      "rebaseline": null
+    }
+  ],
+  "churn": {
+    "definition": "commits is how many commits in the window touch the file, including merges and commits dropped from coupling. lines is added plus deleted in those commits.",
+    "files": [
+      {
+        "commits": 1,
+        "lines": 23,
+        "path": ".dockerignore"
+      },
+      {
+        "commits": 3,
+        "lines": 31,
+        "path": ".github/dependabot.yml"
+      },
+      {
+        "commits": 1,
+        "lines": 13,
+        "path": ".github/release.yml"
+      },
+      {
+        "commits": 25,
+        "lines": 507,
+        "path": ".github/workflows/ci.yml"
+      },
+      {
+        "commits": 9,
+        "lines": 77,
+        "path": ".github/workflows/docker.yml"
+      },
+      {
+        "commits": 3,
+        "lines": 18,
+        "path": ".github/workflows/pages.yml"
+      },
+      {
+        "commits": 5,
+        "lines": 131,
+        "path": ".github/workflows/publish.yml"
+      },
+      {
+        "commits": 11,
+        "lines": 453,
+        "path": ".github/workflows/release.yml"
+      },
+      {
+        "commits": 5,
+        "lines": 17,
+        "path": ".gitignore"
+      },
+      {
+        "commits": 5,
+        "lines": 59,
+        "path": ".pre-commit-config.yaml"
+      },
+      {
+        "commits": 14,
+        "lines": 821,
+        "path": "CHANGELOG.md"
+      },
+      {
+        "commits": 1,
+        "lines": 2,
+        "path": "CODE_OF_CONDUCT.md"
+      },
+      {
+        "commits": 4,
+        "lines": 46,
+        "path": "CONTRIBUTING.md"
+      },
+      {
+        "commits": 9,
+        "lines": 203,
+        "path": "Dockerfile"
+      },
+      {
+        "commits": 8,
+        "lines": 223,
+        "path": "Makefile"
+      },
+      {
+        "commits": 13,
+        "lines": 1775,
+        "path": "README.es.md"
+      },
+      {
+        "commits": 13,
+        "lines": 1633,
+        "path": "README.fr.md"
+      },
+      {
+        "commits": 13,
+        "lines": 1727,
+        "path": "README.hi.md"
+      },
+      {
+        "commits": 13,
+        "lines": 1679,
+        "path": "README.it.md"
+      },
+      {
+        "commits": 13,
+        "lines": 1691,
+        "path": "README.ja.md"
+      },
+      {
+        "commits": 15,
+        "lines": 1137,
+        "path": "README.md"
+      },
+      {
+        "commits": 13,
+        "lines": 1465,
+        "path": "README.pt-BR.md"
+      },
+      {
+        "commits": 13,
+        "lines": 1677,
+        "path": "README.zh.md"
+      },
+      {
+        "commits": 7,
+        "lines": 210,
+        "path": "SCORECARD.md"
+      },
+      {
+        "commits": 4,
+        "lines": 46,
+        "path": "SECURITY.md"
+      },
+      {
+        "commits": 9,
+        "lines": 66,
+        "path": "SHIP_GATE.md"
+      },
+      {
+        "commits": 8,
+        "lines": 353,
+        "path": "action.yml"
+      },
+      {
+        "commits": 4,
+        "lines": 0,
+        "path": "assets/audiobooker-512.png"
+      },
+      {
+        "commits": 4,
+        "lines": 0,
+        "path": "assets/audiobooker-logo-dark.png"
+      },
+      {
+        "commits": 2,
+        "lines": 0,
+        "path": "assets/audiobooker-logo.jpg"
+      },
+      {
+        "commits": 6,
+        "lines": 0,
+        "path": "assets/audiobooker-logo.png"
+      },
+      {
+        "commits": 12,
+        "lines": 116,
+        "path": "audiobooker/__init__.py"
+      },
+      {
+        "commits": 7,
+        "lines": 119,
+        "path": "audiobooker/casting/__init__.py"
+      },
+      {
+        "commits": 20,
+        "lines": 3935,
+        "path": "audiobooker/casting/dialogue.py"
+      },
+      {
+        "commits": 5,
+        "lines": 563,
+        "path": "audiobooker/casting/presets.py"
+      },
+      {
+        "commits": 9,
+        "lines": 568,
+        "path": "audiobooker/casting/voice_registry.py"
+      },
+      {
+        "commits": 6,
+        "lines": 692,
+        "path": "audiobooker/casting/voice_suggester.py"
+      },
+      {
+        "commits": 43,
+        "lines": 19188,
+        "path": "audiobooker/cli.py"
+      },
+      {
+        "commits": 11,
+        "lines": 1919,
+        "path": "audiobooker/config_file.py"
+      },
+      {
+        "commits": 12,
+        "lines": 507,
+        "path": "audiobooker/errors.py"
+      },
+      {
+        "commits": 2,
+        "lines": 298,
+        "path": "audiobooker/formats.py"
+      },
+      {
+        "commits": 2,
+        "lines": 60,
+        "path": "audiobooker/labels.py"
+      },
+      {
+        "commits": 1,
+        "lines": 14,
+        "path": "audiobooker/language/__init__.py"
+      },
+      {
+        "commits": 3,
+        "lines": 306,
+        "path": "audiobooker/language/_titles.py"
+      },
+      {
+        "commits": 5,
+        "lines": 153,
+        "path": "audiobooker/language/de.py"
+      },
+      {
+        "commits": 4,
+        "lines": 165,
+        "path": "audiobooker/language/en.py"
+      },
+      {
+        "commits": 3,
+        "lines": 150,
+        "path": "audiobooker/language/es.py"
+      },
+      {
+        "commits": 3,
+        "lines": 123,
+        "path": "audiobooker/language/fr.py"
+      },
+      {
+        "commits": 4,
+        "lines": 250,
+        "path": "audiobooker/language/it.py"
+      },
+      {
+        "commits": 3,
+        "lines": 180,
+        "path": "audiobooker/language/ja.py"
+      },
+      {
+        "commits": 13,
+        "lines": 703,
+        "path": "audiobooker/language/profile.py"
+      },
+      {
+        "commits": 4,
+        "lines": 254,
+        "path": "audiobooker/language/pt.py"
+      },
+      {
+        "commits": 22,
+        "lines": 2983,
+        "path": "audiobooker/models.py"
+      },
+      {
+        "commits": 4,
+        "lines": 46,
+        "path": "audiobooker/nlp/__init__.py"
+      },
+      {
+        "commits": 9,
+        "lines": 1365,
+        "path": "audiobooker/nlp/booknlp_adapter.py"
+      },
+      {
+        "commits": 6,
+        "lines": 556,
+        "path": "audiobooker/nlp/emotion.py"
+      },
+      {
+        "commits": 8,
+        "lines": 722,
+        "path": "audiobooker/nlp/normalizer.py"
+      },
+      {
+        "commits": 13,
+        "lines": 1577,
+        "path": "audiobooker/nlp/speaker_resolver.py"
+      },
+      {
+        "commits": 5,
+        "lines": 73,
+        "path": "audiobooker/parser/__init__.py"
+      },
+      {
+        "commits": 10,
+        "lines": 2407,
+        "path": "audiobooker/parser/docx.py"
+      },
+      {
+        "commits": 15,
+        "lines": 3530,
+        "path": "audiobooker/parser/epub.py"
+      },
+      {
+        "commits": 14,
+        "lines": 2385,
+        "path": "audiobooker/parser/pdf.py"
+      },
+      {
+        "commits": 16,
+        "lines": 2221,
+        "path": "audiobooker/parser/text.py"
+      },
+      {
+        "commits": 9,
+        "lines": 1110,
+        "path": "audiobooker/parser/text_cleaners.py"
+      },
+      {
+        "commits": 27,
+        "lines": 7942,
+        "path": "audiobooker/project.py"
+      },
+      {
+        "commits": 1,
+        "lines": 19,
+        "path": "audiobooker/renderer/__init__.py"
+      },
+      {
+        "commits": 13,
+        "lines": 764,
+        "path": "audiobooker/renderer/cache_manifest.py"
+      },
+      {
+        "commits": 36,
+        "lines": 7663,
+        "path": "audiobooker/renderer/engine.py"
+      },
+      {
+        "commits": 3,
+        "lines": 46,
+        "path": "audiobooker/renderer/failure_report.py"
+      },
+      {
+        "commits": 3,
+        "lines": 114,
+        "path": "audiobooker/renderer/ffmpeg_runner.py"
+      },
+      {
+        "commits": 11,
+        "lines": 1167,
+        "path": "audiobooker/renderer/hash_utils.py"
+      },
+      {
+        "commits": 15,
+        "lines": 4842,
+        "path": "audiobooker/renderer/output.py"
+      },
+      {
+        "commits": 1,
+        "lines": 10,
+        "path": "audiobooker/renderer/progress.py"
+      },
+      {
+        "commits": 10,
+        "lines": 186,
+        "path": "audiobooker/renderer/protocols.py"
+      },
+      {
+        "commits": 14,
+        "lines": 1146,
+        "path": "audiobooker/review.py"
+      },
+      {
+        "commits": 2,
+        "lines": 98,
+        "path": "audiobooker/shell_quote.py"
+      },
+      {
+        "commits": 3,
+        "lines": 1152,
+        "path": "docs/api-reference.md"
+      },
+      {
+        "commits": 3,
+        "lines": 1781,
+        "path": "docs/handbook.md"
+      },
+      {
+        "commits": 3,
+        "lines": 94,
+        "path": "docs/index.md"
+      },
+      {
+        "commits": 1,
+        "lines": 88,
+        "path": "examples/demo.py"
+      },
+      {
+        "commits": 2,
+        "lines": 42,
+        "path": "npm/LICENSE"
+      },
+      {
+        "commits": 6,
+        "lines": 282,
+        "path": "npm/README.es.md"
+      },
+      {
+        "commits": 6,
+        "lines": 274,
+        "path": "npm/README.fr.md"
+      },
+      {
+        "commits": 6,
+        "lines": 286,
+        "path": "npm/README.hi.md"
+      },
+      {
+        "commits": 6,
+        "lines": 258,
+        "path": "npm/README.it.md"
+      },
+      {
+        "commits": 6,
+        "lines": 282,
+        "path": "npm/README.ja.md"
+      },
+      {
+        "commits": 7,
+        "lines": 206,
+        "path": "npm/README.md"
+      },
+      {
+        "commits": 6,
+        "lines": 278,
+        "path": "npm/README.pt-BR.md"
+      },
+      {
+        "commits": 6,
+        "lines": 278,
+        "path": "npm/README.zh.md"
+      },
+      {
+        "commits": 10,
+        "lines": 677,
+        "path": "npm/bin/audiobooker.js"
+      },
+      {
+        "commits": 10,
+        "lines": 91,
+        "path": "npm/package.json"
+      },
+      {
+        "commits": 15,
+        "lines": 365,
+        "path": "pyproject.toml"
+      },
+      {
+        "commits": 1,
+        "lines": 10,
+        "path": "release.yml}"
+      },
+      {
+        "commits": 1,
+        "lines": 2,
+        "path": "site/astro.config.mjs"
+      },
+      {
+        "commits": 2,
+        "lines": 6105,
+        "path": "site/package-lock.json"
+      },
+      {
+        "commits": 1,
+        "lines": 4,
+        "path": "site/package.json"
+      },
+      {
+        "commits": 5,
+        "lines": 55,
+        "path": "site/src/content/docs/handbook/architecture.md"
+      },
+      {
+        "commits": 9,
+        "lines": 219,
+        "path": "site/src/content/docs/handbook/beginners.md"
+      },
+      {
+        "commits": 5,
+        "lines": 164,
+        "path": "site/src/content/docs/handbook/getting-started.md"
+      },
+      {
+        "commits": 1,
+        "lines": 1,
+        "path": "site/src/content/docs/handbook/index.md"
+      },
+      {
+        "commits": 9,
+        "lines": 770,
+        "path": "site/src/content/docs/handbook/reference.md"
+      },
+      {
+        "commits": 5,
+        "lines": 90,
+        "path": "site/src/content/docs/handbook/troubleshooting.md"
+      },
+      {
+        "commits": 8,
+        "lines": 392,
+        "path": "site/src/content/docs/handbook/usage.md"
+      },
+      {
+        "commits": 7,
+        "lines": 188,
+        "path": "site/src/site-config.ts"
+      },
+      {
+        "commits": 4,
+        "lines": 170,
+        "path": "tests/conftest.py"
+      },
+      {
+        "commits": 2,
+        "lines": 18,
+        "path": "tests/fakes/__init__.py"
+      },
+      {
+        "commits": 2,
+        "lines": 6,
+        "path": "tests/fakes/fake_ffmpeg.py"
+      },
+      {
+        "commits": 1,
+        "lines": 36,
+        "path": "tests/fakes/fake_registry.py"
+      },
+      {
+        "commits": 5,
+        "lines": 325,
+        "path": "tests/fakes/fake_tts.py"
+      },
+      {
+        "commits": 1,
+        "lines": 4,
+        "path": "tests/perf/conftest.py"
+      },
+      {
+        "commits": 1,
+        "lines": 25,
+        "path": "tests/perf/test_benchmarks.py"
+      },
+      {
+        "commits": 2,
+        "lines": 1040,
+        "path": "tests/test_amend_casting_nlp.py"
+      },
+      {
+        "commits": 13,
+        "lines": 1595,
+        "path": "tests/test_amend_cli.py"
+      },
+      {
+        "commits": 5,
+        "lines": 1305,
+        "path": "tests/test_amend_core.py"
+      },
+      {
+        "commits": 5,
+        "lines": 1253,
+        "path": "tests/test_amend_parser_lang.py"
+      },
+      {
+        "commits": 8,
+        "lines": 2220,
+        "path": "tests/test_amend_renderer.py"
+      },
+      {
+        "commits": 3,
+        "lines": 1404,
+        "path": "tests/test_amend_residuals.py"
+      },
+      {
+        "commits": 11,
+        "lines": 454,
+        "path": "tests/test_cli_commands.py"
+      },
+      {
+        "commits": 3,
+        "lines": 388,
+        "path": "tests/test_cli_output_is_console_safe.py"
+      },
+      {
+        "commits": 5,
+        "lines": 256,
+        "path": "tests/test_compile_errors.py"
+      },
+      {
+        "commits": 1,
+        "lines": 213,
+        "path": "tests/test_dataloss_review_and_cancel.py"
+      },
+      {
+        "commits": 4,
+        "lines": 140,
+        "path": "tests/test_diagnose.py"
+      },
+      {
+        "commits": 1,
+        "lines": 23,
+        "path": "tests/test_dialogue.py"
+      },
+      {
+        "commits": 2,
+        "lines": 304,
+        "path": "tests/test_dry_run_chapter_numbering.py"
+      },
+      {
+        "commits": 5,
+        "lines": 405,
+        "path": "tests/test_e2e_smoke.py"
+      },
+      {
+        "commits": 1,
+        "lines": 300,
+        "path": "tests/test_epub_parsing.py"
+      },
+      {
+        "commits": 5,
+        "lines": 2107,
+        "path": "tests/test_feat_attribution_confidence.py"
+      },
+      {
+        "commits": 5,
+        "lines": 2109,
+        "path": "tests/test_feat_cli_surface.py"
+      },
+      {
+        "commits": 7,
+        "lines": 878,
+        "path": "tests/test_feat_f1_cli.py"
+      },
+      {
+        "commits": 4,
+        "lines": 1606,
+        "path": "tests/test_feat_f1_renderer.py"
+      },
+      {
+        "commits": 5,
+        "lines": 1053,
+        "path": "tests/test_feat_f2_cli.py"
+      },
+      {
+        "commits": 2,
+        "lines": 1248,
+        "path": "tests/test_feat_f2_parser.py"
+      },
+      {
+        "commits": 7,
+        "lines": 1658,
+        "path": "tests/test_feat_f3_cli.py"
+      },
+      {
+        "commits": 2,
+        "lines": 956,
+        "path": "tests/test_feat_f3_config.py"
+      },
+      {
+        "commits": 2,
+        "lines": 1082,
+        "path": "tests/test_feat_f4_casting.py"
+      },
+      {
+        "commits": 5,
+        "lines": 1614,
+        "path": "tests/test_feat_f4_cli.py"
+      },
+      {
+        "commits": 10,
+        "lines": 1330,
+        "path": "tests/test_feat_f5_cli.py"
+      },
+      {
+        "commits": 11,
+        "lines": 2799,
+        "path": "tests/test_feat_f5_renderer.py"
+      },
+      {
+        "commits": 6,
+        "lines": 2385,
+        "path": "tests/test_feat_in_parser.py"
+      },
+      {
+        "commits": 2,
+        "lines": 432,
+        "path": "tests/test_formats_unified.py"
+      },
+      {
+        "commits": 2,
+        "lines": 336,
+        "path": "tests/test_health_a_casting.py"
+      },
+      {
+        "commits": 5,
+        "lines": 643,
+        "path": "tests/test_health_a_cli.py"
+      },
+      {
+        "commits": 2,
+        "lines": 502,
+        "path": "tests/test_health_a_parser.py"
+      },
+      {
+        "commits": 2,
+        "lines": 722,
+        "path": "tests/test_health_a_renderer.py"
+      },
+      {
+        "commits": 4,
+        "lines": 594,
+        "path": "tests/test_health_c_casting.py"
+      },
+      {
+        "commits": 8,
+        "lines": 1093,
+        "path": "tests/test_health_c_cli.py"
+      },
+      {
+        "commits": 3,
+        "lines": 746,
+        "path": "tests/test_health_c_parser.py"
+      },
+      {
+        "commits": 2,
+        "lines": 688,
+        "path": "tests/test_health_c_renderer.py"
+      },
+      {
+        "commits": 1,
+        "lines": 3,
+        "path": "tests/test_language_profiles.py"
+      },
+      {
+        "commits": 5,
+        "lines": 826,
+        "path": "tests/test_models.py"
+      },
+      {
+        "commits": 1,
+        "lines": 195,
+        "path": "tests/test_output_assembly.py"
+      },
+      {
+        "commits": 1,
+        "lines": 81,
+        "path": "tests/test_parsers.py"
+      },
+      {
+        "commits": 1,
+        "lines": 44,
+        "path": "tests/test_phase1_config_guardrails.py"
+      },
+      {
+        "commits": 1,
+        "lines": 84,
+        "path": "tests/test_phase5_features.py"
+      },
+      {
+        "commits": 3,
+        "lines": 1233,
+        "path": "tests/test_planted_red_w2_health_a.py"
+      },
+      {
+        "commits": 4,
+        "lines": 1474,
+        "path": "tests/test_planted_red_w5_stage_c.py"
+      },
+      {
+        "commits": 1,
+        "lines": 85,
+        "path": "tests/test_project_persistence.py"
+      },
+      {
+        "commits": 2,
+        "lines": 214,
+        "path": "tests/test_public_api_kwargs.py"
+      },
+      {
+        "commits": 3,
+        "lines": 420,
+        "path": "tests/test_raya_attribution.py"
+      },
+      {
+        "commits": 4,
+        "lines": 430,
+        "path": "tests/test_render_gates_on_attribution_quality.py"
+      },
+      {
+        "commits": 4,
+        "lines": 213,
+        "path": "tests/test_renderer.py"
+      },
+      {
+        "commits": 2,
+        "lines": 290,
+        "path": "tests/test_report_shows_guesses.py"
+      },
+      {
+        "commits": 3,
+        "lines": 45,
+        "path": "tests/test_resume.py"
+      },
+      {
+        "commits": 1,
+        "lines": 40,
+        "path": "tests/test_review.py"
+      },
+      {
+        "commits": 1,
+        "lines": 8,
+        "path": "tests/test_review_edge_cases.py"
+      },
+      {
+        "commits": 2,
+        "lines": 260,
+        "path": "tests/test_review_header_command_is_pasteable.py"
+      },
+      {
+        "commits": 2,
+        "lines": 234,
+        "path": "tests/test_review_preserves_provenance.py"
+      },
+      {
+        "commits": 1,
+        "lines": 209,
+        "path": "tests/test_review_workflow.py"
+      },
+      {
+        "commits": 4,
+        "lines": 692,
+        "path": "tests/test_selective_render_keeps_other_chapters.py"
+      },
+      {
+        "commits": 1,
+        "lines": 8,
+        "path": "tests/test_smoke_render_pipeline.py"
+      },
+      {
+        "commits": 3,
+        "lines": 1560,
+        "path": "tests/test_stageb_pipeline.py"
+      },
+      {
+        "commits": 3,
+        "lines": 2523,
+        "path": "tests/test_stageb_renderer.py"
+      },
+      {
+        "commits": 6,
+        "lines": 2787,
+        "path": "tests/test_stagec_cli.py"
+      },
+      {
+        "commits": 4,
+        "lines": 1836,
+        "path": "tests/test_unwired_features.py"
+      },
+      {
+        "commits": 4,
+        "lines": 574,
+        "path": "tests/test_utterance_cache_preserves_pauses.py"
+      },
+      {
+        "commits": 5,
+        "lines": 289,
+        "path": "tests/test_version.py"
+      },
+      {
+        "commits": 1,
+        "lines": 92,
+        "path": "tests/test_voice_registry.py"
+      },
+      {
+        "commits": 1,
+        "lines": 228,
+        "path": "tests/test_voice_suggester.py"
+      },
+      {
+        "commits": 10,
+        "lines": 2580,
+        "path": "tests/test_wave2_wave3_features.py"
+      },
+      {
+        "commits": 9,
+        "lines": 1482,
+        "path": "tests/test_wave3_feature_execution.py"
+      },
+      {
+        "commits": 8,
+        "lines": 1496,
+        "path": "tests/test_wave5_cli.py"
+      },
+      {
+        "commits": 6,
+        "lines": 2340,
+        "path": "tests/test_wave5_core.py"
+      },
+      {
+        "commits": 3,
+        "lines": 525,
+        "path": "tests/test_wave5_merge.py"
+      },
+      {
+        "commits": 7,
+        "lines": 762,
+        "path": "tools/check_ci_policy.py"
+      },
+      {
+        "commits": 4,
+        "lines": 208,
+        "path": "tools/check_help_accuracy.py"
+      },
+      {
+        "commits": 7,
+        "lines": 571,
+        "path": "tools/check_pyright_gate.py"
+      },
+      {
+        "commits": 5,
+        "lines": 127,
+        "path": "tools/pyright_baseline.txt"
+      },
+      {
+        "commits": 3,
+        "lines": 63,
+        "path": "tools/read_project_version.py"
+      }
+    ]
+  },
+  "confidence": {
+    "level": "low",
+    "reason": "fewer than 20 source files reach 10 revisions in the window"
+  },
+  "generatedAt": "2026-09-25T02:18:47.349Z",
+  "generatedFrom": {
+    "commit": "d8ba5c2db800ac2d775f396663be64e19cb53e69"
+  },
+  "pairs": [
+    {
+      "a": "README.es.md",
+      "b": "README.fr.md",
+      "either": 10,
+      "shared": 10,
+      "strength": 1
+    },
+    {
+      "a": "README.es.md",
+      "b": "README.hi.md",
+      "either": 10,
+      "shared": 10,
+      "strength": 1
+    },
+    {
+      "a": "README.es.md",
+      "b": "README.it.md",
+      "either": 10,
+      "shared": 10,
+      "strength": 1
+    },
+    {
+      "a": "README.es.md",
+      "b": "README.ja.md",
+      "either": 10,
+      "shared": 10,
+      "strength": 1
+    },
+    {
+      "a": "README.es.md",
+      "b": "README.md",
+      "either": 13,
+      "shared": 8,
+      "strength": 0.615385
+    },
+    {
+      "a": "README.es.md",
+      "b": "README.pt-BR.md",
+      "either": 10,
+      "shared": 10,
+      "strength": 1
+    },
+    {
+      "a": "README.es.md",
+      "b": "README.zh.md",
+      "either": 10,
+      "shared": 10,
+      "strength": 1
+    },
+    {
+      "a": "README.fr.md",
+      "b": "README.hi.md",
+      "either": 10,
+      "shared": 10,
+      "strength": 1
+    },
+    {
+      "a": "README.fr.md",
+      "b": "README.it.md",
+      "either": 10,
+      "shared": 10,
+      "strength": 1
+    },
+    {
+      "a": "README.fr.md",
+      "b": "README.ja.md",
+      "either": 10,
+      "shared": 10,
+      "strength": 1
+    },
+    {
+      "a": "README.fr.md",
+      "b": "README.md",
+      "either": 13,
+      "shared": 8,
+      "strength": 0.615385
+    },
+    {
+      "a": "README.fr.md",
+      "b": "README.pt-BR.md",
+      "either": 10,
+      "shared": 10,
+      "strength": 1
+    },
+    {
+      "a": "README.fr.md",
+      "b": "README.zh.md",
+      "either": 10,
+      "shared": 10,
+      "strength": 1
+    },
+    {
+      "a": "README.hi.md",
+      "b": "README.it.md",
+      "either": 10,
+      "shared": 10,
+      "strength": 1
+    },
+    {
+      "a": "README.hi.md",
+      "b": "README.ja.md",
+      "either": 10,
+      "shared": 10,
+      "strength": 1
+    },
+    {
+      "a": "README.hi.md",
+      "b": "README.md",
+      "either": 13,
+      "shared": 8,
+      "strength": 0.615385
+    },
+    {
+      "a": "README.hi.md",
+      "b": "README.pt-BR.md",
+      "either": 10,
+      "shared": 10,
+      "strength": 1
+    },
+    {
+      "a": "README.hi.md",
+      "b": "README.zh.md",
+      "either": 10,
+      "shared": 10,
+      "strength": 1
+    },
+    {
+      "a": "README.it.md",
+      "b": "README.ja.md",
+      "either": 10,
+      "shared": 10,
+      "strength": 1
+    },
+    {
+      "a": "README.it.md",
+      "b": "README.md",
+      "either": 13,
+      "shared": 8,
+      "strength": 0.615385
+    },
+    {
+      "a": "README.it.md",
+      "b": "README.pt-BR.md",
+      "either": 10,
+      "shared": 10,
+      "strength": 1
+    },
+    {
+      "a": "README.it.md",
+      "b": "README.zh.md",
+      "either": 10,
+      "shared": 10,
+      "strength": 1
+    },
+    {
+      "a": "README.ja.md",
+      "b": "README.md",
+      "either": 13,
+      "shared": 8,
+      "strength": 0.615385
+    },
+    {
+      "a": "README.ja.md",
+      "b": "README.pt-BR.md",
+      "either": 10,
+      "shared": 10,
+      "strength": 1
+    },
+    {
+      "a": "README.ja.md",
+      "b": "README.zh.md",
+      "either": 10,
+      "shared": 10,
+      "strength": 1
+    },
+    {
+      "a": "README.md",
+      "b": "README.pt-BR.md",
+      "either": 13,
+      "shared": 8,
+      "strength": 0.615385
+    },
+    {
+      "a": "README.md",
+      "b": "README.zh.md",
+      "either": 13,
+      "shared": 8,
+      "strength": 0.615385
+    },
+    {
+      "a": "README.pt-BR.md",
+      "b": "README.zh.md",
+      "either": 10,
+      "shared": 10,
+      "strength": 1
+    },
+    {
+      "a": "audiobooker/__init__.py",
+      "b": "pyproject.toml",
+      "either": 10,
+      "shared": 5,
+      "strength": 0.5
+    },
+    {
+      "a": "audiobooker/parser/docx.py",
+      "b": "audiobooker/parser/pdf.py",
+      "either": 8,
+      "shared": 4,
+      "strength": 0.5
+    },
+    {
+      "a": "audiobooker/parser/docx.py",
+      "b": "audiobooker/parser/text.py",
+      "either": 8,
+      "shared": 4,
+      "strength": 0.5
+    },
+    {
+      "a": "audiobooker/parser/epub.py",
+      "b": "audiobooker/parser/pdf.py",
+      "either": 8,
+      "shared": 7,
+      "strength": 0.875
+    },
+    {
+      "a": "audiobooker/parser/epub.py",
+      "b": "audiobooker/parser/text.py",
+      "either": 9,
+      "shared": 6,
+      "strength": 0.666667
+    },
+    {
+      "a": "audiobooker/parser/pdf.py",
+      "b": "audiobooker/parser/text.py",
+      "either": 8,
+      "shared": 6,
+      "strength": 0.75
+    },
+    {
+      "a": "audiobooker/renderer/cache_manifest.py",
+      "b": "audiobooker/renderer/hash_utils.py",
+      "either": 7,
+      "shared": 5,
+      "strength": 0.714286
+    },
+    {
+      "a": "site/src/content/docs/handbook/beginners.md",
+      "b": "site/src/content/docs/handbook/reference.md",
+      "either": 7,
+      "shared": 4,
+      "strength": 0.571429
+    },
+    {
+      "a": "site/src/content/docs/handbook/reference.md",
+      "b": "site/src/content/docs/handbook/usage.md",
+      "either": 7,
+      "shared": 4,
+      "strength": 0.571429
+    }
+  ],
+  "parameters": {
+    "appliedChangesetLimit": 47.75,
+    "changeset": 50,
+    "changesetFraction": 0.25,
+    "cohesionDrop": 0.2,
+    "couplingPopulation": "source",
+    "fallenShared": 3,
+    "floor": "fallen",
+    "floorHeld": false,
+    "floorTrigger": "revision-depth",
+    "headDate": "2026-09-17T17:57:19-07:00",
+    "inScopeFiles": 191,
+    "pinnedStart": null,
+    "priorFloor": null,
+    "qualifyingCommits": 102,
+    "qualifyingMinimum": 30,
+    "revisions": 5,
+    "shared": 10,
+    "sharedFloorUsed": 3,
+    "since": "2026-03-22T00:57:19.000Z",
+    "sourceExtensions": [
+      ".js",
+      ".mjs",
+      ".cjs",
+      ".jsx",
+      ".ts",
+      ".tsx",
+      ".mts",
+      ".cts",
+      ".py",
+      ".rs",
+      ".gd"
+    ],
+    "sourceFileReach": 20,
+    "sourceFileRise": 25,
+    "sourceFilesReachingStrongFloor": 4,
+    "strength": 0.5,
+    "windowDays": 180
+  },
+  "strengthDefinition": "strength is the shared qualifying commits divided by either. either is the number of qualifying commits that touch either file."
+}
