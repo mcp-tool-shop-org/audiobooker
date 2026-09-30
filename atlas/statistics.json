@@ -44,7 +44,8 @@
         "importsAndCoChanges": [],
         "importsOnly": [
           "examples",
-          "tests"
+          "tests",
+          "tools"
         ]
       },
       "cohesion": 1,
@@ -52,7 +53,7 @@
       "confidence": "full",
       "highWater": null,
       "name": "audiobooker",
-      "qualifyingSourceCommits": 59,
+      "qualifyingSourceCommits": 56,
       "rebaseline": null
     },
     {
@@ -148,7 +149,7 @@
       "confidence": "full",
       "highWater": null,
       "name": "tests",
-      "qualifyingSourceCommits": 50,
+      "qualifyingSourceCommits": 49,
       "rebaseline": null
     },
     {
@@ -172,38 +173,28 @@
     "definition": "commits is how many commits in the window touch the file, including merges and commits dropped from coupling. lines is added plus deleted in those commits.",
     "files": [
       {
-        "commits": 1,
-        "lines": 23,
-        "path": ".dockerignore"
-      },
-      {
         "commits": 3,
         "lines": 31,
         "path": ".github/dependabot.yml"
       },
       {
-        "commits": 1,
-        "lines": 13,
-        "path": ".github/release.yml"
-      },
-      {
-        "commits": 25,
-        "lines": 507,
+        "commits": 24,
+        "lines": 669,
         "path": ".github/workflows/ci.yml"
       },
       {
-        "commits": 9,
-        "lines": 77,
+        "commits": 8,
+        "lines": 69,
         "path": ".github/workflows/docker.yml"
       },
       {
-        "commits": 3,
-        "lines": 18,
+        "commits": 2,
+        "lines": 10,
         "path": ".github/workflows/pages.yml"
       },
       {
-        "commits": 5,
-        "lines": 131,
+        "commits": 4,
+        "lines": 98,
         "path": ".github/workflows/publish.yml"
       },
       {
@@ -217,78 +208,73 @@
         "path": ".gitignore"
       },
       {
-        "commits": 5,
-        "lines": 59,
+        "commits": 4,
+        "lines": 52,
         "path": ".pre-commit-config.yaml"
       },
       {
-        "commits": 14,
-        "lines": 821,
+        "commits": 12,
+        "lines": 772,
         "path": "CHANGELOG.md"
       },
       {
-        "commits": 1,
-        "lines": 2,
-        "path": "CODE_OF_CONDUCT.md"
-      },
-      {
-        "commits": 4,
-        "lines": 46,
+        "commits": 3,
+        "lines": 22,
         "path": "CONTRIBUTING.md"
       },
       {
-        "commits": 9,
-        "lines": 203,
+        "commits": 8,
+        "lines": 182,
         "path": "Dockerfile"
       },
       {
-        "commits": 8,
-        "lines": 223,
+        "commits": 6,
+        "lines": 198,
         "path": "Makefile"
       },
       {
-        "commits": 13,
-        "lines": 1775,
+        "commits": 12,
+        "lines": 1574,
         "path": "README.es.md"
       },
       {
-        "commits": 13,
-        "lines": 1633,
+        "commits": 12,
+        "lines": 1434,
         "path": "README.fr.md"
       },
       {
-        "commits": 13,
-        "lines": 1727,
+        "commits": 12,
+        "lines": 1512,
         "path": "README.hi.md"
       },
       {
-        "commits": 13,
-        "lines": 1679,
+        "commits": 12,
+        "lines": 1476,
         "path": "README.it.md"
       },
       {
-        "commits": 13,
-        "lines": 1691,
+        "commits": 12,
+        "lines": 1490,
         "path": "README.ja.md"
       },
       {
-        "commits": 15,
-        "lines": 1137,
+        "commits": 13,
+        "lines": 1010,
         "path": "README.md"
       },
       {
-        "commits": 13,
-        "lines": 1465,
+        "commits": 12,
+        "lines": 1288,
         "path": "README.pt-BR.md"
       },
       {
-        "commits": 13,
-        "lines": 1677,
+        "commits": 12,
+        "lines": 1480,
         "path": "README.zh.md"
       },
       {
-        "commits": 7,
-        "lines": 210,
+        "commits": 6,
+        "lines": 206,
         "path": "SCORECARD.md"
       },
       {
@@ -327,18 +313,43 @@
         "path": "assets/audiobooker-logo.png"
       },
       {
-        "commits": 12,
-        "lines": 116,
+        "commits": 1,
+        "lines": 93,
+        "path": "atlas/README.md"
+      },
+      {
+        "commits": 1,
+        "lines": 42,
+        "path": "atlas/boundaries.yaml"
+      },
+      {
+        "commits": 1,
+        "lines": 384,
+        "path": "atlas/page.json"
+      },
+      {
+        "commits": 1,
+        "lines": 1425,
+        "path": "atlas/statistics.json"
+      },
+      {
+        "commits": 1,
+        "lines": 9486,
+        "path": "atlas/structure.json"
+      },
+      {
+        "commits": 10,
+        "lines": 112,
         "path": "audiobooker/__init__.py"
       },
       {
-        "commits": 7,
-        "lines": 119,
+        "commits": 6,
+        "lines": 66,
         "path": "audiobooker/casting/__init__.py"
       },
       {
-        "commits": 20,
-        "lines": 3935,
+        "commits": 19,
+        "lines": 3432,
         "path": "audiobooker/casting/dialogue.py"
       },
       {
@@ -347,18 +358,18 @@
         "path": "audiobooker/casting/presets.py"
       },
       {
-        "commits": 9,
-        "lines": 568,
+        "commits": 8,
+        "lines": 549,
         "path": "audiobooker/casting/voice_registry.py"
       },
       {
-        "commits": 6,
-        "lines": 692,
+        "commits": 5,
+        "lines": 354,
         "path": "audiobooker/casting/voice_suggester.py"
       },
       {
-        "commits": 43,
-        "lines": 19188,
+        "commits": 40,
+        "lines": 17699,
         "path": "audiobooker/cli.py"
       },
       {
@@ -382,33 +393,28 @@
         "path": "audiobooker/labels.py"
       },
       {
-        "commits": 1,
-        "lines": 14,
-        "path": "audiobooker/language/__init__.py"
-      },
-      {
         "commits": 3,
         "lines": 306,
         "path": "audiobooker/language/_titles.py"
       },
       {
-        "commits": 5,
-        "lines": 153,
-        "path": "audiobooker/language/de.py"
-      },
-      {
         "commits": 4,
-        "lines": 165,
-        "path": "audiobooker/language/en.py"
+        "lines": 42,
+        "path": "audiobooker/language/de.py"
       },
       {
         "commits": 3,
         "lines": 150,
+        "path": "audiobooker/language/en.py"
+      },
+      {
+        "commits": 2,
+        "lines": 40,
         "path": "audiobooker/language/es.py"
       },
       {
-        "commits": 3,
-        "lines": 123,
+        "commits": 2,
+        "lines": 16,
         "path": "audiobooker/language/fr.py"
       },
       {
@@ -417,13 +423,13 @@
         "path": "audiobooker/language/it.py"
       },
       {
-        "commits": 3,
-        "lines": 180,
+        "commits": 2,
+        "lines": 42,
         "path": "audiobooker/language/ja.py"
       },
       {
-        "commits": 13,
-        "lines": 703,
+        "commits": 12,
+        "lines": 569,
         "path": "audiobooker/language/profile.py"
       },
       {
@@ -432,38 +438,38 @@
         "path": "audiobooker/language/pt.py"
       },
       {
-        "commits": 22,
-        "lines": 2983,
+        "commits": 21,
+        "lines": 2668,
         "path": "audiobooker/models.py"
       },
       {
-        "commits": 4,
-        "lines": 46,
+        "commits": 3,
+        "lines": 33,
         "path": "audiobooker/nlp/__init__.py"
       },
       {
-        "commits": 9,
-        "lines": 1365,
+        "commits": 8,
+        "lines": 1161,
         "path": "audiobooker/nlp/booknlp_adapter.py"
       },
       {
-        "commits": 6,
-        "lines": 556,
+        "commits": 5,
+        "lines": 530,
         "path": "audiobooker/nlp/emotion.py"
       },
       {
-        "commits": 8,
-        "lines": 722,
+        "commits": 7,
+        "lines": 376,
         "path": "audiobooker/nlp/normalizer.py"
       },
       {
-        "commits": 13,
-        "lines": 1577,
+        "commits": 12,
+        "lines": 1479,
         "path": "audiobooker/nlp/speaker_resolver.py"
       },
       {
-        "commits": 5,
-        "lines": 73,
+        "commits": 4,
+        "lines": 40,
         "path": "audiobooker/parser/__init__.py"
       },
       {
@@ -472,78 +478,68 @@
         "path": "audiobooker/parser/docx.py"
       },
       {
-        "commits": 15,
-        "lines": 3530,
+        "commits": 14,
+        "lines": 3340,
         "path": "audiobooker/parser/epub.py"
       },
       {
-        "commits": 14,
-        "lines": 2385,
+        "commits": 13,
+        "lines": 2104,
         "path": "audiobooker/parser/pdf.py"
       },
       {
-        "commits": 16,
-        "lines": 2221,
+        "commits": 15,
+        "lines": 2176,
         "path": "audiobooker/parser/text.py"
       },
       {
-        "commits": 9,
-        "lines": 1110,
+        "commits": 8,
+        "lines": 967,
         "path": "audiobooker/parser/text_cleaners.py"
       },
       {
-        "commits": 27,
-        "lines": 7942,
+        "commits": 26,
+        "lines": 6981,
         "path": "audiobooker/project.py"
       },
       {
-        "commits": 1,
-        "lines": 19,
-        "path": "audiobooker/renderer/__init__.py"
-      },
-      {
-        "commits": 13,
-        "lines": 764,
+        "commits": 12,
+        "lines": 693,
         "path": "audiobooker/renderer/cache_manifest.py"
       },
       {
-        "commits": 36,
-        "lines": 7663,
+        "commits": 35,
+        "lines": 6940,
         "path": "audiobooker/renderer/engine.py"
       },
       {
-        "commits": 3,
-        "lines": 46,
+        "commits": 2,
+        "lines": 36,
         "path": "audiobooker/renderer/failure_report.py"
       },
       {
-        "commits": 3,
-        "lines": 114,
+        "commits": 2,
+        "lines": 102,
         "path": "audiobooker/renderer/ffmpeg_runner.py"
       },
       {
-        "commits": 11,
-        "lines": 1167,
+        "commits": 10,
+        "lines": 1153,
         "path": "audiobooker/renderer/hash_utils.py"
       },
       {
-        "commits": 15,
-        "lines": 4842,
+        "commits": 14,
+        "lines": 4316,
         "path": "audiobooker/renderer/output.py"
       },
       {
-        "commits": 1,
-        "lines": 10,
-        "path": "audiobooker/renderer/progress.py"
-      },
-      {
-        "commits": 10,
-        "lines": 186,
+        "commits": 9,
+        "lines": 154,
         "path": "audiobooker/renderer/protocols.py"
       },
       {
-        "commits": 14,
-        "lines": 1146,
+        "commits": 13,
+        "lines": 1107,
         "path": "audiobooker/review.py"
       },
       {
@@ -552,24 +548,24 @@
         "path": "audiobooker/shell_quote.py"
       },
       {
-        "commits": 3,
-        "lines": 1152,
+        "commits": 2,
+        "lines": 36,
+        "path": "codecov.yml"
+      },
+      {
+        "commits": 2,
+        "lines": 768,
         "path": "docs/api-reference.md"
       },
       {
-        "commits": 3,
-        "lines": 1781,
+        "commits": 2,
+        "lines": 1514,
         "path": "docs/handbook.md"
       },
       {
-        "commits": 3,
-        "lines": 94,
+        "commits": 2,
+        "lines": 92,
         "path": "docs/index.md"
-      },
-      {
-        "commits": 1,
-        "lines": 88,
-        "path": "examples/demo.py"
       },
       {
         "commits": 2,
@@ -627,8 +623,8 @@
         "path": "npm/package.json"
       },
       {
-        "commits": 15,
-        "lines": 365,
+        "commits": 12,
+        "lines": 344,
         "path": "pyproject.toml"
       },
       {
@@ -652,38 +648,33 @@
         "path": "site/package.json"
       },
       {
-        "commits": 5,
-        "lines": 55,
+        "commits": 4,
+        "lines": 36,
         "path": "site/src/content/docs/handbook/architecture.md"
       },
       {
-        "commits": 9,
-        "lines": 219,
+        "commits": 8,
+        "lines": 62,
         "path": "site/src/content/docs/handbook/beginners.md"
       },
       {
-        "commits": 5,
-        "lines": 164,
+        "commits": 4,
+        "lines": 162,
         "path": "site/src/content/docs/handbook/getting-started.md"
       },
       {
-        "commits": 1,
-        "lines": 1,
-        "path": "site/src/content/docs/handbook/index.md"
-      },
-      {
-        "commits": 9,
-        "lines": 770,
+        "commits": 8,
+        "lines": 682,
         "path": "site/src/content/docs/handbook/reference.md"
       },
       {
-        "commits": 5,
-        "lines": 90,
+        "commits": 4,
+        "lines": 64,
         "path": "site/src/content/docs/handbook/troubleshooting.md"
       },
       {
-        "commits": 8,
-        "lines": 392,
+        "commits": 7,
+        "lines": 384,
         "path": "site/src/content/docs/handbook/usage.md"
       },
       {
@@ -692,8 +683,8 @@
         "path": "site/src/site-config.ts"
       },
       {
-        "commits": 4,
-        "lines": 170,
+        "commits": 3,
+        "lines": 87,
         "path": "tests/conftest.py"
       },
       {
@@ -707,24 +698,9 @@
         "path": "tests/fakes/fake_ffmpeg.py"
       },
       {
-        "commits": 1,
-        "lines": 36,
-        "path": "tests/fakes/fake_registry.py"
-      },
-      {
         "commits": 5,
         "lines": 325,
         "path": "tests/fakes/fake_tts.py"
-      },
-      {
-        "commits": 1,
-        "lines": 4,
-        "path": "tests/perf/conftest.py"
-      },
-      {
-        "commits": 1,
-        "lines": 25,
-        "path": "tests/perf/test_benchmarks.py"
       },
       {
         "commits": 2,
@@ -757,8 +733,8 @@
         "path": "tests/test_amend_residuals.py"
       },
       {
-        "commits": 11,
-        "lines": 454,
+        "commits": 10,
+        "lines": 104,
         "path": "tests/test_cli_commands.py"
       },
       {
@@ -767,8 +743,8 @@
         "path": "tests/test_cli_output_is_console_safe.py"
       },
       {
-        "commits": 5,
-        "lines": 256,
+        "commits": 4,
+        "lines": 68,
         "path": "tests/test_compile_errors.py"
       },
       {
@@ -777,14 +753,9 @@
         "path": "tests/test_dataloss_review_and_cancel.py"
       },
       {
-        "commits": 4,
-        "lines": 140,
+        "commits": 2,
+        "lines": 24,
         "path": "tests/test_diagnose.py"
-      },
-      {
-        "commits": 1,
-        "lines": 23,
-        "path": "tests/test_dialogue.py"
       },
       {
         "commits": 2,
@@ -792,14 +763,9 @@
         "path": "tests/test_dry_run_chapter_numbering.py"
       },
       {
-        "commits": 5,
-        "lines": 405,
+        "commits": 4,
+        "lines": 356,
         "path": "tests/test_e2e_smoke.py"
-      },
-      {
-        "commits": 1,
-        "lines": 300,
-        "path": "tests/test_epub_parsing.py"
       },
       {
         "commits": 5,
@@ -912,34 +878,9 @@
         "path": "tests/test_health_c_renderer.py"
       },
       {
-        "commits": 1,
-        "lines": 3,
-        "path": "tests/test_language_profiles.py"
-      },
-      {
-        "commits": 5,
-        "lines": 826,
+        "commits": 4,
+        "lines": 88,
         "path": "tests/test_models.py"
-      },
-      {
-        "commits": 1,
-        "lines": 195,
-        "path": "tests/test_output_assembly.py"
-      },
-      {
-        "commits": 1,
-        "lines": 81,
-        "path": "tests/test_parsers.py"
-      },
-      {
-        "commits": 1,
-        "lines": 44,
-        "path": "tests/test_phase1_config_guardrails.py"
-      },
-      {
-        "commits": 1,
-        "lines": 84,
-        "path": "tests/test_phase5_features.py"
       },
       {
         "commits": 3,
@@ -950,11 +891,6 @@
         "commits": 4,
         "lines": 1474,
         "path": "tests/test_planted_red_w5_stage_c.py"
-      },
-      {
-        "commits": 1,
-        "lines": 85,
-        "path": "tests/test_project_persistence.py"
       },
       {
         "commits": 2,
@@ -972,8 +908,8 @@
         "path": "tests/test_render_gates_on_attribution_quality.py"
       },
       {
-        "commits": 4,
-        "lines": 213,
+        "commits": 3,
+        "lines": 147,
         "path": "tests/test_renderer.py"
       },
       {
@@ -982,19 +918,9 @@
         "path": "tests/test_report_shows_guesses.py"
       },
       {
-        "commits": 3,
-        "lines": 45,
+        "commits": 2,
+        "lines": 14,
         "path": "tests/test_resume.py"
-      },
-      {
-        "commits": 1,
-        "lines": 40,
-        "path": "tests/test_review.py"
-      },
-      {
-        "commits": 1,
-        "lines": 8,
-        "path": "tests/test_review_edge_cases.py"
       },
       {
         "commits": 2,
@@ -1007,19 +933,9 @@
         "path": "tests/test_review_preserves_provenance.py"
       },
       {
-        "commits": 1,
-        "lines": 209,
-        "path": "tests/test_review_workflow.py"
-      },
-      {
         "commits": 4,
         "lines": 692,
         "path": "tests/test_selective_render_keeps_other_chapters.py"
-      },
-      {
-        "commits": 1,
-        "lines": 8,
-        "path": "tests/test_smoke_render_pipeline.py"
       },
       {
         "commits": 3,
@@ -1047,28 +963,18 @@
         "path": "tests/test_utterance_cache_preserves_pauses.py"
       },
       {
-        "commits": 5,
-        "lines": 289,
+        "commits": 4,
+        "lines": 280,
         "path": "tests/test_version.py"
       },
       {
-        "commits": 1,
-        "lines": 92,
-        "path": "tests/test_voice_registry.py"
-      },
-      {
-        "commits": 1,
-        "lines": 228,
-        "path": "tests/test_voice_suggester.py"
-      },
-      {
-        "commits": 10,
-        "lines": 2580,
+        "commits": 9,
+        "lines": 1484,
         "path": "tests/test_wave2_wave3_features.py"
       },
       {
-        "commits": 9,
-        "lines": 1482,
+        "commits": 8,
+        "lines": 339,
         "path": "tests/test_wave3_feature_execution.py"
       },
       {
@@ -1115,214 +1021,214 @@
   },
   "confidence": {
     "level": "low",
-    "reason": "fewer than 20 source files reach 10 revisions in the window"
+    "reason": "fewer than 25 source files reach 10 revisions in the window"
   },
-  "generatedAt": "2026-09-25T02:18:47.349Z",
+  "generatedAt": "2026-09-30T20:08:00.132Z",
   "generatedFrom": {
-    "commit": "d8ba5c2db800ac2d775f396663be64e19cb53e69"
+    "commit": "6fcd238d2aafd234b4c5de59d4f88c3b2c46e8b9"
   },
   "pairs": [
     {
       "a": "README.es.md",
       "b": "README.fr.md",
-      "either": 10,
-      "shared": 10,
+      "either": 9,
+      "shared": 9,
       "strength": 1
     },
     {
       "a": "README.es.md",
       "b": "README.hi.md",
-      "either": 10,
-      "shared": 10,
+      "either": 9,
+      "shared": 9,
       "strength": 1
     },
     {
       "a": "README.es.md",
       "b": "README.it.md",
-      "either": 10,
-      "shared": 10,
+      "either": 9,
+      "shared": 9,
       "strength": 1
     },
     {
       "a": "README.es.md",
       "b": "README.ja.md",
-      "either": 10,
-      "shared": 10,
+      "either": 9,
+      "shared": 9,
       "strength": 1
     },
     {
       "a": "README.es.md",
       "b": "README.md",
-      "either": 13,
+      "either": 11,
       "shared": 8,
-      "strength": 0.615385
+      "strength": 0.727273
     },
     {
       "a": "README.es.md",
       "b": "README.pt-BR.md",
-      "either": 10,
-      "shared": 10,
+      "either": 9,
+      "shared": 9,
       "strength": 1
     },
     {
       "a": "README.es.md",
       "b": "README.zh.md",
-      "either": 10,
-      "shared": 10,
+      "either": 9,
+      "shared": 9,
       "strength": 1
     },
     {
       "a": "README.fr.md",
       "b": "README.hi.md",
-      "either": 10,
-      "shared": 10,
+      "either": 9,
+      "shared": 9,
       "strength": 1
     },
     {
       "a": "README.fr.md",
       "b": "README.it.md",
-      "either": 10,
-      "shared": 10,
+      "either": 9,
+      "shared": 9,
       "strength": 1
     },
     {
       "a": "README.fr.md",
       "b": "README.ja.md",
-      "either": 10,
-      "shared": 10,
+      "either": 9,
+      "shared": 9,
       "strength": 1
     },
     {
       "a": "README.fr.md",
       "b": "README.md",
-      "either": 13,
+      "either": 11,
       "shared": 8,
-      "strength": 0.615385
+      "strength": 0.727273
     },
     {
       "a": "README.fr.md",
       "b": "README.pt-BR.md",
-      "either": 10,
-      "shared": 10,
+      "either": 9,
+      "shared": 9,
       "strength": 1
     },
     {
       "a": "README.fr.md",
       "b": "README.zh.md",
-      "either": 10,
-      "shared": 10,
+      "either": 9,
+      "shared": 9,
       "strength": 1
     },
     {
       "a": "README.hi.md",
       "b": "README.it.md",
-      "either": 10,
-      "shared": 10,
+      "either": 9,
+      "shared": 9,
       "strength": 1
     },
     {
       "a": "README.hi.md",
       "b": "README.ja.md",
-      "either": 10,
-      "shared": 10,
+      "either": 9,
+      "shared": 9,
       "strength": 1
     },
     {
       "a": "README.hi.md",
       "b": "README.md",
-      "either": 13,
+      "either": 11,
       "shared": 8,
-      "strength": 0.615385
+      "strength": 0.727273
     },
     {
       "a": "README.hi.md",
       "b": "README.pt-BR.md",
-      "either": 10,
-      "shared": 10,
+      "either": 9,
+      "shared": 9,
       "strength": 1
     },
     {
       "a": "README.hi.md",
       "b": "README.zh.md",
-      "either": 10,
-      "shared": 10,
+      "either": 9,
+      "shared": 9,
       "strength": 1
     },
     {
       "a": "README.it.md",
       "b": "README.ja.md",
-      "either": 10,
-      "shared": 10,
+      "either": 9,
+      "shared": 9,
       "strength": 1
     },
     {
       "a": "README.it.md",
       "b": "README.md",
-      "either": 13,
+      "either": 11,
       "shared": 8,
-      "strength": 0.615385
+      "strength": 0.727273
     },
     {
       "a": "README.it.md",
       "b": "README.pt-BR.md",
-      "either": 10,
-      "shared": 10,
+      "either": 9,
+      "shared": 9,
       "strength": 1
     },
     {
       "a": "README.it.md",
       "b": "README.zh.md",
-      "either": 10,
-      "shared": 10,
+      "either": 9,
+      "shared": 9,
       "strength": 1
     },
     {
       "a": "README.ja.md",
       "b": "README.md",
-      "either": 13,
+      "either": 11,
       "shared": 8,
-      "strength": 0.615385
+      "strength": 0.727273
     },
     {
       "a": "README.ja.md",
       "b": "README.pt-BR.md",
-      "either": 10,
-      "shared": 10,
+      "either": 9,
+      "shared": 9,
       "strength": 1
     },
     {
       "a": "README.ja.md",
       "b": "README.zh.md",
-      "either": 10,
-      "shared": 10,
+      "either": 9,
+      "shared": 9,
       "strength": 1
     },
     {
       "a": "README.md",
       "b": "README.pt-BR.md",
-      "either": 13,
+      "either": 11,
       "shared": 8,
-      "strength": 0.615385
+      "strength": 0.727273
     },
     {
       "a": "README.md",
       "b": "README.zh.md",
-      "either": 13,
+      "either": 11,
       "shared": 8,
-      "strength": 0.615385
+      "strength": 0.727273
     },
     {
       "a": "README.pt-BR.md",
       "b": "README.zh.md",
-      "either": 10,
-      "shared": 10,
+      "either": 9,
+      "shared": 9,
       "strength": 1
     },
     {
       "a": "audiobooker/__init__.py",
       "b": "pyproject.toml",
-      "either": 10,
-      "shared": 5,
+      "either": 8,
+      "shared": 4,
       "strength": 0.5
     },
     {
@@ -1366,24 +1272,10 @@
       "either": 7,
       "shared": 5,
       "strength": 0.714286
-    },
-    {
-      "a": "site/src/content/docs/handbook/beginners.md",
-      "b": "site/src/content/docs/handbook/reference.md",
-      "either": 7,
-      "shared": 4,
-      "strength": 0.571429
-    },
-    {
-      "a": "site/src/content/docs/handbook/reference.md",
-      "b": "site/src/content/docs/handbook/usage.md",
-      "either": 7,
-      "shared": 4,
-      "strength": 0.571429
     }
   ],
   "parameters": {
-    "appliedChangesetLimit": 47.75,
+    "appliedChangesetLimit": 49.25,
     "changeset": 50,
     "changesetFraction": 0.25,
     "cohesionDrop": 0.2,
@@ -1392,16 +1284,16 @@
     "floor": "fallen",
     "floorHeld": false,
     "floorTrigger": "revision-depth",
-    "headDate": "2026-09-17T17:57:19-07:00",
-    "inScopeFiles": 191,
+    "headDate": "2026-09-26T19:43:46-07:00",
+    "inScopeFiles": 197,
     "pinnedStart": null,
-    "priorFloor": null,
-    "qualifyingCommits": 102,
+    "priorFloor": "fallen",
+    "qualifyingCommits": 98,
     "qualifyingMinimum": 30,
     "revisions": 5,
     "shared": 10,
     "sharedFloorUsed": 3,
-    "since": "2026-03-22T00:57:19.000Z",
+    "since": "2026-03-31T02:43:46.000Z",
     "sourceExtensions": [
       ".js",
       ".mjs",

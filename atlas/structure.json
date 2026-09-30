@@ -17,7 +17,7 @@
           "path": ".github/release.yml"
         },
         {
-          "hash": "85d0243d48765080e4b61b8b9b1f5cb258cf10abdf30cb4eea15dc5355f148c9",
+          "hash": "d42fdd1675d8b961b100501e46e261d9043bded90d07d221c2646cff9fed6d7d",
           "path": ".github/workflows/ci.yml"
         },
         {
@@ -67,17 +67,31 @@
       "unresolvedSites": 0
     },
     {
-      "dynamicReads": 22,
+      "dynamicReads": 6,
       "dynamicSpawns": 0,
       "dynamicSpawnsInTests": 0,
-      "dynamicWrites": 30,
+      "dynamicWrites": 5,
       "entryPoints": [
         "audiobooker/cli.py"
       ],
-      "externals": 0,
+      "externalNames": [
+        "docx"
+      ],
+      "externals": 11,
       "files": [
         {
+          "failurePaths": [
+            {
+              "kind": "except",
+              "line": 32
+            }
+          ],
           "hash": "ec64e9ab8893f83549ecb1bc6e3f79818ef567f802fd06b7e4d75c43186ab873",
+          "importOrder": [
+            "audiobooker/models.py",
+            "audiobooker/project.py",
+            "audiobooker/errors.py"
+          ],
           "importsFiles": [
             "audiobooker/errors.py",
             "audiobooker/models.py",
@@ -109,6 +123,13 @@
             "parse_emotion_tag",
             "parse_inline_override",
             "utterances_to_script"
+          ],
+          "failurePaths": [
+            {
+              "in": "parse_emotion_tag",
+              "kind": "except",
+              "line": 361
+            }
           ],
           "hash": "e819bd1d527edf5e5e1d0d7da1681386dd9532c635addfaedd100d222c672fcc",
           "importsFiles": [
@@ -631,6 +652,63 @@
             "preset_dir",
             "save_preset"
           ],
+          "failurePaths": [
+            {
+              "in": "_config_root",
+              "kind": "except",
+              "line": 92
+            },
+            {
+              "in": "save_preset",
+              "kind": "raise",
+              "line": 140
+            },
+            {
+              "in": "save_preset",
+              "kind": "raise",
+              "line": 142
+            },
+            {
+              "in": "save_preset",
+              "kind": "raise",
+              "line": 148
+            },
+            {
+              "in": "save_preset",
+              "kind": "raise",
+              "line": 152
+            },
+            {
+              "in": "list_presets",
+              "kind": "except",
+              "line": 186
+            },
+            {
+              "in": "load_preset",
+              "kind": "raise",
+              "line": 208
+            },
+            {
+              "in": "load_preset",
+              "kind": "except",
+              "line": 215
+            },
+            {
+              "in": "load_preset",
+              "kind": "raise",
+              "line": 216
+            },
+            {
+              "in": "load_preset",
+              "kind": "raise",
+              "line": 225
+            },
+            {
+              "in": "load_preset",
+              "kind": "raise",
+              "line": 230
+            }
+          ],
           "hash": "6fb87df6b6170e363c913cf902c01ec3f2b9783ad00c9dfe7abe5cfa12be2600",
           "importsFiles": [
             "audiobooker/errors.py"
@@ -643,6 +721,58 @@
           "exports": [
             "get_available_voices",
             "validate_voices"
+          ],
+          "failurePaths": [
+            {
+              "in": "_voice_backend_installed",
+              "kind": "except",
+              "line": 168
+            },
+            {
+              "in": "get_available_voices",
+              "kind": "except",
+              "line": 205
+            },
+            {
+              "in": "get_available_voices",
+              "kind": "raise",
+              "line": 211
+            },
+            {
+              "in": "get_available_voices",
+              "kind": "raise",
+              "line": 212
+            },
+            {
+              "in": "get_available_voices",
+              "kind": "except",
+              "line": 219
+            },
+            {
+              "in": "get_available_voices",
+              "kind": "raise",
+              "line": 222
+            },
+            {
+              "in": "validate_voices",
+              "kind": "except",
+              "line": 256
+            },
+            {
+              "in": "validate_voices",
+              "kind": "raise",
+              "line": 265
+            },
+            {
+              "in": "validate_voices",
+              "kind": "except",
+              "line": 266
+            },
+            {
+              "in": "validate_voices",
+              "kind": "except",
+              "line": 272
+            }
           ],
           "hash": "aee7e156b60e3b8dda248bf0f9b0f300e5c96e46149ca182f7ee4bb6b2740d07",
           "importsFiles": [
@@ -685,7 +815,34 @@
           "exports": [
             "audition_voices"
           ],
+          "failurePaths": [
+            {
+              "in": "_load_runtime_voice_metadata",
+              "kind": "except",
+              "line": 209
+            },
+            {
+              "in": "list_voices",
+              "kind": "except",
+              "line": 282
+            },
+            {
+              "in": "list_voices",
+              "kind": "except",
+              "line": 295
+            },
+            {
+              "in": "list_voices",
+              "kind": "except",
+              "line": 301
+            }
+          ],
           "hash": "aabc9050e0c4ffca4cba69e153500b4a2771bed2904a2a3157af22b3b5c58e76",
+          "importOrder": [
+            "audiobooker/language/profile.py",
+            "audiobooker/models.py",
+            "audiobooker/casting/voice_registry.py"
+          ],
           "importsFiles": [
             "audiobooker/casting/voice_registry.py",
             "audiobooker/language/profile.py",
@@ -735,17 +892,637 @@
             "find_project_file",
             "main"
           ],
+          "failurePaths": [
+            {
+              "in": "_configure_output_encoding",
+              "kind": "except",
+              "line": 149
+            },
+            {
+              "in": "_resolve_engine",
+              "kind": "except",
+              "line": 241
+            },
+            {
+              "in": "_error_payload",
+              "kind": "except",
+              "line": 275
+            },
+            {
+              "in": "_audiobooker_file_completer",
+              "kind": "except",
+              "line": 409
+            },
+            {
+              "in": "filter",
+              "kind": "except",
+              "line": 437
+            },
+            {
+              "in": "_enable_argcomplete",
+              "kind": "except",
+              "line": 1634
+            },
+            {
+              "in": "_enable_argcomplete",
+              "kind": "except",
+              "line": 1638
+            },
+            {
+              "in": "find_project_file",
+              "kind": "raise",
+              "line": 1658
+            },
+            {
+              "in": "find_project_file",
+              "kind": "raise",
+              "line": 1673
+            },
+            {
+              "in": "find_project_file",
+              "kind": "raise",
+              "line": 1678
+            },
+            {
+              "in": "_project_choice_line",
+              "kind": "except",
+              "line": 1700
+            },
+            {
+              "in": "_project_choice_line",
+              "kind": "except",
+              "line": 1707
+            },
+            {
+              "in": "_load_config_file",
+              "kind": "except",
+              "line": 1734
+            },
+            {
+              "in": "_apply_config_sections",
+              "kind": "except",
+              "line": 1797
+            },
+            {
+              "in": "_apply_config_sections",
+              "kind": "except",
+              "line": 1802
+            },
+            {
+              "in": "_apply_config_sections",
+              "kind": "except",
+              "line": 1818
+            },
+            {
+              "in": "_apply_config_sections",
+              "kind": "except",
+              "line": 1826
+            },
+            {
+              "in": "cmd_new",
+              "kind": "except",
+              "line": 1850
+            },
+            {
+              "in": "cmd_new",
+              "kind": "except",
+              "line": 1925
+            },
+            {
+              "in": "_warn_unknown_voice",
+              "kind": "except",
+              "line": 1949
+            },
+            {
+              "in": "_warn_unknown_character",
+              "kind": "except",
+              "line": 1993
+            },
+            {
+              "in": "cmd_cast",
+              "kind": "except",
+              "line": 2070
+            },
+            {
+              "in": "_cast_interactive",
+              "kind": "except",
+              "line": 2165
+            },
+            {
+              "in": "_prompt_for_voice",
+              "kind": "except",
+              "line": 2185
+            },
+            {
+              "in": "_preview_voice_line",
+              "kind": "except",
+              "line": 2222
+            },
+            {
+              "in": "cmd_audition",
+              "kind": "except",
+              "line": 2335
+            },
+            {
+              "in": "cmd_audition",
+              "kind": "except",
+              "line": 2362
+            },
+            {
+              "in": "cmd_completion",
+              "kind": "except",
+              "line": 2397
+            },
+            {
+              "in": "cmd_compile",
+              "kind": "except",
+              "line": 2624
+            },
+            {
+              "in": "cmd_render",
+              "kind": "except",
+              "line": 2638
+            },
+            {
+              "in": "_cache_stats",
+              "kind": "except",
+              "line": 2694
+            },
+            {
+              "in": "_compile_chapters_in_memory",
+              "kind": "except",
+              "line": 2772
+            },
+            {
+              "in": "_encodable_spinner",
+              "kind": "except",
+              "line": 3244
+            },
+            {
+              "in": "_cmd_render_once_inner",
+              "kind": "raise",
+              "line": 3517
+            },
+            {
+              "in": "progress",
+              "kind": "except",
+              "line": 3547
+            },
+            {
+              "in": "_cmd_render_once_inner",
+              "kind": "except",
+              "line": 3550
+            },
+            {
+              "in": "_cmd_render_once_inner",
+              "kind": "except",
+              "line": 3562
+            },
+            {
+              "in": "_cmd_render_once_inner",
+              "kind": "except",
+              "line": 3606
+            },
+            {
+              "in": "_cmd_render_once_inner",
+              "kind": "raise",
+              "line": 3610
+            },
+            {
+              "in": "_cmd_render_once_inner",
+              "kind": "except",
+              "line": 3682
+            },
+            {
+              "in": "_cmd_render_once_inner",
+              "kind": "except",
+              "line": 3695
+            },
+            {
+              "in": "_cmd_render_once_inner",
+              "kind": "except",
+              "line": 3706
+            },
+            {
+              "in": "_render_incompleteness",
+              "kind": "except",
+              "line": 3736
+            },
+            {
+              "in": "_print_render_failure",
+              "kind": "except",
+              "line": 3806
+            },
+            {
+              "in": "_send_notification",
+              "kind": "except",
+              "line": 3875
+            },
+            {
+              "in": "_send_notification",
+              "kind": "except",
+              "line": 3896
+            },
+            {
+              "in": "_send_notification",
+              "kind": "except",
+              "line": 3909
+            },
+            {
+              "in": "_send_notification",
+              "kind": "except",
+              "line": 3928
+            },
+            {
+              "in": "_send_notification",
+              "kind": "except",
+              "line": 3939
+            },
+            {
+              "in": "cmd_info",
+              "kind": "except",
+              "line": 3984
+            },
+            {
+              "in": "cmd_load",
+              "kind": "except",
+              "line": 4023
+            },
+            {
+              "in": "cmd_voices",
+              "kind": "except",
+              "line": 4076
+            },
+            {
+              "in": "cmd_voices",
+              "kind": "except",
+              "line": 4079
+            },
+            {
+              "in": "cmd_voices",
+              "kind": "except",
+              "line": 4104
+            },
+            {
+              "in": "cmd_voices",
+              "kind": "except",
+              "line": 4106
+            },
+            {
+              "in": "cmd_chapters",
+              "kind": "except",
+              "line": 4222
+            },
+            {
+              "in": "cmd_chapters",
+              "kind": "except",
+              "line": 4240
+            },
+            {
+              "in": "cmd_chapters",
+              "kind": "except",
+              "line": 4253
+            },
+            {
+              "in": "cmd_chapters",
+              "kind": "except",
+              "line": 4266
+            },
+            {
+              "in": "cmd_chapters",
+              "kind": "except",
+              "line": 4280
+            },
+            {
+              "in": "cmd_chapters",
+              "kind": "except",
+              "line": 4293
+            },
+            {
+              "in": "cmd_chapters",
+              "kind": "except",
+              "line": 4306
+            },
+            {
+              "in": "cmd_chapters",
+              "kind": "except",
+              "line": 4358
+            },
+            {
+              "in": "cmd_speakers",
+              "kind": "except",
+              "line": 4428
+            },
+            {
+              "in": "_speakers_merge",
+              "kind": "except",
+              "line": 4472
+            },
+            {
+              "in": "_alias_proposal_parts",
+              "kind": "except",
+              "line": 4554
+            },
+            {
+              "in": "cmd_review_export",
+              "kind": "except",
+              "line": 4630
+            },
+            {
+              "in": "cmd_review_import",
+              "kind": "except",
+              "line": 4764
+            },
+            {
+              "in": "cmd_cast_suggest",
+              "kind": "except",
+              "line": 4863
+            },
+            {
+              "in": "cmd_cast_apply",
+              "kind": "except",
+              "line": 4942
+            },
+            {
+              "in": "cmd_cast_export",
+              "kind": "except",
+              "line": 4965
+            },
+            {
+              "in": "cmd_cast_import",
+              "kind": "except",
+              "line": 4989
+            },
+            {
+              "in": "cmd_cast_preset",
+              "kind": "except",
+              "line": 5024
+            },
+            {
+              "in": "cmd_cast_fill",
+              "kind": "except",
+              "line": 5212
+            },
+            {
+              "in": "cmd_emotions",
+              "kind": "except",
+              "line": 5285
+            },
+            {
+              "in": "_known_emotion_vocabulary",
+              "kind": "except",
+              "line": 5308
+            },
+            {
+              "in": "cmd_pronunciation",
+              "kind": "except",
+              "line": 5431
+            },
+            {
+              "in": "cmd_from_stdin",
+              "kind": "except",
+              "line": 5487
+            },
+            {
+              "in": "cmd_status",
+              "kind": "except",
+              "line": 5573
+            },
+            {
+              "in": "cmd_cache",
+              "kind": "except",
+              "line": 5663
+            },
+            {
+              "in": "cmd_cache",
+              "kind": "except",
+              "line": 5717
+            },
+            {
+              "in": "cmd_report",
+              "kind": "except",
+              "line": 5855
+            },
+            {
+              "in": "_import_optional",
+              "kind": "except",
+              "line": 5880
+            },
+            {
+              "in": "cmd_diagnose",
+              "kind": "except",
+              "line": 6012
+            },
+            {
+              "in": "cmd_diagnose",
+              "kind": "except",
+              "line": 6026
+            },
+            {
+              "in": "_project_at_risk",
+              "kind": "except",
+              "line": 6169
+            },
+            {
+              "in": "_discard_staged_project",
+              "kind": "except",
+              "line": 6202
+            },
+            {
+              "in": "_process_book",
+              "kind": "except",
+              "line": 6420
+            },
+            {
+              "in": "_process_book",
+              "kind": "except",
+              "line": 6547
+            },
+            {
+              "in": "_process_book",
+              "kind": "raise",
+              "line": 6552
+            },
+            {
+              "in": "_process_book",
+              "kind": "except",
+              "line": 6578
+            },
+            {
+              "in": "_process_book",
+              "kind": "except",
+              "line": 6587
+            },
+            {
+              "in": "_apply_book_overrides",
+              "kind": "except",
+              "line": 6617
+            },
+            {
+              "in": "_apply_book_overrides",
+              "kind": "except",
+              "line": 6622
+            },
+            {
+              "in": "_apply_book_overrides",
+              "kind": "except",
+              "line": 6644
+            },
+            {
+              "in": "_load_manifest",
+              "kind": "raise",
+              "line": 6656
+            },
+            {
+              "in": "_load_manifest",
+              "kind": "except",
+              "line": 6663
+            },
+            {
+              "in": "_load_manifest",
+              "kind": "raise",
+              "line": 6664
+            },
+            {
+              "in": "_load_manifest",
+              "kind": "raise",
+              "line": 6668
+            },
+            {
+              "in": "_load_manifest",
+              "kind": "raise",
+              "line": 6675
+            },
+            {
+              "in": "_load_manifest",
+              "kind": "raise",
+              "line": 6677
+            },
+            {
+              "in": "_load_manifest",
+              "kind": "raise",
+              "line": 6686
+            },
+            {
+              "in": "_load_manifest",
+              "kind": "raise",
+              "line": 6694
+            },
+            {
+              "in": "cmd_batch",
+              "kind": "except",
+              "line": 6722
+            },
+            {
+              "in": "_mtime",
+              "kind": "except",
+              "line": 7098
+            },
+            {
+              "in": "_watch_loop",
+              "kind": "except",
+              "line": 7120
+            },
+            {
+              "in": "cmd_preview",
+              "kind": "except",
+              "line": 7205
+            },
+            {
+              "in": "cmd_preview",
+              "kind": "except",
+              "line": 7209
+            },
+            {
+              "in": "cmd_preview",
+              "kind": "except",
+              "line": 7213
+            },
+            {
+              "in": "cmd_sample",
+              "kind": "except",
+              "line": 7285
+            },
+            {
+              "in": "cmd_sample",
+              "kind": "except",
+              "line": 7289
+            },
+            {
+              "in": "cmd_sample",
+              "kind": "except",
+              "line": 7293
+            },
+            {
+              "in": "cmd_master_check",
+              "kind": "except",
+              "line": 7347
+            },
+            {
+              "in": "cmd_export_chapters",
+              "kind": "except",
+              "line": 7428
+            },
+            {
+              "in": "cmd_podcast",
+              "kind": "except",
+              "line": 7546
+            },
+            {
+              "in": "cmd_podcast",
+              "kind": "except",
+              "line": 7550
+            },
+            {
+              "in": "main",
+              "kind": "except",
+              "line": 7628
+            },
+            {
+              "in": "main",
+              "kind": "except",
+              "line": 7631
+            }
+          ],
           "hash": "d9a6e1072175e1f3a529ac6d44131d28a30e235be277fbd2e88f6d47761cba4f",
-          "importsFiles": [
+          "importOrder": [
+            "audiobooker/renderer/engine.py",
             "audiobooker/__init__.py",
+            "audiobooker/formats.py",
+            "audiobooker/labels.py",
+            "audiobooker/shell_quote.py",
+            "audiobooker/errors.py",
+            "audiobooker/renderer/__init__.py",
+            "audiobooker/config_file.py",
+            "audiobooker/models.py",
+            "audiobooker/language/profile.py",
             "audiobooker/casting/__init__.py",
             "audiobooker/casting/voice_registry.py",
             "audiobooker/casting/voice_suggester.py",
+            "audiobooker/renderer/cache_manifest.py",
+            "audiobooker/project.py",
+            "audiobooker/renderer/failure_report.py",
+            "audiobooker/nlp/speaker_resolver.py",
+            "audiobooker/review.py",
+            "audiobooker/casting/presets.py",
+            "audiobooker/nlp/__init__.py",
+            "audiobooker/nlp/emotion.py",
+            "audiobooker/renderer/output.py"
+          ],
+          "importsFiles": [
+            "audiobooker/__init__.py",
+            "audiobooker/casting/__init__.py",
+            "audiobooker/casting/presets.py",
+            "audiobooker/casting/voice_registry.py",
+            "audiobooker/casting/voice_suggester.py",
+            "audiobooker/config_file.py",
             "audiobooker/errors.py",
+            "audiobooker/formats.py",
             "audiobooker/labels.py",
             "audiobooker/language/profile.py",
             "audiobooker/models.py",
             "audiobooker/nlp/__init__.py",
+            "audiobooker/nlp/emotion.py",
             "audiobooker/nlp/speaker_resolver.py",
             "audiobooker/project.py",
             "audiobooker/renderer/__init__.py",
@@ -753,6 +1530,7 @@
             "audiobooker/renderer/engine.py",
             "audiobooker/renderer/failure_report.py",
             "audiobooker/renderer/output.py",
+            "audiobooker/review.py",
             "audiobooker/shell_quote.py"
           ],
           "path": "audiobooker/cli.py",
@@ -4656,6 +5434,66 @@
             "load_config",
             "load_config_report"
           ],
+          "failurePaths": [
+            {
+              "kind": "except",
+              "line": 77
+            },
+            {
+              "kind": "except",
+              "line": 82
+            },
+            {
+              "in": "_require_positive_int",
+              "kind": "raise",
+              "line": 170
+            },
+            {
+              "in": "_require_non_negative_int",
+              "kind": "raise",
+              "line": 179
+            },
+            {
+              "in": "_require_unit_interval",
+              "kind": "raise",
+              "line": 188
+            },
+            {
+              "in": "_validator",
+              "kind": "raise",
+              "line": 231
+            },
+            {
+              "in": "_read_toml",
+              "kind": "except",
+              "line": 293
+            },
+            {
+              "in": "_find_project_rc",
+              "kind": "except",
+              "line": 321
+            },
+            {
+              "in": "_find_pyproject",
+              "kind": "except",
+              "line": 330
+            },
+            {
+              "in": "_find_pyproject",
+              "kind": "except",
+              "line": 337
+            },
+            {
+              "in": "_user_rc",
+              "kind": "except",
+              "line": 346
+            },
+            {
+              "in": "_user_rc",
+              "kind": "except",
+              "line": 351
+            }
+          ],
           "hash": "0c63dc0485d34fe5e8261c94abfa4681b5122bbe43c16983a81462cd72e2c078",
           "importsFiles": [
             "audiobooker/errors.py",
@@ -4673,6 +5511,13 @@
             "describe_choices",
             "get",
             "needs_ffmpeg"
+          ],
+          "failurePaths": [
+            {
+              "in": "needs_ffmpeg",
+              "kind": "except",
+              "line": 143
+            }
           ],
           "hash": "b5c40e80362932d2eb23f3f9510d0cbdeaf2ea8e14efc19cbcf78f06497232d6",
           "path": "audiobooker/formats.py"
@@ -4747,7 +5592,33 @@
             "get_profile",
             "register_profile"
           ],
+          "failurePaths": [
+            {
+              "in": "_discover_profiles",
+              "kind": "except",
+              "line": 309
+            },
+            {
+              "in": "_discover_profiles",
+              "kind": "except",
+              "line": 317
+            },
+            {
+              "in": "get_profile",
+              "kind": "except",
+              "line": 327
+            },
+            {
+              "in": "get_profile",
+              "kind": "raise",
+              "line": 333
+            }
+          ],
           "hash": "4f08a46cc7f1d62710fcc9cfccd0e812e260b85d1c259732e00ba2799e201aa5",
+          "importOrder": [
+            "audiobooker/models.py",
+            "audiobooker/language/__init__.py"
+          ],
           "importsFiles": [
             "audiobooker/language/__init__.py",
             "audiobooker/models.py"
@@ -4769,10 +5640,208 @@
             "portable_path",
             "resolve_stored_path"
           ],
+          "failurePaths": [
+            {
+              "in": "_validated_path",
+              "kind": "raise",
+              "line": 109
+            },
+            {
+              "in": "_validated_path",
+              "kind": "raise",
+              "line": 112
+            },
+            {
+              "in": "portable_path",
+              "kind": "except",
+              "line": 187
+            },
+            {
+              "in": "portable_path",
+              "kind": "except",
+              "line": 198
+            },
+            {
+              "in": "__post_init__",
+              "kind": "raise",
+              "line": 343
+            },
+            {
+              "in": "__post_init__",
+              "kind": "raise",
+              "line": 348
+            },
+            {
+              "in": "__post_init__",
+              "kind": "raise",
+              "line": 355
+            },
+            {
+              "in": "__post_init__",
+              "kind": "raise",
+              "line": 365
+            },
+            {
+              "in": "__post_init__",
+              "kind": "raise",
+              "line": 370
+            },
+            {
+              "in": "from_dict",
+              "kind": "raise",
+              "line": 428
+            },
+            {
+              "in": "is_rendered",
+              "kind": "except",
+              "line": 509
+            },
+            {
+              "in": "from_dict",
+              "kind": "raise",
+              "line": 573
+            },
+            {
+              "in": "__post_init__",
+              "kind": "raise",
+              "line": 639
+            },
+            {
+              "in": "__post_init__",
+              "kind": "raise",
+              "line": 644
+            },
+            {
+              "in": "__post_init__",
+              "kind": "raise",
+              "line": 649
+            },
+            {
+              "in": "__post_init__",
+              "kind": "raise",
+              "line": 654
+            },
+            {
+              "in": "from_dict",
+              "kind": "raise",
+              "line": 684
+            },
+            {
+              "in": "__post_init__",
+              "kind": "raise",
+              "line": 764
+            },
+            {
+              "in": "merge_speaker",
+              "kind": "raise",
+              "line": 926
+            },
+            {
+              "in": "merge_speaker",
+              "kind": "raise",
+              "line": 931
+            },
+            {
+              "in": "merge_speaker",
+              "kind": "raise",
+              "line": 937
+            },
+            {
+              "in": "merge_speaker",
+              "kind": "raise",
+              "line": 942
+            },
+            {
+              "in": "_check_positive_int",
+              "kind": "raise",
+              "line": 1143
+            },
+            {
+              "in": "_check_non_negative_int",
+              "kind": "raise",
+              "line": 1150
+            },
+            {
+              "in": "_check_unit_interval",
+              "kind": "raise",
+              "line": 1161
+            },
+            {
+              "in": "_check_bool",
+              "kind": "raise",
+              "line": 1168
+            },
+            {
+              "in": "_check_str_dict",
+              "kind": "raise",
+              "line": 1178
+            },
+            {
+              "in": "_check_non_empty_str",
+              "kind": "raise",
+              "line": 1185
+            },
+            {
+              "in": "_check_optional_str",
+              "kind": "raise",
+              "line": 1192
+            },
+            {
+              "in": "__post_init__",
+              "kind": "raise",
+              "line": 1308
+            },
+            {
+              "in": "__post_init__",
+              "kind": "raise",
+              "line": 1313
+            },
+            {
+              "in": "__post_init__",
+              "kind": "raise",
+              "line": 1318
+            },
+            {
+              "in": "__post_init__",
+              "kind": "raise",
+              "line": 1323
+            },
+            {
+              "in": "__post_init__",
+              "kind": "raise",
+              "line": 1328
+            },
+            {
+              "in": "__post_init__",
+              "kind": "raise",
+              "line": 1333
+            },
+            {
+              "in": "__post_init__",
+              "kind": "raise",
+              "line": 1338
+            },
+            {
+              "in": "__post_init__",
+              "kind": "raise",
+              "line": 1343
+            },
+            {
+              "in": "effective_speed",
+              "kind": "except",
+              "line": 1392
+            }
+          ],
           "hash": "6acd53282ece2b40ca68d89e71eacdfe2f10401421ff7d44e870641399492a68",
+          "importOrder": [
+            "audiobooker/__init__.py",
+            "audiobooker/formats.py",
+            "audiobooker/errors.py"
+          ],
           "importsFiles": [
             "audiobooker/__init__.py",
-            "audiobooker/errors.py"
+            "audiobooker/errors.py",
+            "audiobooker/formats.py"
           ],
           "path": "audiobooker/models.py",
           "sequences": [
@@ -4919,6 +5988,12 @@
         },
         {
           "hash": "0d8935623f192a7220d15f69740fad0b9599596399498f2b8b70bc87b9fb8d74",
+          "importOrder": [
+            "audiobooker/nlp/booknlp_adapter.py",
+            "audiobooker/nlp/speaker_resolver.py",
+            "audiobooker/nlp/emotion.py",
+            "audiobooker/nlp/normalizer.py"
+          ],
           "importsFiles": [
             "audiobooker/nlp/booknlp_adapter.py",
             "audiobooker/nlp/emotion.py",
@@ -4928,12 +6003,76 @@
           "path": "audiobooker/nlp/__init__.py"
         },
         {
+          "failurePaths": [
+            {
+              "in": "_safe_int",
+              "kind": "except",
+              "line": 53
+            },
+            {
+              "in": "_check_booknlp_available",
+              "kind": "except",
+              "line": 137
+            },
+            {
+              "in": "_check_booknlp_available",
+              "kind": "except",
+              "line": 150
+            },
+            {
+              "in": "__init__",
+              "kind": "raise",
+              "line": 181
+            },
+            {
+              "in": "analyze",
+              "kind": "except",
+              "line": 235
+            },
+            {
+              "in": "_run_analysis",
+              "kind": "except",
+              "line": 448
+            },
+            {
+              "in": "_run_analysis",
+              "kind": "raise",
+              "line": 449
+            },
+            {
+              "in": "_run_analysis",
+              "kind": "except",
+              "line": 459
+            },
+            {
+              "in": "_run_analysis",
+              "kind": "raise",
+              "line": 460
+            },
+            {
+              "in": "_run_analysis",
+              "kind": "except",
+              "line": 478
+            }
+          ],
           "hash": "a6105665da7eebb24ea65953da5753dfd8c78b3de0c233226776d5c94d96c3b2",
           "path": "audiobooker/nlp/booknlp_adapter.py"
         },
         {
           "exports": [
             "get_emotion_preset"
+          ],
+          "failurePaths": [
+            {
+              "in": "_set_intensity",
+              "kind": "except",
+              "line": 237
+            },
+            {
+              "in": "__init__",
+              "kind": "raise",
+              "line": 306
+            }
           ],
           "hash": "ce03ea1dc84dd67995f8e52479a7cc1fa3d9fc86683877b540cfac9b588946cf",
           "importsFiles": [
@@ -4960,6 +6099,28 @@
           "entryRule": 4,
           "exports": [
             "suggest_aliases"
+          ],
+          "failurePaths": [
+            {
+              "in": "__init__",
+              "kind": "raise",
+              "line": 75
+            },
+            {
+              "in": "resolve",
+              "kind": "raise",
+              "line": 129
+            },
+            {
+              "in": "suggest_aliases",
+              "kind": "except",
+              "line": 660
+            },
+            {
+              "in": "suggest_aliases",
+              "kind": "except",
+              "line": 669
+            }
           ],
           "hash": "565f05154532066c2804dfa65150f22cfb266a37aa85d0d192905ef113307cd2",
           "importsFiles": [
@@ -5035,7 +6196,21 @@
           ]
         },
         {
+          "failurePaths": [
+            {
+              "in": "__getattr__",
+              "kind": "raise",
+              "line": 40
+            }
+          ],
           "hash": "daa65313fc8287efa3a8a53277c628333af248f1ef17a2a7e938579e0dd1f2a4",
+          "importOrder": [
+            "audiobooker/parser/text.py",
+            "audiobooker/parser/text_cleaners.py",
+            "audiobooker/parser/epub.py",
+            "audiobooker/parser/pdf.py",
+            "audiobooker/parser/docx.py"
+          ],
           "importsFiles": [
             "audiobooker/parser/docx.py",
             "audiobooker/parser/epub.py",
@@ -5049,7 +6224,174 @@
           "exports": [
             "parse_docx"
           ],
+          "failurePaths": [
+            {
+              "in": "_compile_chapter_patterns",
+              "kind": "except",
+              "line": 65
+            },
+            {
+              "in": "_table_to_speakable",
+              "kind": "except",
+              "line": 231
+            },
+            {
+              "in": "_iter_body_blocks",
+              "kind": "except",
+              "line": 266
+            },
+            {
+              "in": "_part_lines",
+              "kind": "except",
+              "line": 289
+            },
+            {
+              "in": "_unique_header_footer_lines",
+              "kind": "except",
+              "line": 320
+            },
+            {
+              "in": "_parts",
+              "kind": "except",
+              "line": 327
+            },
+            {
+              "in": "_parts",
+              "kind": "except",
+              "line": 333
+            },
+            {
+              "in": "_parts",
+              "kind": "except",
+              "line": 337
+            },
+            {
+              "in": "_parts",
+              "kind": "except",
+              "line": 342
+            },
+            {
+              "in": "_related_part",
+              "kind": "except",
+              "line": 383
+            },
+            {
+              "in": "_related_part",
+              "kind": "except",
+              "line": 389
+            },
+            {
+              "in": "_related_part",
+              "kind": "except",
+              "line": 396
+            },
+            {
+              "in": "_notes_from_part",
+              "kind": "except",
+              "line": 417
+            },
+            {
+              "in": "_notes_from_part",
+              "kind": "except",
+              "line": 421
+            },
+            {
+              "in": "_notes_from_part",
+              "kind": "except",
+              "line": 425
+            },
+            {
+              "in": "_notes_from_part",
+              "kind": "except",
+              "line": 431
+            },
+            {
+              "in": "_notes_from_part",
+              "kind": "except",
+              "line": 444
+            },
+            {
+              "in": "_collect_note_bodies",
+              "kind": "except",
+              "line": 463
+            },
+            {
+              "in": "_paragraph_note_refs",
+              "kind": "except",
+              "line": 492
+            },
+            {
+              "in": "_paragraph_note_refs",
+              "kind": "except",
+              "line": 497
+            },
+            {
+              "in": "parse_docx",
+              "kind": "except",
+              "line": 550
+            },
+            {
+              "in": "parse_docx",
+              "kind": "raise",
+              "line": 551
+            },
+            {
+              "in": "parse_docx",
+              "kind": "raise",
+              "line": 558
+            },
+            {
+              "in": "parse_docx",
+              "kind": "raise",
+              "line": 565
+            },
+            {
+              "in": "parse_docx",
+              "kind": "raise",
+              "line": 571
+            },
+            {
+              "in": "parse_docx",
+              "kind": "except",
+              "line": 580
+            },
+            {
+              "in": "parse_docx",
+              "kind": "raise",
+              "line": 581
+            },
+            {
+              "in": "parse_docx",
+              "kind": "except",
+              "line": 586
+            },
+            {
+              "in": "parse_docx",
+              "kind": "raise",
+              "line": 587
+            },
+            {
+              "in": "parse_docx",
+              "kind": "except",
+              "line": 601
+            },
+            {
+              "in": "parse_docx",
+              "kind": "except",
+              "line": 699
+            },
+            {
+              "in": "parse_docx",
+              "kind": "raise",
+              "line": 813
+            }
+          ],
           "hash": "82d7fe6ae66ff2a3e04aef83d0ed2c444dabe60b8a92d3f01f952818f829982f",
+          "importOrder": [
+            "audiobooker/models.py",
+            "audiobooker/language/profile.py",
+            "audiobooker/parser/text.py"
+          ],
           "importsFiles": [
             "audiobooker/language/profile.py",
             "audiobooker/models.py",
@@ -5064,7 +6406,109 @@
             "parse_epub",
             "process_footnotes"
           ],
+          "failurePaths": [
+            {
+              "in": "html_to_text",
+              "kind": "except",
+              "line": 523
+            },
+            {
+              "in": "_compose_extracted_title",
+              "kind": "except",
+              "line": 558
+            },
+            {
+              "in": "_flatten_toc",
+              "kind": "except",
+              "line": 633
+            },
+            {
+              "in": "_spine_document_names",
+              "kind": "except",
+              "line": 926
+            },
+            {
+              "in": "parse_epub",
+              "kind": "except",
+              "line": 1153
+            },
+            {
+              "in": "parse_epub",
+              "kind": "raise",
+              "line": 1154
+            },
+            {
+              "in": "parse_epub",
+              "kind": "raise",
+              "line": 1161
+            },
+            {
+              "in": "parse_epub",
+              "kind": "raise",
+              "line": 1167
+            },
+            {
+              "in": "parse_epub",
+              "kind": "raise",
+              "line": 1174
+            },
+            {
+              "in": "parse_epub",
+              "kind": "raise",
+              "line": 1180
+            },
+            {
+              "in": "parse_epub",
+              "kind": "except",
+              "line": 1189
+            },
+            {
+              "in": "parse_epub",
+              "kind": "raise",
+              "line": 1190
+            },
+            {
+              "in": "parse_epub",
+              "kind": "except",
+              "line": 1195
+            },
+            {
+              "in": "parse_epub",
+              "kind": "raise",
+              "line": 1196
+            },
+            {
+              "in": "parse_epub",
+              "kind": "except",
+              "line": 1201
+            },
+            {
+              "in": "parse_epub",
+              "kind": "raise",
+              "line": 1202
+            },
+            {
+              "in": "parse_epub",
+              "kind": "except",
+              "line": 1263
+            },
+            {
+              "in": "parse_epub",
+              "kind": "except",
+              "line": 1273
+            },
+            {
+              "in": "parse_epub",
+              "kind": "raise",
+              "line": 1361
+            }
+          ],
           "hash": "5a04d1f401a76ff3d505342fc93d2f8604dfb68573287153b8668067e2450c40",
+          "importOrder": [
+            "audiobooker/models.py",
+            "audiobooker/language/profile.py",
+            "audiobooker/parser/text.py"
+          ],
           "importsFiles": [
             "audiobooker/language/profile.py",
             "audiobooker/models.py",
@@ -5076,7 +6520,74 @@
           "exports": [
             "parse_pdf"
           ],
+          "failurePaths": [
+            {
+              "in": "_compile_chapter_patterns",
+              "kind": "except",
+              "line": 63
+            },
+            {
+              "in": "_chapters_from_outline",
+              "kind": "except",
+              "line": 348
+            },
+            {
+              "in": "parse_pdf",
+              "kind": "except",
+              "line": 526
+            },
+            {
+              "in": "parse_pdf",
+              "kind": "raise",
+              "line": 527
+            },
+            {
+              "in": "parse_pdf",
+              "kind": "raise",
+              "line": 534
+            },
+            {
+              "in": "parse_pdf",
+              "kind": "raise",
+              "line": 540
+            },
+            {
+              "in": "parse_pdf",
+              "kind": "except",
+              "line": 547
+            },
+            {
+              "in": "parse_pdf",
+              "kind": "raise",
+              "line": 548
+            },
+            {
+              "in": "parse_pdf",
+              "kind": "except",
+              "line": 567
+            },
+            {
+              "in": "parse_pdf",
+              "kind": "except",
+              "line": 583
+            },
+            {
+              "in": "parse_pdf",
+              "kind": "raise",
+              "line": 611
+            },
+            {
+              "in": "parse_pdf",
+              "kind": "raise",
+              "line": 740
+            }
+          ],
           "hash": "15cc1e2bf886c034388c014fc82a96fa908e894eae47c8ef055b6a70b3b5a4da",
+          "importOrder": [
+            "audiobooker/models.py",
+            "audiobooker/language/profile.py",
+            "audiobooker/parser/text.py"
+          ],
           "importsFiles": [
             "audiobooker/language/profile.py",
             "audiobooker/models.py",
@@ -5096,7 +6607,79 @@
             "split_into_chapters",
             "strip_gutenberg_boilerplate"
           ],
+          "failurePaths": [
+            {
+              "in": "split_into_chapters",
+              "kind": "except",
+              "line": 536
+            },
+            {
+              "in": "split_into_chapters",
+              "kind": "raise",
+              "line": 537
+            },
+            {
+              "in": "parse_text",
+              "kind": "raise",
+              "line": 649
+            },
+            {
+              "in": "parse_text",
+              "kind": "raise",
+              "line": 655
+            },
+            {
+              "in": "parse_text",
+              "kind": "raise",
+              "line": 668
+            },
+            {
+              "in": "parse_text",
+              "kind": "except",
+              "line": 679
+            },
+            {
+              "in": "parse_text",
+              "kind": "raise",
+              "line": 680
+            },
+            {
+              "in": "read_folder_chapters",
+              "kind": "raise",
+              "line": 841
+            },
+            {
+              "in": "read_folder_chapters",
+              "kind": "raise",
+              "line": 843
+            },
+            {
+              "in": "read_folder_chapters",
+              "kind": "raise",
+              "line": 883
+            },
+            {
+              "in": "read_folder_chapters",
+              "kind": "except",
+              "line": 908
+            },
+            {
+              "in": "read_folder_chapters",
+              "kind": "raise",
+              "line": 909
+            },
+            {
+              "in": "read_folder_chapters",
+              "kind": "raise",
+              "line": 928
+            }
+          ],
           "hash": "4d56fff1888bcabeaf08bd054502e8e3138faed589557ba70da07b86ca71974a",
+          "importOrder": [
+            "audiobooker/models.py",
+            "audiobooker/language/profile.py",
+            "audiobooker/parser/text_cleaners.py"
+          ],
           "importsFiles": [
             "audiobooker/language/profile.py",
             "audiobooker/models.py",
@@ -5117,6 +6700,43 @@
             "strip_markdown_inline",
             "strip_page_numbers"
           ],
+          "failurePaths": [
+            {
+              "in": "apply_pronunciation_overrides",
+              "kind": "except",
+              "line": 375
+            },
+            {
+              "in": "load_lexicon",
+              "kind": "raise",
+              "line": 455
+            },
+            {
+              "in": "load_lexicon",
+              "kind": "except",
+              "line": 463
+            },
+            {
+              "in": "load_lexicon",
+              "kind": "raise",
+              "line": 464
+            },
+            {
+              "in": "load_lexicon",
+              "kind": "except",
+              "line": 473
+            },
+            {
+              "in": "load_lexicon",
+              "kind": "raise",
+              "line": 474
+            },
+            {
+              "in": "_load_json_into",
+              "kind": "raise",
+              "line": 505
+            }
+          ],
           "hash": "a68a07cd097222e8742741a5055d8c30190792061839097297ffd1612179e30a",
           "importsFiles": [
             "audiobooker/models.py"
@@ -5124,7 +6744,481 @@
           "path": "audiobooker/parser/text_cleaners.py"
         },
         {
+          "failurePaths": [
+            {
+              "in": "_csv_float",
+              "kind": "except",
+              "line": 94
+            },
+            {
+              "in": "_csv_optional_float",
+              "kind": "except",
+              "line": 109
+            },
+            {
+              "in": "_csv_int",
+              "kind": "except",
+              "line": 119
+            },
+            {
+              "in": "_coerce_schema_version",
+              "kind": "raise",
+              "line": 177
+            },
+            {
+              "in": "_dump_project_tmp",
+              "kind": "except",
+              "line": 334
+            },
+            {
+              "in": "_dump_project_tmp",
+              "kind": "except",
+              "line": 337
+            },
+            {
+              "in": "_dump_project_tmp",
+              "kind": "raise",
+              "line": 339
+            },
+            {
+              "in": "_replace_project_tmp",
+              "kind": "except",
+              "line": 346
+            },
+            {
+              "in": "_replace_project_tmp",
+              "kind": "except",
+              "line": 349
+            },
+            {
+              "in": "_replace_project_tmp",
+              "kind": "raise",
+              "line": 351
+            },
+            {
+              "in": "_peek_modified_at",
+              "kind": "except",
+              "line": 363
+            },
+            {
+              "in": "_read_project_payload",
+              "kind": "except",
+              "line": 375
+            },
+            {
+              "in": "_project_save_lock",
+              "kind": "except",
+              "line": 400
+            },
+            {
+              "in": "_project_save_lock",
+              "kind": "except",
+              "line": 403
+            },
+            {
+              "in": "_project_save_lock",
+              "kind": "except",
+              "line": 408
+            },
+            {
+              "in": "_project_save_lock",
+              "kind": "raise",
+              "line": 412
+            },
+            {
+              "in": "_project_save_lock",
+              "kind": "except",
+              "line": 414
+            },
+            {
+              "in": "_project_save_lock",
+              "kind": "raise",
+              "line": 415
+            },
+            {
+              "in": "_project_save_lock",
+              "kind": "except",
+              "line": 422
+            },
+            {
+              "in": "save_render_progress",
+              "kind": "except",
+              "line": 580
+            },
+            {
+              "in": "_validate_kwargs",
+              "kind": "raise",
+              "line": 592
+            },
+            {
+              "in": "from_epub",
+              "kind": "raise",
+              "line": 616
+            },
+            {
+              "in": "from_epub",
+              "kind": "except",
+              "line": 649
+            },
+            {
+              "in": "from_epub",
+              "kind": "except",
+              "line": 657
+            },
+            {
+              "in": "from_epub",
+              "kind": "except",
+              "line": 676
+            },
+            {
+              "in": "from_pdf",
+              "kind": "raise",
+              "line": 747
+            },
+            {
+              "in": "from_pdf",
+              "kind": "except",
+              "line": 776
+            },
+            {
+              "in": "from_pdf",
+              "kind": "except",
+              "line": 783
+            },
+            {
+              "in": "from_docx",
+              "kind": "raise",
+              "line": 836
+            },
+            {
+              "in": "from_docx",
+              "kind": "except",
+              "line": 852
+            },
+            {
+              "in": "from_folder",
+              "kind": "raise",
+              "line": 916
+            },
+            {
+              "in": "from_folder",
+              "kind": "except",
+              "line": 926
+            },
+            {
+              "in": "from_folder",
+              "kind": "raise",
+              "line": 930
+            },
+            {
+              "in": "from_text",
+              "kind": "raise",
+              "line": 973
+            },
+            {
+              "in": "load",
+              "kind": "raise",
+              "line": 1186
+            },
+            {
+              "in": "load",
+              "kind": "raise",
+              "line": 1192
+            },
+            {
+              "in": "load",
+              "kind": "raise",
+              "line": 1205
+            },
+            {
+              "in": "load",
+              "kind": "raise",
+              "line": 1217
+            },
+            {
+              "in": "save",
+              "kind": "except",
+              "line": 1385
+            },
+            {
+              "in": "save",
+              "kind": "except",
+              "line": 1397
+            },
+            {
+              "in": "_validate_voices",
+              "kind": "except",
+              "line": 1617
+            },
+            {
+              "in": "_validate_voices",
+              "kind": "raise",
+              "line": 1632
+            },
+            {
+              "in": "add_pronunciation",
+              "kind": "raise",
+              "line": 1686
+            },
+            {
+              "in": "add_pronunciation",
+              "kind": "raise",
+              "line": 1688
+            },
+            {
+              "in": "add_pronunciation",
+              "kind": "raise",
+              "line": 1698
+            },
+            {
+              "in": "_apply_override_to_compiled",
+              "kind": "except",
+              "line": 1744
+            },
+            {
+              "in": "remove_pronunciation",
+              "kind": "raise",
+              "line": 1804
+            },
+            {
+              "in": "_clear_compiled_for_word",
+              "kind": "except",
+              "line": 1823
+            },
+            {
+              "in": "preview",
+              "kind": "raise",
+              "line": 1898
+            },
+            {
+              "in": "preview",
+              "kind": "except",
+              "line": 1930
+            },
+            {
+              "in": "preview",
+              "kind": "except",
+              "line": 1933
+            },
+            {
+              "in": "preview",
+              "kind": "raise",
+              "line": 1935
+            },
+            {
+              "in": "import_casting",
+              "kind": "raise",
+              "line": 2091
+            },
+            {
+              "in": "import_casting",
+              "kind": "raise",
+              "line": 2102
+            },
+            {
+              "in": "import_casting",
+              "kind": "raise",
+              "line": 2117
+            },
+            {
+              "in": "import_casting",
+              "kind": "raise",
+              "line": 2121
+            },
+            {
+              "in": "_import_casting_csv",
+              "kind": "raise",
+              "line": 2172
+            },
+            {
+              "in": "export_lexicon",
+              "kind": "except",
+              "line": 2244
+            },
+            {
+              "in": "import_lexicon",
+              "kind": "raise",
+              "line": 2289
+            },
+            {
+              "in": "exclude_chapter",
+              "kind": "raise",
+              "line": 2395
+            },
+            {
+              "in": "include_chapter",
+              "kind": "raise",
+              "line": 2410
+            },
+            {
+              "in": "merge_chapters",
+              "kind": "raise",
+              "line": 2434
+            },
+            {
+              "in": "merge_chapters",
+              "kind": "raise",
+              "line": 2439
+            },
+            {
+              "in": "split_chapter",
+              "kind": "raise",
+              "line": 2492
+            },
+            {
+              "in": "split_chapter",
+              "kind": "raise",
+              "line": 2498
+            },
+            {
+              "in": "rename_chapter",
+              "kind": "raise",
+              "line": 2559
+            },
+            {
+              "in": "rename_chapter",
+              "kind": "raise",
+              "line": 2563
+            },
+            {
+              "in": "reorder_chapters",
+              "kind": "raise",
+              "line": 2599
+            },
+            {
+              "in": "reorder_chapters",
+              "kind": "raise",
+              "line": 2603
+            },
+            {
+              "in": "reorder_chapters",
+              "kind": "raise",
+              "line": 2608
+            },
+            {
+              "in": "compile",
+              "kind": "except",
+              "line": 2750
+            },
+            {
+              "in": "compile",
+              "kind": "raise",
+              "line": 2814
+            },
+            {
+              "in": "compile",
+              "kind": "except",
+              "line": 2876
+            },
+            {
+              "in": "_apply_nlp_emotion_to_chapters",
+              "kind": "except",
+              "line": 2969
+            },
+            {
+              "in": "_compile_parallel",
+              "kind": "except",
+              "line": 3056
+            },
+            {
+              "in": "_compile_parallel",
+              "kind": "except",
+              "line": 3062
+            },
+            {
+              "in": "_compile_parallel",
+              "kind": "except",
+              "line": 3081
+            },
+            {
+              "in": "compile_chapter",
+              "kind": "raise",
+              "line": 3106
+            },
+            {
+              "in": "render",
+              "kind": "except",
+              "line": 3216
+            },
+            {
+              "in": "render",
+              "kind": "raise",
+              "line": 3220
+            },
+            {
+              "in": "render",
+              "kind": "except",
+              "line": 3232
+            },
+            {
+              "in": "_cb",
+              "kind": "except",
+              "line": 3249
+            },
+            {
+              "in": "render_chapter",
+              "kind": "raise",
+              "line": 3295
+            },
+            {
+              "in": "render_chapter",
+              "kind": "except",
+              "line": 3312
+            },
+            {
+              "in": "set_mood_span",
+              "kind": "raise",
+              "line": 3471
+            },
+            {
+              "in": "set_mood_span",
+              "kind": "raise",
+              "line": 3473
+            },
+            {
+              "in": "set_mood_span",
+              "kind": "raise",
+              "line": 3480
+            },
+            {
+              "in": "override_emotion",
+              "kind": "raise",
+              "line": 3519
+            },
+            {
+              "in": "override_emotion",
+              "kind": "raise",
+              "line": 3521
+            },
+            {
+              "in": "override_emotion",
+              "kind": "raise",
+              "line": 3526
+            },
+            {
+              "in": "override_emotion",
+              "kind": "raise",
+              "line": 3530
+            }
+          ],
           "hash": "08a6d966baee9be36ee0040a21f59dcd43018ccf207a797f5a61dbc75041eb3a",
+          "importOrder": [
+            "audiobooker/errors.py",
+            "audiobooker/models.py",
+            "audiobooker/parser/epub.py",
+            "audiobooker/language/profile.py",
+            "audiobooker/parser/pdf.py",
+            "audiobooker/parser/docx.py",
+            "audiobooker/parser/text.py",
+            "audiobooker/casting/voice_registry.py",
+            "audiobooker/parser/text_cleaners.py",
+            "audiobooker/renderer/engine.py",
+            "audiobooker/nlp/normalizer.py",
+            "audiobooker/casting/dialogue.py",
+            "audiobooker/nlp/speaker_resolver.py",
+            "audiobooker/nlp/emotion.py",
+            "audiobooker/review.py"
+          ],
           "importsFiles": [
             "audiobooker/casting/dialogue.py",
             "audiobooker/casting/voice_registry.py",
@@ -5236,6 +7330,12 @@
         },
         {
           "hash": "17c81352a8e5e540fe62fc9c6d5f6289fa64e17ab0fc015fb92768d14e357eb3",
+          "importOrder": [
+            "audiobooker/renderer/engine.py",
+            "audiobooker/renderer/output.py",
+            "audiobooker/renderer/protocols.py",
+            "audiobooker/renderer/cache_manifest.py"
+          ],
           "importsFiles": [
             "audiobooker/renderer/cache_manifest.py",
             "audiobooker/renderer/engine.py",
@@ -5259,6 +7359,63 @@
             "load_utterance_manifest",
             "save_manifest",
             "save_utterance_manifest"
+          ],
+          "failurePaths": [
+            {
+              "in": "is_valid",
+              "kind": "except",
+              "line": 105
+            },
+            {
+              "in": "is_valid",
+              "kind": "except",
+              "line": 107
+            },
+            {
+              "in": "is_valid",
+              "kind": "except",
+              "line": 216
+            },
+            {
+              "in": "is_valid",
+              "kind": "except",
+              "line": 218
+            },
+            {
+              "in": "load_utterance_manifest",
+              "kind": "except",
+              "line": 327
+            },
+            {
+              "in": "save_utterance_manifest",
+              "kind": "except",
+              "line": 351
+            },
+            {
+              "in": "save_utterance_manifest",
+              "kind": "raise",
+              "line": 354
+            },
+            {
+              "in": "_recover_live_from_bak",
+              "kind": "except",
+              "line": 379
+            },
+            {
+              "in": "load_manifest",
+              "kind": "except",
+              "line": 401
+            },
+            {
+              "in": "save_manifest",
+              "kind": "except",
+              "line": 433
+            },
+            {
+              "in": "save_manifest",
+              "kind": "raise",
+              "line": 437
+            }
           ],
           "hash": "09bbdc0db2c72ab10bd28cc9288a57c22c92718a4d49c714809f49b3e59ea20a",
           "path": "audiobooker/renderer/cache_manifest.py",
@@ -5408,11 +7565,424 @@
             "should_use_ssml",
             "validate_casting_completeness"
           ],
+          "failurePaths": [
+            {
+              "in": "_pause_break_ms",
+              "kind": "except",
+              "line": 188
+            },
+            {
+              "in": "_pause_break_ms",
+              "kind": "except",
+              "line": 193
+            },
+            {
+              "in": "_pause_break_ms",
+              "kind": "except",
+              "line": 197
+            },
+            {
+              "in": "parse_chapter_ranges",
+              "kind": "raise",
+              "line": 329
+            },
+            {
+              "in": "parse_chapter_ranges",
+              "kind": "raise",
+              "line": 334
+            },
+            {
+              "in": "should_use_ssml",
+              "kind": "except",
+              "line": 390
+            },
+            {
+              "in": "_assembler_accepted_kwargs",
+              "kind": "except",
+              "line": 411
+            },
+            {
+              "in": "engine_is_thread_safe",
+              "kind": "except",
+              "line": 445
+            },
+            {
+              "in": "__init__",
+              "kind": "except",
+              "line": 521
+            },
+            {
+              "in": "__init__",
+              "kind": "raise",
+              "line": 522
+            },
+            {
+              "in": "_load_engine_entry_points",
+              "kind": "except",
+              "line": 572
+            },
+            {
+              "in": "_load_engine_entry_points",
+              "kind": "except",
+              "line": 584
+            },
+            {
+              "in": "get_default_engine",
+              "kind": "raise",
+              "line": 644
+            },
+            {
+              "in": "render_chapter",
+              "kind": "raise",
+              "line": 712
+            },
+            {
+              "in": "render_chapter",
+              "kind": "except",
+              "line": 795
+            },
+            {
+              "in": "render_chapter",
+              "kind": "raise",
+              "line": 807
+            },
+            {
+              "in": "render_chapter_incremental",
+              "kind": "raise",
+              "line": 898
+            },
+            {
+              "in": "render_chapter_incremental",
+              "kind": "except",
+              "line": 911
+            },
+            {
+              "in": "render_chapter_incremental",
+              "kind": "raise",
+              "line": 930
+            },
+            {
+              "in": "render_chapter_incremental",
+              "kind": "raise",
+              "line": 941
+            },
+            {
+              "in": "render_chapter_incremental",
+              "kind": "except",
+              "line": 1051
+            },
+            {
+              "in": "render_chapter_incremental",
+              "kind": "raise",
+              "line": 1064
+            },
+            {
+              "in": "render_chapter_incremental",
+              "kind": "raise",
+              "line": 1076
+            },
+            {
+              "in": "render_chapter_incremental",
+              "kind": "except",
+              "line": 1084
+            },
+            {
+              "in": "render_chapter_incremental",
+              "kind": "except",
+              "line": 1093
+            },
+            {
+              "in": "_stitch_utterance_wavs",
+              "kind": "raise",
+              "line": 1164
+            },
+            {
+              "in": "_stitch_utterance_wavs",
+              "kind": "raise",
+              "line": 1172
+            },
+            {
+              "in": "_stitch_utterance_wavs",
+              "kind": "raise",
+              "line": 1234
+            },
+            {
+              "in": "_is_pid_running",
+              "kind": "except",
+              "line": 1264
+            },
+            {
+              "in": "_write_lockfile",
+              "kind": "except",
+              "line": 1357
+            },
+            {
+              "in": "_acquire_render_lock",
+              "kind": "except",
+              "line": 1385
+            },
+            {
+              "in": "_acquire_render_lock",
+              "kind": "raise",
+              "line": 1398
+            },
+            {
+              "in": "_acquire_render_lock",
+              "kind": "raise",
+              "line": 1405
+            },
+            {
+              "in": "_acquire_render_lock",
+              "kind": "raise",
+              "line": 1419
+            },
+            {
+              "in": "_release_render_lock",
+              "kind": "except",
+              "line": 1430
+            },
+            {
+              "in": "validate_casting_completeness",
+              "kind": "raise",
+              "line": 1483
+            },
+            {
+              "in": "_fail",
+              "kind": "raise",
+              "line": 1560
+            },
+            {
+              "in": "_preflight_output_destination",
+              "kind": "except",
+              "line": 1586
+            },
+            {
+              "in": "_preflight_output_destination",
+              "kind": "except",
+              "line": 1619
+            },
+            {
+              "in": "_preflight_output_destination",
+              "kind": "except",
+              "line": 1627
+            },
+            {
+              "in": "_preflight_output_destination",
+              "kind": "except",
+              "line": 1637
+            },
+            {
+              "in": "_attach_summary",
+              "kind": "except",
+              "line": 1749
+            },
+            {
+              "in": "_render_project_impl",
+              "kind": "except",
+              "line": 1898
+            },
+            {
+              "in": "_render_project_impl",
+              "kind": "raise",
+              "line": 1899
+            },
+            {
+              "in": "_render_project_impl",
+              "kind": "raise",
+              "line": 1912
+            },
+            {
+              "in": "_render_project_impl",
+              "kind": "except",
+              "line": 2101
+            },
+            {
+              "in": "_render_one_chapter",
+              "kind": "except",
+              "line": 2216
+            },
+            {
+              "in": "_render_one_chapter",
+              "kind": "raise",
+              "line": 2222
+            },
+            {
+              "in": "_render_one_chapter",
+              "kind": "except",
+              "line": 2268
+            },
+            {
+              "in": "_render_one_chapter",
+              "kind": "raise",
+              "line": 2276
+            },
+            {
+              "in": "_render_one_chapter",
+              "kind": "except",
+              "line": 2290
+            },
+            {
+              "in": "_render_project_impl",
+              "kind": "except",
+              "line": 2311
+            },
+            {
+              "in": "_render_project_impl",
+              "kind": "raise",
+              "line": 2316
+            },
+            {
+              "in": "_render_project_impl",
+              "kind": "except",
+              "line": 2317
+            },
+            {
+              "in": "_render_project_impl",
+              "kind": "raise",
+              "line": 2321
+            },
+            {
+              "in": "_render_project_impl",
+              "kind": "except",
+              "line": 2322
+            },
+            {
+              "in": "_render_project_impl",
+              "kind": "raise",
+              "line": 2338
+            },
+            {
+              "in": "_render_project_impl",
+              "kind": "raise",
+              "line": 2351
+            },
+            {
+              "in": "_render_project_impl",
+              "kind": "raise",
+              "line": 2366
+            },
+            {
+              "in": "_call_assembler",
+              "kind": "except",
+              "line": 2482
+            },
+            {
+              "in": "_call_assembler",
+              "kind": "raise",
+              "line": 2484
+            },
+            {
+              "in": "_render_project_impl",
+              "kind": "except",
+              "line": 2498
+            },
+            {
+              "in": "_render_project_impl",
+              "kind": "raise",
+              "line": 2504
+            },
+            {
+              "in": "_render_project_impl",
+              "kind": "raise",
+              "line": 2516
+            },
+            {
+              "in": "_render_project_impl",
+              "kind": "except",
+              "line": 2606
+            },
+            {
+              "in": "_render_project_impl",
+              "kind": "raise",
+              "line": 2608
+            },
+            {
+              "in": "_render_project_impl",
+              "kind": "except",
+              "line": 2610
+            },
+            {
+              "in": "_render_project_impl",
+              "kind": "raise",
+              "line": 2621
+            },
+            {
+              "in": "render_sample",
+              "kind": "raise",
+              "line": 2734
+            },
+            {
+              "in": "render_sample",
+              "kind": "raise",
+              "line": 2744
+            },
+            {
+              "in": "render_sample",
+              "kind": "raise",
+              "line": 2752
+            },
+            {
+              "in": "render_sample",
+              "kind": "except",
+              "line": 2798
+            },
+            {
+              "in": "render_sample",
+              "kind": "raise",
+              "line": 2835
+            },
+            {
+              "in": "render_sample",
+              "kind": "except",
+              "line": 2856
+            },
+            {
+              "in": "render_sample",
+              "kind": "raise",
+              "line": 2859
+            },
+            {
+              "in": "render_sample",
+              "kind": "except",
+              "line": 2866
+            },
+            {
+              "in": "render_sample",
+              "kind": "except",
+              "line": 2878
+            },
+            {
+              "in": "render_sample",
+              "kind": "raise",
+              "line": 2928
+            },
+            {
+              "in": "_handle_chapter_failure",
+              "kind": "raise",
+              "line": 3013
+            },
+            {
+              "in": "_verify_acx_master",
+              "kind": "except",
+              "line": 3136
+            },
+            {
+              "in": "_estimate_chapter_duration",
+              "kind": "except",
+              "line": 3165
+            },
+            {
+              "in": "_post_render_validate",
+              "kind": "except",
+              "line": 3212
+            }
+          ],
           "hash": "81248519dee62306c5af74ecca89000cbb35ba18958e9e1efd479c1430b20fa2",
           "importsFiles": [
             "audiobooker/__init__.py",
             "audiobooker/casting/dialogue.py",
             "audiobooker/errors.py",
+            "audiobooker/formats.py",
             "audiobooker/labels.py",
             "audiobooker/models.py",
             "audiobooker/project.py",
@@ -5977,6 +8547,25 @@
                   "via": "engine_is_thread_safe"
                 },
                 {
+                  "inner": [
+                    {
+                      "line": 368,
+                      "name": "exists",
+                      "target": null,
+                      "via": "_recover_live_from_bak"
+                    },
+                    {
+                      "line": 370,
+                      "name": "with_suffix",
+                      "target": null,
+                      "via": "_recover_live_from_bak"
+                    },
+                    {
+                      "line": 393,
+                      "name": "read_text",
+                      "target": null
+                    }
+                  ],
                   "line": 2051,
                   "name": "load_manifest",
                   "target": {
@@ -6017,6 +8606,26 @@
                   "via": "_render_project_impl"
                 },
                 {
+                  "inner": [
+                    {
+                      "line": 206,
+                      "name": "normalize_key",
+                      "target": null,
+                      "via": "_chapter_casting_keys"
+                    },
+                    {
+                      "line": 210,
+                      "name": "resolve_alias",
+                      "target": null,
+                      "via": "_chapter_casting_keys"
+                    },
+                    {
+                      "line": 212,
+                      "name": "normalize_key",
+                      "target": null,
+                      "via": "_chapter_casting_keys"
+                    }
+                  ],
                   "line": 2019,
                   "name": "casting_hash",
                   "target": {
@@ -6091,6 +8700,25 @@
                   "via": "render_chapter_incremental"
                 },
                 {
+                  "inner": [
+                    {
+                      "line": 368,
+                      "name": "exists",
+                      "target": null,
+                      "via": "_recover_live_from_bak"
+                    },
+                    {
+                      "line": 370,
+                      "name": "with_suffix",
+                      "target": null,
+                      "via": "_recover_live_from_bak"
+                    },
+                    {
+                      "line": 318,
+                      "name": "read_text",
+                      "target": null
+                    }
+                  ],
                   "line": 953,
                   "name": "load_utterance_manifest",
                   "target": {
@@ -6620,6 +9248,18 @@
           "path": "audiobooker/renderer/failure_report.py"
         },
         {
+          "failurePaths": [
+            {
+              "in": "run",
+              "kind": "except",
+              "line": 71
+            },
+            {
+              "in": "run",
+              "kind": "except",
+              "line": 76
+            }
+          ],
           "hash": "db568e1436afa9562d2d8b84b3622f1dbe0826defbfbbb9e0024d563a7536357",
           "importsFiles": [
             "audiobooker/renderer/protocols.py"
@@ -6627,6 +9267,8 @@
           "path": "audiobooker/renderer/ffmpeg_runner.py"
         },
         {
+          "entry": "casting_hash",
+          "entryRule": 4,
           "exports": [
             "casting_hash",
             "chapter_text_hash",
@@ -6636,11 +9278,122 @@
             "sha256_text",
             "utterance_hash"
           ],
+          "failurePaths": [
+            {
+              "in": "_canonical_engine_instance_name",
+              "kind": "except",
+              "line": 316
+            },
+            {
+              "in": "_engine_distribution_version",
+              "kind": "except",
+              "line": 332
+            },
+            {
+              "in": "_engine_distribution_version",
+              "kind": "except",
+              "line": 349
+            },
+            {
+              "in": "_engine_distribution_version",
+              "kind": "except",
+              "line": 357
+            }
+          ],
           "hash": "4a8fd3e9f3bc39b8484e656e5145c9a7398dadff6ccbc08a3d5807aae37101a9",
           "importsFiles": [
             "audiobooker/models.py"
           ],
-          "path": "audiobooker/renderer/hash_utils.py"
+          "path": "audiobooker/renderer/hash_utils.py",
+          "sequences": [
+            {
+              "calls": [
+                {
+                  "line": 101,
+                  "name": "normalize_key",
+                  "target": null
+                },
+                {
+                  "line": 104,
+                  "name": "resolve_alias",
+                  "target": null
+                }
+              ],
+              "exported": false,
+              "invokedAtTopLevel": false,
+              "isDefaultExport": false,
+              "name": "_character_for_speaker"
+            },
+            {
+              "calls": [
+                {
+                  "line": 101,
+                  "name": "normalize_key",
+                  "target": null,
+                  "via": "_character_for_speaker"
+                },
+                {
+                  "line": 104,
+                  "name": "resolve_alias",
+                  "target": null,
+                  "via": "_character_for_speaker"
+                }
+              ],
+              "exported": true,
+              "invokedAtTopLevel": false,
+              "isDefaultExport": false,
+              "name": "utterance_hash"
+            },
+            {
+              "calls": [
+                {
+                  "line": 206,
+                  "name": "normalize_key",
+                  "target": null
+                },
+                {
+                  "line": 210,
+                  "name": "resolve_alias",
+                  "target": null
+                },
+                {
+                  "line": 212,
+                  "name": "normalize_key",
+                  "target": null
+                }
+              ],
+              "exported": false,
+              "invokedAtTopLevel": false,
+              "isDefaultExport": false,
+              "name": "_chapter_casting_keys"
+            },
+            {
+              "calls": [
+                {
+                  "line": 206,
+                  "name": "normalize_key",
+                  "target": null,
+                  "via": "_chapter_casting_keys"
+                },
+                {
+                  "line": 210,
+                  "name": "resolve_alias",
+                  "target": null,
+                  "via": "_chapter_casting_keys"
+                },
+                {
+                  "line": 212,
+                  "name": "normalize_key",
+                  "target": null,
+                  "via": "_chapter_casting_keys"
+                }
+              ],
+              "exported": true,
+              "invokedAtTopLevel": false,
+              "isDefaultExport": false,
+              "name": "casting_hash"
+            }
+          ]
         },
         {
           "entry": "assemble_m4b",
@@ -6661,6 +9414,128 @@
             "get_audio_duration",
             "master_check",
             "reset_ffmpeg_cache"
+          ],
+          "failurePaths": [
+            {
+              "in": "check_ffmpeg",
+              "kind": "except",
+              "line": 114
+            },
+            {
+              "in": "get_audio_duration",
+              "kind": "except",
+              "line": 162
+            },
+            {
+              "in": "_generate_silence_file",
+              "kind": "except",
+              "line": 303
+            },
+            {
+              "in": "_generate_silence_file",
+              "kind": "raise",
+              "line": 321
+            },
+            {
+              "in": "concatenate_audio_files",
+              "kind": "raise",
+              "line": 355
+            },
+            {
+              "in": "concatenate_audio_files",
+              "kind": "raise",
+              "line": 413
+            },
+            {
+              "in": "_loudnorm_second_pass_filter",
+              "kind": "except",
+              "line": 544
+            },
+            {
+              "in": "_loudnorm_second_pass_filter",
+              "kind": "except",
+              "line": 557
+            },
+            {
+              "in": "assemble_m4b",
+              "kind": "raise",
+              "line": 712
+            },
+            {
+              "in": "assemble_m4b",
+              "kind": "raise",
+              "line": 895
+            },
+            {
+              "in": "assemble_mp3_chapters",
+              "kind": "raise",
+              "line": 1065
+            },
+            {
+              "in": "assemble_mp3_chapters",
+              "kind": "raise",
+              "line": 1153
+            },
+            {
+              "in": "_concat_to_single",
+              "kind": "raise",
+              "line": 1273
+            },
+            {
+              "in": "assemble_opus",
+              "kind": "raise",
+              "line": 1398
+            },
+            {
+              "in": "assemble_flac",
+              "kind": "raise",
+              "line": 1466
+            },
+            {
+              "in": "assemble_wav",
+              "kind": "raise",
+              "line": 1537
+            },
+            {
+              "in": "assemble_m4a_split",
+              "kind": "raise",
+              "line": 1619
+            },
+            {
+              "in": "assemble_m4a_split",
+              "kind": "raise",
+              "line": 1693
+            },
+            {
+              "in": "_parse_loudnorm_json",
+              "kind": "except",
+              "line": 1724
+            },
+            {
+              "in": "_parse_volumedetect_mean_db",
+              "kind": "except",
+              "line": 1743
+            },
+            {
+              "in": "_parse_astats_floor_db",
+              "kind": "except",
+              "line": 1756
+            },
+            {
+              "in": "_to_float",
+              "kind": "except",
+              "line": 1848
+            },
+            {
+              "in": "export_chapter_metadata",
+              "kind": "raise",
+              "line": 1964
+            },
+            {
+              "in": "export_chapter_metadata",
+              "kind": "raise",
+              "line": 1978
+            }
           ],
           "hash": "bfe9a9aab21181ab1689d4028f1a86efa20c95c9aeaee4f62adbde928b1c1498",
           "importsFiles": [
@@ -7131,7 +10006,19 @@
             "import_reviewed",
             "preview_review_format"
           ],
+          "failurePaths": [
+            {
+              "in": "import_reviewed",
+              "kind": "raise",
+              "line": 297
+            }
+          ],
           "hash": "15b77e3424bbd0b31f0b9771428bf9f076d71fc05bf4b3f29ee24cdb98448b2e",
+          "importOrder": [
+            "audiobooker/models.py",
+            "audiobooker/shell_quote.py",
+            "audiobooker/project.py"
+          ],
           "importsFiles": [
             "audiobooker/models.py",
             "audiobooker/project.py",
@@ -7155,27 +10042,69 @@
       "origin": "authored",
       "outsidePlaces": [
         {
-          "reads": 4,
+          "reads": 37,
           "where": [
             "caller"
+          ],
+          "writes": 27
+        },
+        {
+          "reads": 1,
+          "where": [
+            "cwd:.audiobookerrc",
+            "home:.audiobookerrc"
+          ],
+          "writes": 0
+        },
+        {
+          "reads": 1,
+          "where": [
+            "cwd:audiobooker"
+          ],
+          "writes": 0
+        },
+        {
+          "reads": 1,
+          "where": [
+            "cwd:pyproject.toml"
           ],
           "writes": 0
         },
         {
           "reads": 2,
           "where": [
-            "caller",
             "home:.config/",
-            "home:AppData/"
+            "home:AppData/",
+            "home:audiobooker/"
           ],
           "writes": 1
         }
       ],
-      "outsideReads": 6,
-      "outsideWrites": 1,
+      "outsideReads": 42,
+      "outsideWrites": 28,
       "role": "code",
+      "testRunners": [
+        "pytest"
+      ],
       "testedBy": 76,
-      "unresolvedSites": 15
+      "unresolvedNamed": [
+        {
+          "path": "audiobooker/cli.py",
+          "specifier": null,
+          "why": "dynamic"
+        },
+        {
+          "path": "audiobooker/cli.py",
+          "specifier": null,
+          "why": "dynamic"
+        },
+        {
+          "path": "audiobooker/language/profile.py",
+          "specifier": null,
+          "why": "dynamic"
+        }
+      ],
+      "unresolvedSites": 4
     },
     {
       "dynamicReads": 0,
@@ -7286,8 +10215,18 @@
           "path": "npm/README.zh.md"
         },
         {
+          "entry": "fail",
+          "entryRule": 1,
+          "failurePaths": [
+            {
+              "in": "readMeta",
+              "kind": "catch",
+              "line": 133
+            }
+          ],
           "hash": "e44e2c113871952214b1ca514a0eb0e96bfa1639c0c2e5e30bdde9528d559d84",
-          "path": "npm/bin/audiobooker.js"
+          "path": "npm/bin/audiobooker.js",
+          "sequences": []
         },
         {
           "hash": "81339b90518c7e2c218c2695fd071b8c70b415b7f97464c7919dfe1e3b238924",
@@ -7302,27 +10241,29 @@
       "origin": "authored",
       "outsidePlaces": [
         {
-          "reads": 3,
-          "where": [
-            "caller"
-          ],
-          "writes": 0
-        },
-        {
           "reads": 2,
           "where": [
             "caller",
             "home:.local/",
-            "home:AppData/"
+            "home:AppData/",
+            "home:audiobooker/"
           ],
           "writes": 3
+        },
+        {
+          "reads": 3,
+          "where": [
+            "caller",
+            "home:audiobooker/"
+          ],
+          "writes": 0
         }
       ],
       "outsideReads": 5,
       "outsideWrites": 3,
       "role": "docs",
       "testedBy": 0,
-      "unresolvedSites": 1
+      "unresolvedSites": 0
     },
     {
       "dynamicReads": 0,
@@ -7417,6 +10358,10 @@
           "path": "action.yml"
         },
         {
+          "hash": "59ca3f6a5be96b80fee73bebf2b778211208d17cd3fb82e2134608dff0729c76",
+          "path": "codecov.yml"
+        },
+        {
           "hash": "cc1121ebc39d8e719cee55d265d455706f274c2e2a4a2e3ab401dcb623e37f63",
           "path": "pyproject.toml"
         }
@@ -7452,6 +10397,7 @@
           "path": "site/package.json"
         },
         {
+          "constantOnly": true,
           "hash": "ee756dfba4122d2acc94a39b2555d9f200fff56a87a8c0b10f9cd01df26a8b62",
           "path": "site/src/content.config.ts"
         },
@@ -7485,9 +10431,18 @@
         },
         {
           "hash": "391533713539035d3c92282579d43de0f137067867fdb502d7eaea3c74601d2a",
+          "importOrder": [
+            "site/src/styles/global.css",
+            "site/src/site-config.ts"
+          ],
+          "importsFiles": [
+            "site/src/site-config.ts",
+            "site/src/styles/global.css"
+          ],
           "path": "site/src/pages/index.astro"
         },
         {
+          "constantOnly": true,
           "hash": "cb1a46af25c00d342993240958a4352e22c24b7dd069e1790b29bddb8a4bd6ca",
           "path": "site/src/site-config.ts"
         },
@@ -7520,7 +10475,10 @@
       "dynamicSpawnsInTests": 0,
       "dynamicWrites": 0,
       "entryPoints": [],
-      "externals": 0,
+      "externalNames": [
+        "docx"
+      ],
+      "externals": 3,
       "files": [
         {
           "hash": "e805bf1fbc1fa5851a60db2238b9c789e2d3f179b14ca65b4e96920b1f9779dc",
@@ -7534,14 +10492,24 @@
             "simple_project"
           ],
           "hash": "3ca2695ea66c8387943f233d3f6f51cd6297bd6fcf39f2bf0800e22f55b7ccb4",
+          "importOrder": [
+            "audiobooker/project.py",
+            "audiobooker/cli.py"
+          ],
           "importsFiles": [
             "audiobooker/cli.py",
             "audiobooker/project.py"
           ],
-          "path": "tests/conftest.py"
+          "path": "tests/conftest.py",
+          "testFramework": "pytest"
         },
         {
           "hash": "913f1a99138f5c408b06cc7e5077cfd8de0371450c99e842d81384d41b9ea0be",
+          "importOrder": [
+            "tests/fakes/fake_tts.py",
+            "tests/fakes/fake_ffmpeg.py",
+            "tests/fakes/fake_registry.py"
+          ],
           "importsFiles": [
             "tests/fakes/fake_ffmpeg.py",
             "tests/fakes/fake_registry.py",
@@ -7590,10 +10558,20 @@
             "small_book"
           ],
           "hash": "5fa4cb13232c55762408970a41368e108e50fb7ee97706ab25173a943d8e119d",
-          "path": "tests/perf/conftest.py"
+          "path": "tests/perf/conftest.py",
+          "testFramework": "pytest"
         },
         {
           "hash": "bc56c82199e9df88fb1200a7b1ebb43f421bb3c4df4637e075c9dd5363d47cbf",
+          "importOrder": [
+            "audiobooker/__init__.py",
+            "audiobooker/models.py",
+            "audiobooker/casting/dialogue.py",
+            "audiobooker/language/profile.py",
+            "audiobooker/nlp/emotion.py",
+            "audiobooker/renderer/cache_manifest.py",
+            "tests/perf/conftest.py"
+          ],
           "importsFiles": [
             "audiobooker/__init__.py",
             "audiobooker/casting/dialogue.py",
@@ -7607,6 +10585,17 @@
         },
         {
           "hash": "d17b294630ca53bd85d462a3b0d6c280d890f70449179e9711e08938d90c66b1",
+          "importOrder": [
+            "audiobooker/casting/dialogue.py",
+            "audiobooker/casting/voice_registry.py",
+            "audiobooker/casting/voice_suggester.py",
+            "audiobooker/language/profile.py",
+            "audiobooker/models.py",
+            "audiobooker/nlp/emotion.py",
+            "audiobooker/nlp/normalizer.py",
+            "audiobooker/nlp/__init__.py",
+            "audiobooker/nlp/booknlp_adapter.py"
+          ],
           "importsFiles": [
             "audiobooker/casting/dialogue.py",
             "audiobooker/casting/voice_registry.py",
@@ -7614,13 +10603,22 @@
             "audiobooker/language/profile.py",
             "audiobooker/models.py",
             "audiobooker/nlp/__init__.py",
+            "audiobooker/nlp/booknlp_adapter.py",
             "audiobooker/nlp/emotion.py",
             "audiobooker/nlp/normalizer.py"
           ],
-          "path": "tests/test_amend_casting_nlp.py"
+          "path": "tests/test_amend_casting_nlp.py",
+          "testFramework": "pytest"
         },
         {
           "hash": "a6332cb4591b0b2244e3695c1907cabd9bee928f8bc4b61662ca6221d9e301cb",
+          "importOrder": [
+            "audiobooker/cli.py",
+            "audiobooker/models.py",
+            "audiobooker/project.py",
+            "audiobooker/review.py",
+            "audiobooker/errors.py"
+          ],
           "importsFiles": [
             "audiobooker/cli.py",
             "audiobooker/errors.py",
@@ -7628,48 +10626,100 @@
             "audiobooker/project.py",
             "audiobooker/review.py"
           ],
-          "path": "tests/test_amend_cli.py"
+          "path": "tests/test_amend_cli.py",
+          "testFramework": "pytest"
         },
         {
           "hash": "d79ecb5a14356d4b1eee689949dc8091e7c3898b9dc2632f673d3c209c913266",
+          "importOrder": [
+            "audiobooker/errors.py",
+            "audiobooker/models.py",
+            "audiobooker/project.py",
+            "audiobooker/config_file.py",
+            "audiobooker/casting/__init__.py",
+            "audiobooker/casting/presets.py",
+            "audiobooker/__init__.py"
+          ],
           "importsFiles": [
             "audiobooker/__init__.py",
             "audiobooker/casting/__init__.py",
+            "audiobooker/casting/presets.py",
             "audiobooker/config_file.py",
             "audiobooker/errors.py",
             "audiobooker/models.py",
             "audiobooker/project.py"
           ],
-          "path": "tests/test_amend_core.py"
+          "path": "tests/test_amend_core.py",
+          "testFramework": "pytest"
         },
         {
           "hash": "e0d23878ad840c6119ad45029b1dbc9119195d239e6c7de66d6a9092994c9047",
+          "importOrder": [
+            "audiobooker/parser/__init__.py",
+            "audiobooker/parser/epub.py",
+            "audiobooker/parser/pdf.py",
+            "audiobooker/parser/text.py",
+            "audiobooker/parser/text_cleaners.py",
+            "audiobooker/language/profile.py",
+            "audiobooker/casting/dialogue.py"
+          ],
           "importsFiles": [
             "audiobooker/casting/dialogue.py",
             "audiobooker/language/profile.py",
-            "audiobooker/parser/__init__.py"
+            "audiobooker/parser/__init__.py",
+            "audiobooker/parser/epub.py",
+            "audiobooker/parser/pdf.py",
+            "audiobooker/parser/text.py",
+            "audiobooker/parser/text_cleaners.py"
           ],
-          "path": "tests/test_amend_parser_lang.py"
+          "path": "tests/test_amend_parser_lang.py",
+          "testFramework": "pytest"
         },
         {
           "exports": [
             "ffmpeg_available"
           ],
           "hash": "bbdf23a58791ab0e4a1b81e2e41cd6c87673a0cca0c57f3b5d8373c002cfa197",
+          "importOrder": [
+            "audiobooker/renderer/output.py",
+            "audiobooker/models.py",
+            "audiobooker/project.py",
+            "audiobooker/renderer/__init__.py",
+            "audiobooker/renderer/engine.py",
+            "audiobooker/renderer/ffmpeg_runner.py",
+            "audiobooker/renderer/cache_manifest.py",
+            "audiobooker/renderer/hash_utils.py",
+            "audiobooker/renderer/protocols.py",
+            "tests/fakes/fake_tts.py"
+          ],
           "importsFiles": [
             "audiobooker/models.py",
             "audiobooker/project.py",
             "audiobooker/renderer/__init__.py",
             "audiobooker/renderer/cache_manifest.py",
+            "audiobooker/renderer/engine.py",
+            "audiobooker/renderer/ffmpeg_runner.py",
             "audiobooker/renderer/hash_utils.py",
             "audiobooker/renderer/output.py",
             "audiobooker/renderer/protocols.py",
             "tests/fakes/fake_tts.py"
           ],
-          "path": "tests/test_amend_renderer.py"
+          "path": "tests/test_amend_renderer.py",
+          "testFramework": "pytest"
         },
         {
           "hash": "389135a7424d4c5badfc12edde32215f84ca04a9b4867288453b843e672edabc",
+          "importOrder": [
+            "audiobooker/models.py",
+            "audiobooker/project.py",
+            "audiobooker/renderer/engine.py",
+            "tests/fakes/fake_ffmpeg.py",
+            "tests/fakes/fake_tts.py",
+            "audiobooker/cli.py",
+            "audiobooker/casting/voice_registry.py",
+            "audiobooker/errors.py",
+            "audiobooker/casting/presets.py"
+          ],
           "importsFiles": [
             "audiobooker/casting/presets.py",
             "audiobooker/casting/voice_registry.py",
@@ -7681,7 +10731,8 @@
             "tests/fakes/fake_ffmpeg.py",
             "tests/fakes/fake_tts.py"
           ],
-          "path": "tests/test_amend_residuals.py"
+          "path": "tests/test_amend_residuals.py",
+          "testFramework": "pytest"
         },
         {
           "hash": "0ae9b09ce725cd7c0e0f0062e929a2e01d21c7087e476aefd4918e58aa6d96da",
@@ -7689,19 +10740,28 @@
             "audiobooker/cli.py",
             "audiobooker/project.py"
           ],
-          "path": "tests/test_cli_commands.py"
+          "path": "tests/test_cli_commands.py",
+          "testFramework": "pytest"
         },
         {
           "hash": "14aefd75ce9576de36590cfb4d6d086e271890c08dfe297da0a2e84e6811ec3c",
+          "names": [
+            "audiobooker/cli.py"
+          ],
           "path": "tests/test_cli_output_is_console_safe.py"
         },
         {
           "hash": "c749af39b2455f1024418cc694abee7d9bcbae3e18215ec17d8c0fa395493c90",
+          "importOrder": [
+            "audiobooker/project.py",
+            "audiobooker/casting/dialogue.py"
+          ],
           "importsFiles": [
             "audiobooker/casting/dialogue.py",
             "audiobooker/project.py"
           ],
-          "path": "tests/test_compile_errors.py"
+          "path": "tests/test_compile_errors.py",
+          "testFramework": "pytest"
         },
         {
           "hash": "b25e0ddeb57376c52dbdf3b52fbf98f5f42c6ef21c12a932d221202bf82ad7be",
@@ -7710,7 +10770,8 @@
             "audiobooker/project.py",
             "audiobooker/renderer/engine.py"
           ],
-          "path": "tests/test_dataloss_review_and_cancel.py"
+          "path": "tests/test_dataloss_review_and_cancel.py",
+          "testFramework": "pytest"
         },
         {
           "exports": [
@@ -7730,19 +10791,28 @@
             "audiobooker/casting/dialogue.py",
             "audiobooker/models.py"
           ],
-          "path": "tests/test_dialogue.py"
+          "path": "tests/test_dialogue.py",
+          "testFramework": "pytest"
         },
         {
           "exports": [
             "project"
           ],
           "hash": "12cec34c6e626b7142e8a3a45b89bb6736ff76aaf97973757092358ad12c4d82",
+          "importOrder": [
+            "audiobooker/__init__.py",
+            "audiobooker/labels.py",
+            "audiobooker/renderer/engine.py",
+            "audiobooker/cli.py"
+          ],
           "importsFiles": [
             "audiobooker/__init__.py",
+            "audiobooker/cli.py",
             "audiobooker/labels.py",
             "audiobooker/renderer/engine.py"
           ],
-          "path": "tests/test_dry_run_chapter_numbering.py"
+          "path": "tests/test_dry_run_chapter_numbering.py",
+          "testFramework": "pytest"
         },
         {
           "exports": [
@@ -7750,21 +10820,35 @@
             "has_voice_soundboard"
           ],
           "hash": "9b7ba41ced63248578932d7604fccbbace4f1ffb5af0262657891d9c9ea2b3e1",
+          "importOrder": [
+            "tests/conftest.py",
+            "audiobooker/__init__.py"
+          ],
           "importsFiles": [
             "audiobooker/__init__.py",
             "tests/conftest.py"
           ],
-          "path": "tests/test_e2e_smoke.py"
+          "path": "tests/test_e2e_smoke.py",
+          "testFramework": "pytest"
         },
         {
           "hash": "2fd35ad651425b6b5c78f1bf150e7d783159c104d7010fc8fcddab7c8db04d4e",
           "importsFiles": [
             "audiobooker/parser/epub.py"
           ],
-          "path": "tests/test_epub_parsing.py"
+          "path": "tests/test_epub_parsing.py",
+          "testFramework": "pytest"
         },
         {
           "hash": "561e536cf18bf678d31258b800cd5312f17663c70deaef7e016f5cac6666151b",
+          "importOrder": [
+            "audiobooker/casting/dialogue.py",
+            "audiobooker/language/__init__.py",
+            "audiobooker/models.py",
+            "audiobooker/nlp/speaker_resolver.py",
+            "audiobooker/cli.py",
+            "audiobooker/project.py"
+          ],
           "importsFiles": [
             "audiobooker/casting/dialogue.py",
             "audiobooker/cli.py",
@@ -7773,20 +10857,33 @@
             "audiobooker/nlp/speaker_resolver.py",
             "audiobooker/project.py"
           ],
-          "path": "tests/test_feat_attribution_confidence.py"
+          "path": "tests/test_feat_attribution_confidence.py",
+          "testFramework": "pytest"
         },
         {
           "hash": "ff66670a4621c73e8cec8afc4018124c8ec9ab995590b4e0309a2f017afae7ef",
+          "importOrder": [
+            "audiobooker/__init__.py",
+            "audiobooker/cli.py",
+            "audiobooker/errors.py",
+            "audiobooker/renderer/engine.py",
+            "audiobooker/renderer/output.py",
+            "audiobooker/renderer/__init__.py",
+            "audiobooker/casting/__init__.py",
+            "audiobooker/casting/voice_registry.py"
+          ],
           "importsFiles": [
             "audiobooker/__init__.py",
             "audiobooker/casting/__init__.py",
+            "audiobooker/casting/voice_registry.py",
             "audiobooker/cli.py",
             "audiobooker/errors.py",
             "audiobooker/renderer/__init__.py",
             "audiobooker/renderer/engine.py",
             "audiobooker/renderer/output.py"
           ],
-          "path": "tests/test_feat_cli_surface.py"
+          "path": "tests/test_feat_cli_surface.py",
+          "testFramework": "pytest"
         },
         {
           "hash": "83c30a02c396bc11df59c7c40cc9268a06c2cba6fb57c9c8d0aa5a9a584214ed",
@@ -7795,19 +10892,31 @@
             "audiobooker/models.py",
             "audiobooker/project.py"
           ],
-          "path": "tests/test_feat_f1_cli.py"
+          "path": "tests/test_feat_f1_cli.py",
+          "testFramework": "pytest"
         },
         {
           "hash": "f2cd6a553e9d733e12863cb8b7a7ea89781955e15ab5b04d7e87c42d924e10a6",
+          "importOrder": [
+            "audiobooker/renderer/output.py",
+            "audiobooker/models.py",
+            "audiobooker/project.py",
+            "audiobooker/renderer/__init__.py",
+            "audiobooker/renderer/engine.py",
+            "audiobooker/renderer/protocols.py",
+            "tests/fakes/fake_tts.py"
+          ],
           "importsFiles": [
             "audiobooker/models.py",
             "audiobooker/project.py",
             "audiobooker/renderer/__init__.py",
+            "audiobooker/renderer/engine.py",
             "audiobooker/renderer/output.py",
             "audiobooker/renderer/protocols.py",
             "tests/fakes/fake_tts.py"
           ],
-          "path": "tests/test_feat_f1_renderer.py"
+          "path": "tests/test_feat_f1_renderer.py",
+          "testFramework": "pytest"
         },
         {
           "hash": "aa0b1ea79b75885c375fb6ebe0ab9bb442b8de868807a672e0ec07fd2b4b4f23",
@@ -7816,10 +10925,19 @@
             "audiobooker/models.py",
             "audiobooker/project.py"
           ],
-          "path": "tests/test_feat_f2_cli.py"
+          "path": "tests/test_feat_f2_cli.py",
+          "testFramework": "pytest"
         },
         {
           "hash": "511ffe303877b6ad22a1b3b4a93d0041d28ed6c8816dd7e1f80353f8d53b8c8d",
+          "importOrder": [
+            "audiobooker/parser/docx.py",
+            "audiobooker/language/profile.py",
+            "audiobooker/models.py",
+            "audiobooker/parser/text_cleaners.py",
+            "audiobooker/parser/text.py",
+            "audiobooker/parser/epub.py"
+          ],
           "importsFiles": [
             "audiobooker/language/profile.py",
             "audiobooker/models.py",
@@ -7828,17 +10946,25 @@
             "audiobooker/parser/text.py",
             "audiobooker/parser/text_cleaners.py"
           ],
-          "path": "tests/test_feat_f2_parser.py"
+          "path": "tests/test_feat_f2_parser.py",
+          "testFramework": "pytest"
         },
         {
           "hash": "f4d8a73040279503d74a914b809eb05dc985cdfbd983c37e00b1b81bb70c63ff",
+          "importOrder": [
+            "audiobooker/cli.py",
+            "audiobooker/project.py",
+            "audiobooker/casting/voice_suggester.py",
+            "audiobooker/config_file.py"
+          ],
           "importsFiles": [
             "audiobooker/casting/voice_suggester.py",
             "audiobooker/cli.py",
             "audiobooker/config_file.py",
             "audiobooker/project.py"
           ],
-          "path": "tests/test_feat_f3_cli.py"
+          "path": "tests/test_feat_f3_cli.py",
+          "testFramework": "pytest"
         },
         {
           "exports": [
@@ -7851,16 +10977,29 @@
             "audiobooker/models.py",
             "audiobooker/project.py"
           ],
-          "path": "tests/test_feat_f3_config.py"
+          "path": "tests/test_feat_f3_config.py",
+          "testFramework": "pytest"
         },
         {
           "exports": [
             "isolated_presets"
           ],
           "hash": "6891f136e4e0cd78ec3c777a83a46b4ee041426c79444565ef9d141986001091",
+          "importOrder": [
+            "audiobooker/casting/__init__.py",
+            "audiobooker/casting/presets.py",
+            "audiobooker/casting/dialogue.py",
+            "audiobooker/casting/voice_suggester.py",
+            "audiobooker/models.py",
+            "audiobooker/nlp/emotion.py",
+            "audiobooker/nlp/speaker_resolver.py",
+            "audiobooker/renderer/engine.py",
+            "audiobooker/nlp/booknlp_adapter.py"
+          ],
           "importsFiles": [
             "audiobooker/casting/__init__.py",
             "audiobooker/casting/dialogue.py",
+            "audiobooker/casting/presets.py",
             "audiobooker/casting/voice_suggester.py",
             "audiobooker/models.py",
             "audiobooker/nlp/booknlp_adapter.py",
@@ -7868,7 +11007,8 @@
             "audiobooker/nlp/speaker_resolver.py",
             "audiobooker/renderer/engine.py"
           ],
-          "path": "tests/test_feat_f4_casting.py"
+          "path": "tests/test_feat_f4_casting.py",
+          "testFramework": "pytest"
         },
         {
           "exports": [
@@ -7876,6 +11016,14 @@
             "stub_presets"
           ],
           "hash": "7a4af3b11fe5dab308b98d3f13658e838ae79be8857cd6a8d0de75af3b277236",
+          "importOrder": [
+            "audiobooker/cli.py",
+            "audiobooker/models.py",
+            "audiobooker/nlp/speaker_resolver.py",
+            "audiobooker/project.py",
+            "audiobooker/casting/presets.py",
+            "audiobooker/__init__.py"
+          ],
           "importsFiles": [
             "audiobooker/__init__.py",
             "audiobooker/casting/presets.py",
@@ -7884,7 +11032,8 @@
             "audiobooker/nlp/speaker_resolver.py",
             "audiobooker/project.py"
           ],
-          "path": "tests/test_feat_f4_cli.py"
+          "path": "tests/test_feat_f4_cli.py",
+          "testFramework": "pytest"
         },
         {
           "hash": "015d0d193718df639aebc4885771ed34eae158efe8cd0e25c3b84ceeacee855a",
@@ -7893,10 +11042,22 @@
             "audiobooker/models.py",
             "audiobooker/project.py"
           ],
-          "path": "tests/test_feat_f5_cli.py"
+          "path": "tests/test_feat_f5_cli.py",
+          "testFramework": "pytest"
         },
         {
           "hash": "4efd07e80a54c93805696cfc0a22ef159822840468e1d1a62c58f819caa4e645",
+          "importOrder": [
+            "audiobooker/models.py",
+            "audiobooker/renderer/__init__.py",
+            "audiobooker/renderer/engine.py",
+            "audiobooker/renderer/output.py",
+            "audiobooker/casting/voice_registry.py",
+            "tests/fakes/fake_tts.py",
+            "audiobooker/renderer/protocols.py",
+            "audiobooker/renderer/cache_manifest.py",
+            "audiobooker/renderer/hash_utils.py"
+          ],
           "importsFiles": [
             "audiobooker/casting/voice_registry.py",
             "audiobooker/models.py",
@@ -7908,7 +11069,8 @@
             "audiobooker/renderer/protocols.py",
             "tests/fakes/fake_tts.py"
           ],
-          "path": "tests/test_feat_f5_renderer.py"
+          "path": "tests/test_feat_f5_renderer.py",
+          "testFramework": "pytest"
         },
         {
           "exports": [
@@ -7918,35 +11080,62 @@
             "prose"
           ],
           "hash": "010953f05527d22608fae95d4e5bfd48cae03c9acd9a5c7f3294a3845d5533a8",
+          "importOrder": [
+            "audiobooker/language/profile.py",
+            "audiobooker/parser/__init__.py",
+            "audiobooker/parser/text.py",
+            "audiobooker/parser/epub.py",
+            "audiobooker/parser/pdf.py",
+            "audiobooker/parser/docx.py"
+          ],
           "importsFiles": [
             "audiobooker/language/profile.py",
             "audiobooker/parser/__init__.py",
             "audiobooker/parser/docx.py",
             "audiobooker/parser/epub.py",
-            "audiobooker/parser/pdf.py"
+            "audiobooker/parser/pdf.py",
+            "audiobooker/parser/text.py"
           ],
-          "path": "tests/test_feat_in_parser.py"
+          "path": "tests/test_feat_in_parser.py",
+          "testFramework": "pytest"
         },
         {
           "hash": "d5e7462b7cdcd5338edec235f64393be12ba855f20c0e2d9b6e728964f02df40",
+          "importOrder": [
+            "audiobooker/renderer/output.py",
+            "audiobooker/__init__.py",
+            "audiobooker/formats.py",
+            "audiobooker/models.py",
+            "audiobooker/renderer/__init__.py",
+            "audiobooker/renderer/engine.py",
+            "tests/test_stageb_renderer.py"
+          ],
           "importsFiles": [
             "audiobooker/__init__.py",
+            "audiobooker/formats.py",
             "audiobooker/models.py",
             "audiobooker/renderer/__init__.py",
             "audiobooker/renderer/engine.py",
             "audiobooker/renderer/output.py",
             "tests/test_stageb_renderer.py"
           ],
-          "path": "tests/test_formats_unified.py"
+          "path": "tests/test_formats_unified.py",
+          "testFramework": "pytest"
         },
         {
           "hash": "73e630ca3ba2488750d45a04b9d01d458682cefc00b54c43238e19efd961749d",
+          "importOrder": [
+            "audiobooker/nlp/normalizer.py",
+            "audiobooker/casting/dialogue.py",
+            "audiobooker/models.py"
+          ],
           "importsFiles": [
             "audiobooker/casting/dialogue.py",
             "audiobooker/models.py",
             "audiobooker/nlp/normalizer.py"
           ],
-          "path": "tests/test_health_a_casting.py"
+          "path": "tests/test_health_a_casting.py",
+          "testFramework": "pytest"
         },
         {
           "hash": "c2263ff24c6382ee75c71de498a5a8c8c3611fa50409e5c2ca829423b2373739",
@@ -7955,15 +11144,27 @@
             "audiobooker/cli.py",
             "audiobooker/renderer/engine.py"
           ],
-          "path": "tests/test_health_a_cli.py"
+          "path": "tests/test_health_a_cli.py",
+          "testFramework": "pytest"
         },
         {
           "hash": "677666aa951b4ea60fd9a87ae08aee9015be81c7822ddaf17390825ce3104fbd",
+          "importOrder": [
+            "audiobooker/parser/__init__.py",
+            "audiobooker/parser/epub.py",
+            "audiobooker/parser/pdf.py",
+            "audiobooker/parser/text_cleaners.py",
+            "audiobooker/language/profile.py"
+          ],
           "importsFiles": [
             "audiobooker/language/profile.py",
-            "audiobooker/parser/__init__.py"
+            "audiobooker/parser/__init__.py",
+            "audiobooker/parser/epub.py",
+            "audiobooker/parser/pdf.py",
+            "audiobooker/parser/text_cleaners.py"
           ],
-          "path": "tests/test_health_a_parser.py"
+          "path": "tests/test_health_a_parser.py",
+          "testFramework": "pytest"
         },
         {
           "exports": [
@@ -7977,6 +11178,16 @@
             "test_review_roundtrip_preserves_utterance_type"
           ],
           "hash": "6401f1e13a7affb6b6da1c04a90b23544c86df2c98eb75ac1bc7b66431f1289c",
+          "importOrder": [
+            "audiobooker/models.py",
+            "audiobooker/project.py",
+            "audiobooker/review.py",
+            "audiobooker/renderer/cache_manifest.py",
+            "audiobooker/renderer/engine.py",
+            "audiobooker/renderer/failure_report.py",
+            "audiobooker/renderer/__init__.py",
+            "audiobooker/renderer/output.py"
+          ],
           "importsFiles": [
             "audiobooker/models.py",
             "audiobooker/project.py",
@@ -7987,10 +11198,18 @@
             "audiobooker/renderer/output.py",
             "audiobooker/review.py"
           ],
-          "path": "tests/test_health_a_renderer.py"
+          "path": "tests/test_health_a_renderer.py",
+          "testFramework": "pytest"
         },
         {
           "hash": "09457ea56df4c4f7ca1b96a60a939bff14abedeff0f15b466dead2d0bf2bc6c4",
+          "importOrder": [
+            "audiobooker/casting/voice_suggester.py",
+            "audiobooker/nlp/emotion.py",
+            "audiobooker/nlp/speaker_resolver.py",
+            "audiobooker/models.py",
+            "audiobooker/nlp/booknlp_adapter.py"
+          ],
           "importsFiles": [
             "audiobooker/casting/voice_suggester.py",
             "audiobooker/models.py",
@@ -8007,16 +11226,29 @@
             "audiobooker/cli.py",
             "audiobooker/project.py"
           ],
-          "path": "tests/test_health_c_cli.py"
+          "path": "tests/test_health_c_cli.py",
+          "testFramework": "pytest"
         },
         {
           "hash": "558be29294b075a3d1ff178cdefc93c9942d4328f40d68a67a621d4f9a46b2f3",
+          "importOrder": [
+            "audiobooker/parser/__init__.py",
+            "audiobooker/parser/pdf.py",
+            "audiobooker/parser/text.py",
+            "audiobooker/parser/epub.py",
+            "audiobooker/language/profile.py",
+            "audiobooker/language/__init__.py"
+          ],
           "importsFiles": [
             "audiobooker/language/__init__.py",
             "audiobooker/language/profile.py",
-            "audiobooker/parser/__init__.py"
+            "audiobooker/parser/__init__.py",
+            "audiobooker/parser/epub.py",
+            "audiobooker/parser/pdf.py",
+            "audiobooker/parser/text.py"
           ],
-          "path": "tests/test_health_c_parser.py"
+          "path": "tests/test_health_c_parser.py",
+          "testFramework": "pytest"
         },
         {
           "exports": [
@@ -8035,6 +11267,17 @@
             "test_voice_soundboard_install_hint_is_canonical"
           ],
           "hash": "2ca9e490366fc27b655b1959667632211e3f59f00db49a31a82ea0817b669ed5",
+          "importOrder": [
+            "audiobooker/__init__.py",
+            "audiobooker/models.py",
+            "audiobooker/renderer/engine.py",
+            "tests/fakes/fake_tts.py",
+            "tests/fakes/fake_ffmpeg.py",
+            "tests/conftest.py",
+            "audiobooker/renderer/output.py",
+            "audiobooker/review.py",
+            "audiobooker/renderer/failure_report.py"
+          ],
           "importsFiles": [
             "audiobooker/__init__.py",
             "audiobooker/models.py",
@@ -8046,29 +11289,48 @@
             "tests/fakes/fake_ffmpeg.py",
             "tests/fakes/fake_tts.py"
           ],
-          "path": "tests/test_health_c_renderer.py"
+          "path": "tests/test_health_c_renderer.py",
+          "testFramework": "pytest"
         },
         {
           "hash": "5431793bb2fa104012d799ccabbc8940daa357bd615a8951908cf75f0a05dcba",
+          "importOrder": [
+            "audiobooker/language/profile.py",
+            "audiobooker/models.py",
+            "audiobooker/casting/dialogue.py",
+            "audiobooker/__init__.py"
+          ],
           "importsFiles": [
             "audiobooker/__init__.py",
             "audiobooker/casting/dialogue.py",
             "audiobooker/language/profile.py",
             "audiobooker/models.py"
           ],
-          "path": "tests/test_language_profiles.py"
+          "path": "tests/test_language_profiles.py",
+          "testFramework": "pytest"
         },
         {
           "hash": "d6446a0e453d80f205dfc6563ec7c6f6fc0d37579a3abf3e7af4b5c17755a18c",
+          "importOrder": [
+            "audiobooker/__init__.py",
+            "audiobooker/formats.py",
+            "audiobooker/models.py",
+            "audiobooker/project.py",
+            "audiobooker/parser/text.py",
+            "audiobooker/renderer/output.py",
+            "audiobooker/casting/dialogue.py"
+          ],
           "importsFiles": [
             "audiobooker/__init__.py",
             "audiobooker/casting/dialogue.py",
+            "audiobooker/formats.py",
             "audiobooker/models.py",
             "audiobooker/parser/text.py",
             "audiobooker/project.py",
             "audiobooker/renderer/output.py"
           ],
-          "path": "tests/test_models.py"
+          "path": "tests/test_models.py",
+          "testFramework": "pytest"
         },
         {
           "hash": "7e8f35aab37534316caff8ce5fac0beb4600a61c1e6d9787f3fde1667419a0a6",
@@ -8079,14 +11341,26 @@
         },
         {
           "hash": "3841c3c4d78745c00e19e2783af7d9c05f6fc5119c1bc8108f0c55e0aac9d1e4",
+          "importOrder": [
+            "audiobooker/parser/text.py",
+            "audiobooker/parser/epub.py"
+          ],
           "importsFiles": [
             "audiobooker/parser/epub.py",
             "audiobooker/parser/text.py"
           ],
-          "path": "tests/test_parsers.py"
+          "path": "tests/test_parsers.py",
+          "testFramework": "pytest"
         },
         {
           "hash": "a9e483a85270e2423fdbb9bd2c8ffde41ed268aee3db924c6d8ecb03a507fbab",
+          "importOrder": [
+            "audiobooker/models.py",
+            "audiobooker/project.py",
+            "audiobooker/casting/voice_registry.py",
+            "audiobooker/renderer/output.py",
+            "audiobooker/parser/epub.py"
+          ],
           "importsFiles": [
             "audiobooker/casting/voice_registry.py",
             "audiobooker/models.py",
@@ -8094,10 +11368,22 @@
             "audiobooker/project.py",
             "audiobooker/renderer/output.py"
           ],
-          "path": "tests/test_phase1_config_guardrails.py"
+          "path": "tests/test_phase1_config_guardrails.py",
+          "testFramework": "pytest"
         },
         {
           "hash": "86c40f45e427dfc2f7c935c674271c967443f9508a708a9ae9ee907fb86e8526",
+          "importOrder": [
+            "audiobooker/models.py",
+            "audiobooker/__init__.py",
+            "audiobooker/nlp/booknlp_adapter.py",
+            "audiobooker/nlp/speaker_resolver.py",
+            "audiobooker/nlp/emotion.py",
+            "tests/fakes/fake_registry.py",
+            "audiobooker/casting/voice_suggester.py",
+            "audiobooker/renderer/progress.py",
+            "audiobooker/renderer/failure_report.py"
+          ],
           "importsFiles": [
             "audiobooker/__init__.py",
             "audiobooker/casting/voice_suggester.py",
@@ -8109,10 +11395,26 @@
             "audiobooker/renderer/progress.py",
             "tests/fakes/fake_registry.py"
           ],
-          "path": "tests/test_phase5_features.py"
+          "path": "tests/test_phase5_features.py",
+          "testFramework": "pytest"
         },
         {
           "hash": "f17ce3f886e3719df11948b313dca4f1344cf762d0adce8affb7ecb6efd7e84b",
+          "importOrder": [
+            "audiobooker/models.py",
+            "audiobooker/project.py",
+            "audiobooker/renderer/cache_manifest.py",
+            "audiobooker/renderer/engine.py",
+            "audiobooker/renderer/hash_utils.py",
+            "audiobooker/renderer/output.py",
+            "audiobooker/renderer/protocols.py",
+            "tests/fakes/fake_tts.py",
+            "tests/test_render_gates_on_attribution_quality.py",
+            "audiobooker/casting/__init__.py",
+            "audiobooker/casting/dialogue.py",
+            "audiobooker/parser/text.py",
+            "audiobooker/cli.py"
+          ],
           "importsFiles": [
             "audiobooker/casting/__init__.py",
             "audiobooker/casting/dialogue.py",
@@ -8128,10 +11430,23 @@
             "tests/fakes/fake_tts.py",
             "tests/test_render_gates_on_attribution_quality.py"
           ],
-          "path": "tests/test_planted_red_w2_health_a.py"
+          "path": "tests/test_planted_red_w2_health_a.py",
+          "testFramework": "pytest"
         },
         {
           "hash": "1888c68ccd5bf6315831ec2cd3821d1c2fb7ba752d9af8e1dd24d7d49ee3b049",
+          "importOrder": [
+            "audiobooker/parser/epub.py",
+            "audiobooker/project.py",
+            "audiobooker/renderer/cache_manifest.py",
+            "audiobooker/renderer/engine.py",
+            "audiobooker/renderer/output.py",
+            "audiobooker/renderer/protocols.py",
+            "tests/fakes/fake_tts.py",
+            "audiobooker/parser/pdf.py",
+            "audiobooker/parser/docx.py",
+            "audiobooker/cli.py"
+          ],
           "importsFiles": [
             "audiobooker/cli.py",
             "audiobooker/parser/docx.py",
@@ -8144,14 +11459,16 @@
             "audiobooker/renderer/protocols.py",
             "tests/fakes/fake_tts.py"
           ],
-          "path": "tests/test_planted_red_w5_stage_c.py"
+          "path": "tests/test_planted_red_w5_stage_c.py",
+          "testFramework": "pytest"
         },
         {
           "hash": "33082b24b4404ec32e9264d9bf2d4a878bb92b494213b974dfddc2de8b18ee2a",
           "importsFiles": [
             "audiobooker/project.py"
           ],
-          "path": "tests/test_project_persistence.py"
+          "path": "tests/test_project_persistence.py",
+          "testFramework": "pytest"
         },
         {
           "exports": [
@@ -8163,7 +11480,8 @@
           "importsFiles": [
             "audiobooker/project.py"
           ],
-          "path": "tests/test_public_api_kwargs.py"
+          "path": "tests/test_public_api_kwargs.py",
+          "testFramework": "pytest"
         },
         {
           "hash": "0dfe1b8b28e44638b486c84f2a51f021781d50df1ce7ab549be7888dd3f5e771",
@@ -8172,10 +11490,18 @@
             "audiobooker/language/__init__.py",
             "audiobooker/models.py"
           ],
-          "path": "tests/test_raya_attribution.py"
+          "path": "tests/test_raya_attribution.py",
+          "testFramework": "pytest"
         },
         {
           "hash": "2e4f05d93303d89b2cb89ff6d4fdc1f80be37007d2e8d7afebd0825a63067d65",
+          "importOrder": [
+            "audiobooker/casting/__init__.py",
+            "audiobooker/models.py",
+            "audiobooker/parser/text.py",
+            "audiobooker/cli.py",
+            "audiobooker/__init__.py"
+          ],
           "importsFiles": [
             "audiobooker/__init__.py",
             "audiobooker/casting/__init__.py",
@@ -8187,6 +11513,15 @@
         },
         {
           "hash": "a1a006e13e52963fb304946ceb05ed6a1a253e3590a5c38e4645bf9e22e7f15a",
+          "importOrder": [
+            "audiobooker/models.py",
+            "audiobooker/renderer/engine.py",
+            "audiobooker/renderer/output.py",
+            "tests/fakes/fake_tts.py",
+            "tests/fakes/fake_ffmpeg.py",
+            "audiobooker/project.py",
+            "audiobooker/renderer/ffmpeg_runner.py"
+          ],
           "importsFiles": [
             "audiobooker/models.py",
             "audiobooker/project.py",
@@ -8196,10 +11531,16 @@
             "tests/fakes/fake_ffmpeg.py",
             "tests/fakes/fake_tts.py"
           ],
-          "path": "tests/test_renderer.py"
+          "path": "tests/test_renderer.py",
+          "testFramework": "pytest"
         },
         {
           "hash": "8c7ab9329e0de6f6b71e01952ba270e768d721eaa273345f5b196764ff8a8338",
+          "importOrder": [
+            "audiobooker/__init__.py",
+            "audiobooker/cli.py",
+            "audiobooker/casting/__init__.py"
+          ],
           "importsFiles": [
             "audiobooker/__init__.py",
             "audiobooker/casting/__init__.py",
@@ -8209,6 +11550,15 @@
         },
         {
           "hash": "546ea208eabb9f288028519e083e81918c6416653880b6f44f902deb6433d47e",
+          "importOrder": [
+            "audiobooker/models.py",
+            "audiobooker/project.py",
+            "audiobooker/renderer/engine.py",
+            "audiobooker/renderer/cache_manifest.py",
+            "audiobooker/renderer/hash_utils.py",
+            "tests/fakes/fake_tts.py",
+            "tests/fakes/fake_ffmpeg.py"
+          ],
           "importsFiles": [
             "audiobooker/models.py",
             "audiobooker/project.py",
@@ -8218,10 +11568,16 @@
             "tests/fakes/fake_ffmpeg.py",
             "tests/fakes/fake_tts.py"
           ],
-          "path": "tests/test_resume.py"
+          "path": "tests/test_resume.py",
+          "testFramework": "pytest"
         },
         {
           "hash": "2046d6b80532522f72e5b2c2f1d865cd06f019e7f3cceedb32085d7acb6739a9",
+          "importOrder": [
+            "audiobooker/models.py",
+            "audiobooker/review.py",
+            "audiobooker/project.py"
+          ],
           "importsFiles": [
             "audiobooker/models.py",
             "audiobooker/project.py",
@@ -8231,6 +11587,11 @@
         },
         {
           "hash": "533d992b71eee45b0e6ac67bfe825f876d7f89764fb0ef20394b4a12be5d55fb",
+          "importOrder": [
+            "audiobooker/models.py",
+            "audiobooker/review.py",
+            "audiobooker/project.py"
+          ],
           "importsFiles": [
             "audiobooker/models.py",
             "audiobooker/project.py",
@@ -8243,11 +11604,20 @@
             "test_module_is_a_leaf"
           ],
           "hash": "43d84465239ba11151b6f5982e6a4a670fb6351d20e223e124d3e727171e235e",
+          "importOrder": [
+            "audiobooker/__init__.py",
+            "audiobooker/shell_quote.py",
+            "audiobooker/cli.py",
+            "audiobooker/review.py"
+          ],
           "importsFiles": [
             "audiobooker/__init__.py",
+            "audiobooker/cli.py",
+            "audiobooker/review.py",
             "audiobooker/shell_quote.py"
           ],
-          "path": "tests/test_review_header_command_is_pasteable.py"
+          "path": "tests/test_review_header_command_is_pasteable.py",
+          "testFramework": "pytest"
         },
         {
           "hash": "d4b0a7e8698a24b6d8bff03b85609ca156433c8a96e387b37e74e622700bd208",
@@ -8259,6 +11629,10 @@
         },
         {
           "hash": "589408787a0a155719d113ac8bf32b01766aefc72c718df6a35d6725565388ca",
+          "importOrder": [
+            "audiobooker/project.py",
+            "audiobooker/models.py"
+          ],
           "importsFiles": [
             "audiobooker/models.py",
             "audiobooker/project.py"
@@ -8267,6 +11641,14 @@
         },
         {
           "hash": "0d26b1158ad5e8080701859b1c0b430040349b30bf42e17d89f5233e574e051c",
+          "importOrder": [
+            "audiobooker/__init__.py",
+            "audiobooker/renderer/__init__.py",
+            "audiobooker/renderer/engine.py",
+            "audiobooker/renderer/cache_manifest.py",
+            "audiobooker/renderer/output.py",
+            "tests/fakes/fake_tts.py"
+          ],
           "importsFiles": [
             "audiobooker/__init__.py",
             "audiobooker/renderer/__init__.py",
@@ -8282,6 +11664,13 @@
             "project"
           ],
           "hash": "111c47f80f25e40bcf99514b968ab7b3f920971ea0d024bd8961ad8076d354cd",
+          "importOrder": [
+            "audiobooker/__init__.py",
+            "audiobooker/renderer/engine.py",
+            "tests/fakes/fake_tts.py",
+            "tests/fakes/fake_ffmpeg.py",
+            "tests/conftest.py"
+          ],
           "importsFiles": [
             "audiobooker/__init__.py",
             "audiobooker/renderer/engine.py",
@@ -8289,7 +11678,8 @@
             "tests/fakes/fake_ffmpeg.py",
             "tests/fakes/fake_tts.py"
           ],
-          "path": "tests/test_smoke_render_pipeline.py"
+          "path": "tests/test_smoke_render_pipeline.py",
+          "testFramework": "pytest"
         },
         {
           "hash": "129c906be0e018bcc36eca58fdbbb84ad0a0f41cff6f68038a6f523c04c2ade4",
@@ -8301,10 +11691,23 @@
             "audiobooker/parser/text.py",
             "audiobooker/parser/text_cleaners.py"
           ],
-          "path": "tests/test_stageb_pipeline.py"
+          "path": "tests/test_stageb_pipeline.py",
+          "testFramework": "pytest"
         },
         {
           "hash": "b797ef5a27871593b94edb20f934df62790927d96225d8acdde59fe9d7e4861b",
+          "importOrder": [
+            "audiobooker/renderer/output.py",
+            "audiobooker/models.py",
+            "audiobooker/project.py",
+            "audiobooker/renderer/__init__.py",
+            "audiobooker/renderer/engine.py",
+            "audiobooker/renderer/protocols.py",
+            "tests/fakes/fake_ffmpeg.py",
+            "tests/fakes/fake_tts.py",
+            "audiobooker/renderer/hash_utils.py",
+            "audiobooker/renderer/cache_manifest.py"
+          ],
           "importsFiles": [
             "audiobooker/models.py",
             "audiobooker/project.py",
@@ -8317,19 +11720,31 @@
             "tests/fakes/fake_ffmpeg.py",
             "tests/fakes/fake_tts.py"
           ],
-          "path": "tests/test_stageb_renderer.py"
+          "path": "tests/test_stageb_renderer.py",
+          "testFramework": "pytest"
         },
         {
           "hash": "0f15292c622463bbda79fbd49ac16e6b8702a0aa16b97e7aa3e845e4489850ef",
+          "importOrder": [
+            "audiobooker/__init__.py",
+            "audiobooker/cli.py",
+            "audiobooker/models.py",
+            "audiobooker/review.py",
+            "audiobooker/renderer/cache_manifest.py",
+            "audiobooker/renderer/__init__.py",
+            "audiobooker/renderer/engine.py"
+          ],
           "importsFiles": [
             "audiobooker/__init__.py",
             "audiobooker/cli.py",
             "audiobooker/models.py",
             "audiobooker/renderer/__init__.py",
             "audiobooker/renderer/cache_manifest.py",
+            "audiobooker/renderer/engine.py",
             "audiobooker/review.py"
           ],
-          "path": "tests/test_stagec_cli.py"
+          "path": "tests/test_stagec_cli.py",
+          "testFramework": "pytest"
         },
         {
           "exports": [
@@ -8337,6 +11752,18 @@
             "tolerant_assembler"
           ],
           "hash": "afd7697412ec89f4b420ed739e2c62cd98b888ff1ccb978222be18d23fc42057",
+          "importOrder": [
+            "audiobooker/models.py",
+            "audiobooker/project.py",
+            "audiobooker/renderer/engine.py",
+            "audiobooker/renderer/hash_utils.py",
+            "audiobooker/renderer/output.py",
+            "audiobooker/renderer/protocols.py",
+            "tests/fakes/fake_tts.py",
+            "audiobooker/renderer/cache_manifest.py",
+            "audiobooker/errors.py",
+            "audiobooker/config_file.py"
+          ],
           "importsFiles": [
             "audiobooker/config_file.py",
             "audiobooker/errors.py",
@@ -8349,10 +11776,17 @@
             "audiobooker/renderer/protocols.py",
             "tests/fakes/fake_tts.py"
           ],
-          "path": "tests/test_unwired_features.py"
+          "path": "tests/test_unwired_features.py",
+          "testFramework": "pytest"
         },
         {
           "hash": "d1e4d72400e883264e4da18da459a4f16aff1b438b30b92bb50def6809010aee",
+          "importOrder": [
+            "audiobooker/models.py",
+            "audiobooker/renderer/engine.py",
+            "tests/fakes/fake_tts.py",
+            "audiobooker/renderer/protocols.py"
+          ],
           "importsFiles": [
             "audiobooker/models.py",
             "audiobooker/renderer/engine.py",
@@ -8373,14 +11807,16 @@
             "audiobooker/__init__.py",
             "audiobooker/cli.py"
           ],
-          "path": "tests/test_version.py"
+          "path": "tests/test_version.py",
+          "testFramework": "pytest"
         },
         {
           "hash": "ca313f9f3ee5753a8e6c2754ea266b4a07b05f0526275bab059f2b5eb2534bb6",
           "importsFiles": [
             "audiobooker/casting/voice_registry.py"
           ],
-          "path": "tests/test_voice_registry.py"
+          "path": "tests/test_voice_registry.py",
+          "testFramework": "pytest"
         },
         {
           "hash": "31bce9ef07cdb77c45dcfd110836caffb503f8d154fcc606ae442c7b60f602f7",
@@ -8392,18 +11828,43 @@
         },
         {
           "hash": "b405b97adc18d2c41ad93e4c4897c2868b5faf8082a7eda7d954e0ac56443d74",
+          "importOrder": [
+            "audiobooker/models.py",
+            "audiobooker/project.py",
+            "audiobooker/parser/text_cleaners.py",
+            "audiobooker/casting/dialogue.py",
+            "audiobooker/language/profile.py",
+            "audiobooker/parser/__init__.py",
+            "audiobooker/parser/pdf.py"
+          ],
           "importsFiles": [
             "audiobooker/casting/dialogue.py",
             "audiobooker/language/profile.py",
             "audiobooker/models.py",
             "audiobooker/parser/__init__.py",
+            "audiobooker/parser/pdf.py",
             "audiobooker/parser/text_cleaners.py",
             "audiobooker/project.py"
           ],
-          "path": "tests/test_wave2_wave3_features.py"
+          "path": "tests/test_wave2_wave3_features.py",
+          "testFramework": "pytest"
         },
         {
           "hash": "84a3976bab1e01982ba746e127a6ff5223020fa4b595e8592244327b4e256f62",
+          "importOrder": [
+            "audiobooker/models.py",
+            "audiobooker/project.py",
+            "audiobooker/casting/dialogue.py",
+            "audiobooker/language/profile.py",
+            "audiobooker/nlp/emotion.py",
+            "audiobooker/nlp/booknlp_adapter.py",
+            "audiobooker/cli.py",
+            "audiobooker/casting/voice_suggester.py",
+            "tests/fakes/fake_registry.py",
+            "tests/fakes/fake_tts.py",
+            "tests/fakes/fake_ffmpeg.py",
+            "audiobooker/review.py"
+          ],
           "importsFiles": [
             "audiobooker/casting/dialogue.py",
             "audiobooker/casting/voice_suggester.py",
@@ -8418,7 +11879,8 @@
             "tests/fakes/fake_registry.py",
             "tests/fakes/fake_tts.py"
           ],
-          "path": "tests/test_wave3_feature_execution.py"
+          "path": "tests/test_wave3_feature_execution.py",
+          "testFramework": "pytest"
         },
         {
           "hash": "193f8cfb296410585af363b21c8ec4ee273678a5f5778b1b159a35875a66bf91",
@@ -8427,17 +11889,25 @@
             "audiobooker/casting/__init__.py",
             "audiobooker/cli.py"
           ],
-          "path": "tests/test_wave5_cli.py"
+          "path": "tests/test_wave5_cli.py",
+          "testFramework": "pytest"
         },
         {
           "hash": "f79fc9ab560a7a8a265da4ffba6d2e70f5c16e6f03e023bc892ee21190752338",
+          "importOrder": [
+            "audiobooker/models.py",
+            "audiobooker/project.py",
+            "audiobooker/casting/dialogue.py",
+            "audiobooker/renderer/engine.py"
+          ],
           "importsFiles": [
             "audiobooker/casting/dialogue.py",
             "audiobooker/models.py",
             "audiobooker/project.py",
             "audiobooker/renderer/engine.py"
           ],
-          "path": "tests/test_wave5_core.py"
+          "path": "tests/test_wave5_core.py",
+          "testFramework": "pytest"
         },
         {
           "hash": "29c1cb6aa44ed6ace0e617102eba302415aff29ff964d25a4db82095bb8ff04c",
@@ -8457,14 +11927,34 @@
       "name": "tests",
       "origin": "authored",
       "role": "test",
+      "testRunners": [
+        "pytest"
+      ],
       "testedBy": 0,
-      "unresolvedSites": 6
+      "unresolvedNamed": [
+        {
+          "path": "tests/test_feat_f5_cli.py",
+          "specifier": null,
+          "why": "dynamic"
+        },
+        {
+          "path": "tests/test_feat_in_parser.py",
+          "specifier": null,
+          "why": "dynamic"
+        },
+        {
+          "path": "tests/test_planted_red_w5_stage_c.py",
+          "specifier": null,
+          "why": "dynamic"
+        }
+      ],
+      "unresolvedSites": 3
     },
     {
-      "dynamicReads": 3,
+      "dynamicReads": 2,
       "dynamicSpawns": 0,
       "dynamicSpawnsInTests": 0,
-      "dynamicWrites": 1,
+      "dynamicWrites": 0,
       "entryPoints": [],
       "externals": 0,
       "files": [
@@ -8573,6 +12063,18 @@
             "main",
             "write_baseline"
           ],
+          "failurePaths": [
+            {
+              "in": "_rel_file",
+              "kind": "except",
+              "line": 48
+            },
+            {
+              "in": "main",
+              "kind": "except",
+              "line": 99
+            }
+          ],
           "hash": "2c783799598f82f6b3bd098c69abac91a4ecb75b688b17344e11d6d4c9304068",
           "path": "tools/check_pyright_gate.py",
           "sequences": [
@@ -8639,7 +12141,7 @@
       ],
       "importConfidence": "full",
       "name": "tools",
-      "origin": "authored",
+      "origin": "mixed",
       "outsidePlaces": [
         {
           "reads": 2,
@@ -8660,64 +12162,225 @@
       "checksCount": 1,
       "commands": [
         {
+          "dir": "",
           "job": "ci",
-          "step": "Atlas check",
-          "text": "npx --yes @dogfood-lab/atlas@1.20.0 check"
+          "programs": [
+            "npx"
+          ],
+          "step": "Atlas check"
         },
         {
+          "dir": "",
           "job": "ci",
-          "step": "Install dependencies",
-          "text": "python -m pip install --upgrade pip\npip install -e \".[dev]\"\n"
+          "programs": [
+            "pip",
+            "python"
+          ],
+          "step": "Install dependencies"
         },
         {
+          "dir": "",
           "job": "ci",
-          "step": "Ruff check",
-          "text": "ruff check audiobooker/"
+          "programs": [
+            "ruff"
+          ],
+          "step": "Ruff check"
         },
         {
+          "dir": "",
           "job": "ci",
-          "step": "Import gate",
-          "text": "python -c \"\nimport audiobooker\nfrom audiobooker.renderer.engine import render_chapter, render_project, RenderError, RenderSummary\nfrom audiobooker.renderer.protocols import TTSEngine, SynthesisResult, FFmpegRunner, RunResult\nfrom audiobooker.renderer.ffmpeg_runner import RealFFmpegRunner\nfrom audiobooker.renderer.output import assemble_m4b, AssemblyResult, generate_chapter_metadata\nfrom audiobooker.renderer.cache_manifest import CacheManifest, load_manifest, save_manifest\nfrom audiobooker.renderer.hash_utils import sha256_text, sha256_json, chapter_text_hash, casting_hash, render_params_hash\nfrom audiobooker.casting.voice_registry import validate_voices, get_available_voices\nfrom audiobooker.casting.voice_suggester import VoiceSuggester, VoiceSuggestion\nfrom audiobooker.language.profile import LanguageProfile, get_profile, available_profiles\nfrom audiobooker.language.en import ENGLISH\nfrom audiobooker.nlp.booknlp_adapter import BookNLPAdapter, BookNLPResult\nfrom audiobooker.nlp.speaker_resolver import SpeakerResolver\nfrom audiobooker.nlp.emotion import EmotionInferencer, EmotionResult\nfrom audiobooker.renderer.progress import RenderProgressTracker\nfrom audiobooker.renderer.failure_report import RenderFailureReport\nassert get_profile('en').code == 'en'\nassert BookNLPAdapter().is_available() == False\nprint('All imports OK')\n\"\n"
+          "programs": [
+            "python"
+          ],
+          "step": "Import gate"
         },
         {
+          "dir": "",
           "job": "ci",
-          "step": "Run tests with coverage",
-          "text": "pytest tests/ -v --tb=short \\\n  --cov=audiobooker --cov-report=xml --cov-report=term-missing\n"
+          "programs": [
+            "pytest"
+          ],
+          "step": "Run tests with coverage"
         },
         {
+          "dir": "",
           "job": "ci",
-          "step": "Test CLI",
-          "text": "audiobooker --help\naudiobooker voices --help || true\naudiobooker new --help || true\n"
+          "programs": [
+            "audiobooker"
+          ],
+          "step": "Test CLI"
         },
         {
+          "dir": "",
           "job": "typecheck",
-          "step": "Install dependencies",
-          "text": "python -m pip install --upgrade pip\npip install -e \".[dev]\"\n# PINNED 2026-09-14 (latest at the time). This was a bare\n# `pip install pyright`, which made every pyright release a live\n# input to this job — the same shape that took the lint step from\n# clean to 369 errors when ruff floated, and the reason\n# pyproject.toml pins ruff==0.16.6 with its own note. Every other\n# tool here is pinned: Actions by SHA, the Dockerfile by digest,\n# release.yml to npm@12.0.2. This was the one hole.\n# A new pyright minor routinely tightens inference, so bump this\n# deliberately, with the [tool.pyright] block in pyproject.toml in\n# view. The job is a required check; a float would quietly change\n# what \"typecheck passed\" meant (and can raise the residual cap).\npip install pyright==1.1.414\n"
+          "programs": [
+            "pip",
+            "python"
+          ],
+          "step": "Install dependencies"
         },
         {
+          "dir": "",
           "job": "typecheck",
-          "step": "CI policy assertions",
-          "text": "python tools/check_ci_policy.py"
+          "programs": [
+            "python"
+          ],
+          "step": "CI policy assertions"
         },
         {
+          "dir": "",
           "job": "typecheck",
-          "step": "Pyright type-check",
-          "text": "python tools/check_pyright_gate.py audiobooker/"
+          "programs": [
+            "python"
+          ],
+          "step": "Pyright type-check"
         },
         {
+          "dir": "",
           "job": "dep-audit",
-          "step": "2",
-          "text": "pip install pip-audit\npip install .\n"
+          "programs": [
+            "pip"
+          ],
+          "step": "2"
         },
         {
+          "dir": "",
           "job": "dep-audit",
-          "step": "3",
-          "text": "pip-audit --desc"
+          "programs": [
+            "pip-audit"
+          ],
+          "step": "3"
         }
       ],
       "elsewhere": [],
       "file": ".github/workflows/ci.yml",
-      "landings": [],
+      "jobs": [
+        {
+          "basis": "declared",
+          "name": "ci",
+          "runsOn": [
+            {
+              "labels": [
+                "ubuntu-latest"
+              ],
+              "platform": {
+                "cpu": "x64",
+                "libc": "glibc",
+                "os": "linux"
+              }
+            }
+          ],
+          "setup": [
+            {
+              "ranges": [
+                {
+                  "from": "3.10",
+                  "range": ">=3.10.0 <3.11.0-0"
+                },
+                {
+                  "from": "3.11",
+                  "range": ">=3.11.0 <3.12.0-0"
+                },
+                {
+                  "from": "3.12",
+                  "range": ">=3.12.0 <3.13.0-0"
+                }
+              ],
+              "step": "Set up Python ${{ matrix.python-version }}",
+              "uses": "actions/setup-python",
+              "version": "${{ matrix.python-version }}"
+            },
+            {
+              "ranges": [
+                {
+                  "from": "22",
+                  "range": ">=22.0.0 <23.0.0-0"
+                }
+              ],
+              "step": "Set up Node for Atlas",
+              "uses": "actions/setup-node",
+              "version": "22"
+            }
+          ]
+        },
+        {
+          "basis": "declared",
+          "name": "codecov",
+          "runsOn": [
+            {
+              "labels": [
+                "ubuntu-latest"
+              ],
+              "platform": {
+                "cpu": "x64",
+                "libc": "glibc",
+                "os": "linux"
+              }
+            }
+          ]
+        },
+        {
+          "basis": "declared",
+          "name": "typecheck",
+          "runsOn": [
+            {
+              "labels": [
+                "ubuntu-latest"
+              ],
+              "platform": {
+                "cpu": "x64",
+                "libc": "glibc",
+                "os": "linux"
+              }
+            }
+          ],
+          "setup": [
+            {
+              "ranges": [
+                {
+                  "from": "3.12",
+                  "range": ">=3.12.0 <3.13.0-0"
+                }
+              ],
+              "step": "Set up Python",
+              "uses": "actions/setup-python",
+              "version": "3.12"
+            }
+          ]
+        },
+        {
+          "basis": "declared",
+          "name": "dep-audit",
+          "runsOn": [
+            {
+              "labels": [
+                "ubuntu-latest"
+              ],
+              "platform": {
+                "cpu": "x64",
+                "libc": "glibc",
+                "os": "linux"
+              }
+            }
+          ],
+          "setup": [
+            {
+              "ranges": [
+                {
+                  "from": "3.12",
+                  "range": ">=3.12.0 <3.13.0-0"
+                }
+              ],
+              "step": "1",
+              "uses": "actions/setup-python",
+              "version": "3.12"
+            }
+          ]
+        }
+      ],
+      "landings": [
+        "tools/pyright_baseline.txt"
+      ],
       "mentions": [
         {
           "job": "typecheck",
@@ -8730,7 +12393,8 @@
       ],
       "name": "CI",
       "permissions": [
-        "contents:read"
+        "contents:read",
+        "id-token:write"
       ],
       "pushes": false,
       "reach": [
@@ -8750,7 +12414,26 @@
           "files": 2
         }
       ],
-      "readers": [],
+      "readers": [
+        {
+          "by": "tools/check_ci_policy.py",
+          "call": "literal",
+          "confidence": "ast",
+          "target": "tools/pyright_baseline.txt"
+        },
+        {
+          "by": "tools/check_pyright_gate.py",
+          "call": "literal",
+          "confidence": "ast",
+          "target": "tools/pyright_baseline.txt"
+        },
+        {
+          "by": "tools/check_pyright_gate.py",
+          "call": "read_text",
+          "confidence": "ast",
+          "target": "tools/pyright_baseline.txt"
+        }
+      ],
       "runs": [
         {
           "directory": true,
@@ -8760,7 +12443,87 @@
         },
         {
           "job": "ci",
+          "path": "audiobooker/__init__.py",
+          "runKind": "executes"
+        },
+        {
+          "job": "ci",
+          "path": "audiobooker/casting/voice_registry.py",
+          "runKind": "executes"
+        },
+        {
+          "job": "ci",
+          "path": "audiobooker/casting/voice_suggester.py",
+          "runKind": "executes"
+        },
+        {
+          "job": "ci",
           "path": "audiobooker/cli.py",
+          "runKind": "executes"
+        },
+        {
+          "job": "ci",
+          "path": "audiobooker/language/en.py",
+          "runKind": "executes"
+        },
+        {
+          "job": "ci",
+          "path": "audiobooker/language/profile.py",
+          "runKind": "executes"
+        },
+        {
+          "job": "ci",
+          "path": "audiobooker/nlp/booknlp_adapter.py",
+          "runKind": "executes"
+        },
+        {
+          "job": "ci",
+          "path": "audiobooker/nlp/emotion.py",
+          "runKind": "executes"
+        },
+        {
+          "job": "ci",
+          "path": "audiobooker/nlp/speaker_resolver.py",
+          "runKind": "executes"
+        },
+        {
+          "job": "ci",
+          "path": "audiobooker/renderer/cache_manifest.py",
+          "runKind": "executes"
+        },
+        {
+          "job": "ci",
+          "path": "audiobooker/renderer/engine.py",
+          "runKind": "executes"
+        },
+        {
+          "job": "ci",
+          "path": "audiobooker/renderer/failure_report.py",
+          "runKind": "executes"
+        },
+        {
+          "job": "ci",
+          "path": "audiobooker/renderer/ffmpeg_runner.py",
+          "runKind": "executes"
+        },
+        {
+          "job": "ci",
+          "path": "audiobooker/renderer/hash_utils.py",
+          "runKind": "executes"
+        },
+        {
+          "job": "ci",
+          "path": "audiobooker/renderer/output.py",
+          "runKind": "executes"
+        },
+        {
+          "job": "ci",
+          "path": "audiobooker/renderer/progress.py",
+          "runKind": "executes"
+        },
+        {
+          "job": "ci",
+          "path": "audiobooker/renderer/protocols.py",
           "runKind": "executes"
         },
         {
@@ -8780,10 +12543,8 @@
           "runKind": "executes"
         }
       ],
-      "runsCount": 5,
-      "secrets": [
-        "CODECOV_TOKEN"
-      ],
+      "runsCount": 21,
+      "secrets": [],
       "sends": {
         "deploysPages": false,
         "dispatchesTo": [],
@@ -8795,6 +12556,25 @@
         "releases": false
       },
       "stages": [],
+      "tests": [
+        {
+          "config": "pyproject.toml",
+          "coverage": true,
+          "files": 81,
+          "job": "ci",
+          "junit": true,
+          "runner": "pytest",
+          "step": "Run tests with coverage"
+        },
+        {
+          "job": "ci",
+          "ran": [
+            "audiobooker/cli.py"
+          ],
+          "runner": null,
+          "step": "Test CLI"
+        }
+      ],
       "triggers": [
         {
           "branches": [
@@ -8811,6 +12591,7 @@
             ".github/workflows/**",
             "atlas/**",
             "audiobooker/**",
+            "codecov.yml",
             "pyproject.toml",
             "tests/**"
           ]
@@ -8821,8 +12602,10 @@
       ],
       "uses": [
         "actions/checkout",
+        "actions/download-artifact",
         "actions/setup-node",
         "actions/setup-python",
+        "actions/upload-artifact",
         "codecov/codecov-action"
       ],
       "usesWorkflowToken": false
@@ -8831,9 +12614,13 @@
       "checksCount": 4,
       "commands": [
         {
+          "dir": "",
           "job": "build-and-push",
-          "step": "Verify release tag matches pyproject.toml",
-          "text": "PKG_VERSION=$(python3 tools/read_project_version.py pyproject.toml)\nTAG_VERSION=\"${GITHUB_REF_NAME#v}\"\necho \"tag=${TAG_VERSION} pkg=${PKG_VERSION}\"\nif [ \"${PKG_VERSION}\" != \"${TAG_VERSION}\" ]; then\n  echo \"::error::Tag ${TAG_VERSION} does not match pyproject.toml ${PKG_VERSION}\"\n  exit 1\nfi\n"
+          "programs": [
+            "echo",
+            "python3"
+          ],
+          "step": "Verify release tag matches pyproject.toml"
         }
       ],
       "elsewhere": [],
@@ -8851,6 +12638,24 @@
           "when": {
             "event": "release"
           }
+        }
+      ],
+      "jobs": [
+        {
+          "basis": "declared",
+          "name": "build-and-push",
+          "runsOn": [
+            {
+              "labels": [
+                "ubuntu-latest"
+              ],
+              "platform": {
+                "cpu": "x64",
+                "libc": "glibc",
+                "os": "linux"
+              }
+            }
+          ]
         }
       ],
       "landings": [],
@@ -8882,12 +12687,14 @@
       "runs": [
         {
           "job": "build-and-push",
+          "packed": true,
           "path": "LICENSE",
           "runKind": "checks",
           "via": "docker build Dockerfile"
         },
         {
           "job": "build-and-push",
+          "packed": true,
           "path": "README.md",
           "runKind": "checks",
           "via": "docker build Dockerfile"
@@ -8895,6 +12702,7 @@
         {
           "directory": true,
           "job": "build-and-push",
+          "packed": true,
           "path": "audiobooker/",
           "runKind": "checks",
           "via": "docker build Dockerfile"
@@ -8907,6 +12715,7 @@
         },
         {
           "job": "build-and-push",
+          "packed": true,
           "path": "pyproject.toml",
           "runKind": "checks",
           "via": "docker build Dockerfile"
@@ -8958,18 +12767,74 @@
       "checksCount": 0,
       "commands": [
         {
+          "dir": "site",
           "job": "build",
-          "step": "Install site dependencies",
-          "text": "npm ci"
+          "programs": [
+            "npm"
+          ],
+          "step": "Install site dependencies"
         },
         {
+          "dir": "site",
           "job": "build",
-          "step": "Build site",
-          "text": "npm run build"
+          "programs": [
+            "npm"
+          ],
+          "step": "Build site"
         }
       ],
       "elsewhere": [],
       "file": ".github/workflows/pages.yml",
+      "jobs": [
+        {
+          "basis": "declared",
+          "name": "build",
+          "runsOn": [
+            {
+              "labels": [
+                "ubuntu-latest"
+              ],
+              "platform": {
+                "cpu": "x64",
+                "libc": "glibc",
+                "os": "linux"
+              }
+            }
+          ],
+          "setup": [
+            {
+              "ranges": [
+                {
+                  "from": "22",
+                  "range": ">=22.0.0 <23.0.0-0"
+                }
+              ],
+              "step": "1",
+              "uses": "actions/setup-node",
+              "version": "22"
+            }
+          ]
+        },
+        {
+          "basis": "declared",
+          "environment": {
+            "name": "github-pages"
+          },
+          "name": "deploy",
+          "runsOn": [
+            {
+              "labels": [
+                "ubuntu-latest"
+              ],
+              "platform": {
+                "cpu": "x64",
+                "libc": "glibc",
+                "os": "linux"
+              }
+            }
+          ]
+        }
+      ],
       "landings": [],
       "mentions": [],
       "name": "Deploy site to GitHub Pages",
@@ -8983,7 +12848,7 @@
         {
           "boundary": "site",
           "depth": 0,
-          "files": 3
+          "files": 5
         }
       ],
       "readers": [],
@@ -9044,44 +12909,81 @@
       "checksCount": 0,
       "commands": [
         {
+          "dir": "",
           "job": "dispatch-notice",
-          "step": "Dispatch does not publish",
-          "text": "echo \"::error::This workflow publishes only from a GitHub Release (on: release published). workflow_dispatch does not upload to PyPI or npm. Create a published GitHub Release to ship.\"\nexit 1\n"
+          "programs": [
+            "echo"
+          ],
+          "step": "Dispatch does not publish"
         },
         {
+          "dir": "",
           "job": "preflight",
-          "step": "Verify tag matches pyproject.toml and npm/package.json",
-          "text": "PKG_VERSION=$(python3 tools/read_project_version.py pyproject.toml)\nNPM_VERSION=$(node -p \"require('./npm/package.json').version\")\nTAG_VERSION=\"${GITHUB_REF_NAME#v}\"\necho \"tag=${TAG_VERSION} pkg=${PKG_VERSION} npm=${NPM_VERSION}\"\nif [ \"${PKG_VERSION}\" != \"${TAG_VERSION}\" ] || [ \"${NPM_VERSION}\" != \"${TAG_VERSION}\" ]; then\n  echo \"::error::Tag ${TAG_VERSION} does not match pyproject.toml ${PKG_VERSION} / npm ${NPM_VERSION}\"\n  exit 1\nfi\n"
+          "programs": [
+            "echo",
+            "node",
+            "python3"
+          ],
+          "step": "Verify tag matches pyproject.toml and npm/package.json"
         },
         {
+          "dir": "",
           "job": "preflight",
-          "step": "Build sdist and wheel (pinned frontend) and twine check",
-          "text": "python -m pip install --upgrade \\\n  pip==26.2.1 \\\n  build==1.5.0 \\\n  setuptools==84.0.0 \\\n  wheel==0.48.0 \\\n  twine==7.0.0\n# --no-isolation so the pins above actually produce the metadata,\n# rather than PEP 517 isolation re-fetching setuptools>=61.0 unbounded.\npython -m build --no-isolation\npython -m twine check dist/*\necho \"preflight dist identity:\"\nls -l dist\nsha256sum dist/*\n"
+          "programs": [
+            "echo",
+            "ls",
+            "python",
+            "sha256sum"
+          ],
+          "step": "Build sdist and wheel (pinned frontend) and twine check"
         },
         {
+          "dir": "",
           "job": "publish",
-          "step": "Confirm preflight dist",
-          "text": "if ! ls dist/*.whl dist/*.tar.gz >/dev/null 2>&1; then\n  echo \"::error::preflight dist/ artifact is empty; refusing to publish\"\n  exit 1\nfi\necho \"PyPI publishing the preflight dist/ (not a second build):\"\nls -l dist\nsha256sum dist/*\n"
+          "programs": [
+            "1",
+            "echo",
+            "ls",
+            "sha256sum"
+          ],
+          "step": "Confirm preflight dist"
         },
         {
+          "dir": "",
           "job": "publish-npm",
-          "step": "Install pinned npm in a sandbox for OIDC trusted publishing",
-          "text": "SANDBOX=\"$HOME/.npm-cli-sandbox\"\nmkdir -p \"$SANDBOX\"\npushd \"$SANDBOX\" >/dev/null\necho '{\"name\":\"npm-cli-sandbox\",\"version\":\"0.0.0\",\"private\":true}' > package.json\n# PINNED. This binary performs the OIDC exchange for `npm publish`\n# below, so it gets the same exact-version discipline as every\n# actions/* step in this file — `npm@latest` would let the registry\n# pick the publish-credential binary at run time. Last verified\n# 2026-09-14 (registry `latest` dist-tag at time of pin).\nnpm install --no-save --no-audit --no-fund --silent npm@12.0.2\npopd >/dev/null\necho \"$SANDBOX/node_modules/.bin\" >> \"$GITHUB_PATH\"\n\"$SANDBOX/node_modules/.bin/npm\" --version\n"
+          "programs": [
+            "echo",
+            "mkdir",
+            "npm",
+            "popd",
+            "pushd"
+          ],
+          "step": "Install pinned npm in a sandbox for OIDC trusted publishing"
         },
         {
+          "dir": "",
           "job": "publish-npm",
-          "step": "Verify tag matches npm/package.json version",
-          "text": "PKG_VERSION=$(node -p \"require('./npm/package.json').version\")\nTAG_VERSION=\"${GITHUB_REF_NAME#v}\"\necho \"tag=${TAG_VERSION} pkg=${PKG_VERSION}\"\nif [ \"${PKG_VERSION}\" != \"${TAG_VERSION}\" ]; then\n  echo \"::error::Tag ${TAG_VERSION} does not match npm/package.json ${PKG_VERSION}\"\n  exit 1\nfi\necho \"::notice::npm @mcptoolshop/audiobooker@${PKG_VERSION} publishes only after PyPI job publish succeeded for the same tag (preflight dist/, not a second build).\"\n"
+          "programs": [
+            "echo",
+            "node"
+          ],
+          "step": "Verify tag matches npm/package.json version"
         },
         {
+          "dir": "",
           "job": "publish-npm",
-          "step": "Stage the changelog into the launcher package",
-          "text": "cp CHANGELOG.md npm/CHANGELOG.md"
+          "programs": [
+            "cp"
+          ],
+          "step": "Stage the changelog into the launcher package"
         },
         {
+          "dir": "npm",
           "job": "publish-npm",
-          "step": "Publish launcher to npm (OIDC trusted publisher)",
-          "text": "npm publish --provenance --access public"
+          "programs": [
+            "npm"
+          ],
+          "step": "Publish launcher to npm (OIDC trusted publisher)"
         }
       ],
       "elsewhere": [],
@@ -9103,6 +13005,101 @@
           "when": {
             "event": "release"
           }
+        }
+      ],
+      "jobs": [
+        {
+          "basis": "declared",
+          "name": "dispatch-notice",
+          "runsOn": [
+            {
+              "labels": [
+                "ubuntu-latest"
+              ],
+              "platform": {
+                "cpu": "x64",
+                "libc": "glibc",
+                "os": "linux"
+              }
+            }
+          ]
+        },
+        {
+          "basis": "declared",
+          "name": "preflight",
+          "runsOn": [
+            {
+              "labels": [
+                "ubuntu-latest"
+              ],
+              "platform": {
+                "cpu": "x64",
+                "libc": "glibc",
+                "os": "linux"
+              }
+            }
+          ],
+          "setup": [
+            {
+              "ranges": [
+                {
+                  "from": "3.12",
+                  "range": ">=3.12.0 <3.13.0-0"
+                }
+              ],
+              "step": "Set up Python",
+              "uses": "actions/setup-python",
+              "version": "3.12"
+            }
+          ]
+        },
+        {
+          "basis": "declared",
+          "environment": {
+            "name": "pypi"
+          },
+          "name": "publish",
+          "runsOn": [
+            {
+              "labels": [
+                "ubuntu-latest"
+              ],
+              "platform": {
+                "cpu": "x64",
+                "libc": "glibc",
+                "os": "linux"
+              }
+            }
+          ]
+        },
+        {
+          "basis": "declared",
+          "name": "publish-npm",
+          "runsOn": [
+            {
+              "labels": [
+                "ubuntu-latest"
+              ],
+              "platform": {
+                "cpu": "x64",
+                "libc": "glibc",
+                "os": "linux"
+              }
+            }
+          ],
+          "setup": [
+            {
+              "ranges": [
+                {
+                  "from": "22",
+                  "range": ">=22.0.0 <23.0.0-0"
+                }
+              ],
+              "step": "Set up Node",
+              "uses": "actions/setup-node",
+              "version": "22"
+            }
+          ]
         }
       ],
       "landings": [],
@@ -9187,6 +13184,136 @@
     },
     {
       "checksCount": 0,
+      "commands": [
+        {
+          "dir": "",
+          "job": "action",
+          "programs": [
+            "sudo"
+          ],
+          "step": "Install FFmpeg"
+        },
+        {
+          "dir": "",
+          "job": "action",
+          "programs": [
+            "echo",
+            "python3"
+          ],
+          "step": "Install audiobooker"
+        },
+        {
+          "dir": "",
+          "job": "action",
+          "programs": [
+            "audiobooker",
+            "openssl",
+            "printf"
+          ],
+          "step": "Render audiobook"
+        }
+      ],
+      "elsewhere": [],
+      "file": "action.yml",
+      "kind": "action",
+      "landings": [],
+      "mentions": [
+        {
+          "job": "action",
+          "path": "pyproject.toml"
+        }
+      ],
+      "name": "Audiobooker",
+      "permissions": [],
+      "pushes": false,
+      "reach": [
+        {
+          "boundary": "audiobooker",
+          "depth": 0,
+          "files": 37
+        },
+        {
+          "boundary": "tools",
+          "depth": 0,
+          "files": 1
+        }
+      ],
+      "readers": [],
+      "runs": [
+        {
+          "job": "action",
+          "path": "audiobooker/cli.py",
+          "runKind": "executes"
+        },
+        {
+          "job": "action",
+          "path": "tools/read_project_version.py",
+          "runKind": "executes"
+        }
+      ],
+      "runsCount": 2,
+      "secrets": [],
+      "sends": {
+        "deploysPages": false,
+        "dispatchesTo": [],
+        "opensIssues": false,
+        "opensIssuesOnFailure": false,
+        "opensPullRequests": false,
+        "publishes": false,
+        "publishesTo": [],
+        "releases": false
+      },
+      "stages": [],
+      "triggers": [],
+      "uses": [
+        "actions/setup-python"
+      ],
+      "usesWorkflowToken": false
+    },
+    {
+      "checksCount": 0,
+      "commands": [],
+      "elsewhere": [],
+      "file": "npm/package.json",
+      "kind": "command",
+      "landings": [],
+      "mentions": [],
+      "name": "audiobooker",
+      "permissions": [],
+      "pushes": false,
+      "reach": [
+        {
+          "boundary": "npm",
+          "depth": 0,
+          "files": 1
+        }
+      ],
+      "readers": [],
+      "runs": [
+        {
+          "path": "npm/bin/audiobooker.js",
+          "runKind": "executes"
+        }
+      ],
+      "runsCount": 1,
+      "secrets": [],
+      "sends": {
+        "deploysPages": false,
+        "dispatchesTo": [],
+        "opensIssues": false,
+        "opensIssuesOnFailure": false,
+        "opensPullRequests": false,
+        "publishes": false,
+        "publishesTo": [],
+        "releases": false
+      },
+      "stages": [],
+      "triggers": [],
+      "uses": [],
+      "usesWorkflowToken": false
+    },
+    {
+      "checksCount": 0,
       "commands": [],
       "elsewhere": [],
       "file": "pyproject.toml",
@@ -9200,7 +13327,7 @@
         {
           "boundary": "audiobooker",
           "depth": 0,
-          "files": 34
+          "files": 37
         }
       ],
       "readers": [],
@@ -9239,11 +13366,17 @@
       "fromTests": true,
       "kind": "file",
       "to": "audiobooker"
+    },
+    {
+      "from": "tools",
+      "kind": "spawns",
+      "to": "audiobooker"
     }
   ],
+  "engine": "1.24.0",
   "generatedFrom": {
-    "commit": "d8ba5c2db800ac2d775f396663be64e19cb53e69",
-    "tracked": 191
+    "commit": "6fcd238d2aafd234b4c5de59d4f88c3b2c46e8b9",
+    "tracked": 192
   },
   "landings": [
     {
@@ -9293,7 +13426,8 @@
     {
       "readers": [
         {
-          "by": ".github/workflows/release.yml"
+          "by": ".github/workflows/release.yml",
+          "confidence": "config"
         }
       ],
       "target": "CHANGELOG.md",
@@ -9302,7 +13436,8 @@
     {
       "readers": [
         {
-          "by": ".github/workflows/ci.yml"
+          "by": ".github/workflows/ci.yml",
+          "confidence": "config"
         }
       ],
       "target": "Dockerfile",
@@ -9328,17 +13463,6 @@
         }
       ],
       "target": "action.yml",
-      "writers": []
-    },
-    {
-      "readers": [
-        {
-          "by": "audiobooker/config_file.py",
-          "call": "get",
-          "confidence": "ast"
-        }
-      ],
-      "target": "audiobooker",
       "writers": []
     },
     {
@@ -9382,14 +13506,16 @@
       "tracked": false,
       "writers": [
         {
-          "by": ".github/workflows/release.yml"
+          "by": ".github/workflows/release.yml",
+          "confidence": "config"
         }
       ]
     },
     {
       "readers": [
         {
-          "by": ".github/workflows/release.yml"
+          "by": ".github/workflows/release.yml",
+          "confidence": "config"
         }
       ],
       "target": "npm/package.json",
@@ -9398,19 +13524,25 @@
     {
       "readers": [
         {
-          "by": ".github/workflows/ci.yml"
+          "by": ".github/workflows/ci.yml",
+          "confidence": "config"
         },
         {
-          "by": ".github/workflows/release.yml"
+          "by": ".github/workflows/release.yml",
+          "confidence": "config"
+        },
+        {
+          "by": "action.yml",
+          "confidence": "config"
         },
         {
           "by": "audiobooker/config_file.py",
           "call": "literal",
-          "confidence": "ast"
+          "confidence": "weak"
         },
         {
           "by": "audiobooker/config_file.py",
-          "call": "literal",
+          "call": "open",
           "confidence": "weak"
         },
         {
@@ -9472,10 +13604,21 @@
           "by": "tools/check_pyright_gate.py",
           "call": "literal",
           "confidence": "ast"
+        },
+        {
+          "by": "tools/check_pyright_gate.py",
+          "call": "read_text",
+          "confidence": "ast"
         }
       ],
       "target": "tools/pyright_baseline.txt",
-      "writers": []
+      "writers": [
+        {
+          "by": "tools/check_pyright_gate.py",
+          "confidence": "ast",
+          "stamps": true
+        }
+      ]
     }
   ],
   "overlaps": [],

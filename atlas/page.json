@@ -9,7 +9,7 @@
   ],
   "breaks": [
     {
-      "doors": 3,
+      "doors": 4,
       "importedBy": [
         "examples"
       ],
@@ -18,10 +18,13 @@
       ],
       "kind": "part",
       "name": "audiobooker",
-      "partLabel": "audiobooker"
+      "partLabel": "audiobooker",
+      "spawnedBy": [
+        "tools"
+      ]
     },
     {
-      "doors": 3,
+      "doors": 4,
       "importedBy": [],
       "importedByTests": [],
       "kind": "part",
@@ -30,7 +33,92 @@
     }
   ],
   "changes": {
-    "first": true
+    "fileCounts": {
+      "added": 1,
+      "changed": 1,
+      "moved": 0,
+      "parts": 2,
+      "removed": 0
+    },
+    "items": [
+      {
+        "kind": "door",
+        "sentence": "CI's push trigger now also names `codecov.yml`.",
+        "subjects": [
+          ".github/workflows/ci.yml"
+        ]
+      },
+      {
+        "kind": "door",
+        "sentence": "CI now also runs audiobooker/__init__.py, audiobooker/casting/voice_registry.py, audiobooker/casting/voice_suggester.py and 13 more.",
+        "subjects": [
+          ".github/workflows/ci.yml",
+          "audiobooker/__init__.py",
+          "audiobooker/casting/voice_registry.py",
+          "audiobooker/casting/voice_suggester.py",
+          "audiobooker/language/en.py",
+          "audiobooker/language/profile.py",
+          "audiobooker/nlp/booknlp_adapter.py",
+          "audiobooker/nlp/emotion.py",
+          "audiobooker/nlp/speaker_resolver.py",
+          "audiobooker/renderer/cache_manifest.py",
+          "audiobooker/renderer/engine.py",
+          "audiobooker/renderer/failure_report.py",
+          "audiobooker/renderer/ffmpeg_runner.py",
+          "audiobooker/renderer/hash_utils.py",
+          "audiobooker/renderer/output.py",
+          "audiobooker/renderer/progress.py",
+          "audiobooker/renderer/protocols.py"
+        ]
+      },
+      {
+        "kind": "door",
+        "sentence": "Audiobooker (action.yml) is a new action other repositories use. It runs audiobooker/cli.py and tools/read_project_version.py.",
+        "subjects": [
+          "action.yml",
+          "audiobooker/cli.py",
+          "tools/read_project_version.py"
+        ]
+      },
+      {
+        "kind": "door",
+        "sentence": "And 1 more change to a door.",
+        "subjects": []
+      },
+      {
+        "kind": "landing",
+        "sentence": "tools/pyright_baseline.txt is now written by tools/check_pyright_gate.py.",
+        "subjects": [
+          "tools/pyright_baseline.txt",
+          "tools/check_pyright_gate.py"
+        ]
+      },
+      {
+        "kind": "landing",
+        "sentence": "pyproject.toml is now also read by action.yml.",
+        "subjects": [
+          "pyproject.toml",
+          "action.yml"
+        ]
+      },
+      {
+        "kind": "origin",
+        "sentence": "tools was authored and is now mixed.",
+        "subjects": [
+          "tools"
+        ]
+      },
+      {
+        "kind": "counts",
+        "sentence": "1 file added and 1 changed content, across 2 parts.",
+        "subjects": []
+      }
+    ],
+    "since": {
+      "commit": "d8ba5c2db800ac2d775f396663be64e19cb53e69",
+      "generatedAt": "2026-09-25T02:18:47.349Z"
+    },
+    "unchanged": false
   },
   "changesTogether": [
     {
@@ -110,13 +198,13 @@
     }
   ],
   "changesTogetherNote": [
-    "Confidence is low: fewer than 20 source files reach 10 revisions in the window.",
+    "Confidence is low: fewer than 25 source files reach 10 revisions in the window.",
     "Window: 180 days; a pair counts from 3 shared commits, since 4 source files reach 10 revisions; the floor rises to 10 when 25 do."
   ],
   "changesTogetherWithTests": 0,
-  "commit": "d8ba5c2db800ac2d775f396663be64e19cb53e69",
+  "commit": "6fcd238d2aafd234b4c5de59d4f88c3b2c46e8b9",
   "defaultBranch": "main",
-  "derived": "10 parts, mostly Python (131 files), JavaScript (2) and TypeScript (2). Work enters through 5 doors; CI and Publish to GHCR each reach 3 parts, and CI is followed because a pull request goes through it. It publishes to PyPI, @mcptoolshop/audiobooker (npm) to npm, and a container image. People run audiobooker.",
+  "derived": "10 parts, mostly Python (131 files), CSS (2), JavaScript (2), TypeScript (2) and Astro (1). Work enters through 7 doors; CI and Publish to GHCR each reach 3 parts, and CI is followed because a pull request goes through it. It publishes to PyPI, @mcptoolshop/audiobooker to npm, and a container image. It deploys a site to GitHub Pages. People run audiobooker. Other repositories use the Audiobooker action.",
   "doors": [
     {
       "checks": [
@@ -126,7 +214,9 @@
       "checksMore": 0,
       "file": ".github/workflows/ci.yml",
       "id": ".github/workflows/ci.yml",
-      "landings": [],
+      "landings": [
+        "tools/pyright_baseline.txt"
+      ],
       "name": "CI",
       "pushes": false,
       "reach": [
@@ -147,30 +237,43 @@
         }
       ],
       "runs": [
+        "audiobooker/__init__.py",
+        "audiobooker/casting/voice_registry.py",
+        "audiobooker/casting/voice_suggester.py",
         "audiobooker/cli.py",
+        "audiobooker/language/en.py",
+        "audiobooker/language/profile.py",
+        "audiobooker/nlp/booknlp_adapter.py",
+        "audiobooker/nlp/emotion.py",
+        "audiobooker/nlp/speaker_resolver.py",
+        "audiobooker/renderer/cache_manifest.py",
+        "audiobooker/renderer/engine.py",
+        "audiobooker/renderer/failure_report.py",
+        "audiobooker/renderer/ffmpeg_runner.py",
+        "audiobooker/renderer/hash_utils.py",
+        "audiobooker/renderer/output.py",
+        "audiobooker/renderer/progress.py",
+        "audiobooker/renderer/protocols.py",
         "tests/",
         "tools/check_ci_policy.py",
         "tools/check_pyright_gate.py"
       ],
-      "runsCount": 4,
-      "runsMore": 1,
-      "sends": [],
+      "runsCount": 20,
+      "runsMore": 97,
+      "sends": [
+        "uploads coverage to Codecov"
+      ],
       "stages": [],
       "triggers": [
-        "on a pull request",
-        "on a push to main touching 5 paths",
+        "on a pull request to main",
+        "on a push to main touching 6 paths",
         "or by hand"
       ]
     },
     {
-      "checks": [
-        "LICENSE",
-        "README.md",
-        "audiobooker/",
-        "pyproject.toml"
-      ],
-      "checksCount": 4,
-      "checksMore": 1,
+      "checks": [],
+      "checksCount": 0,
+      "checksMore": 0,
       "file": ".github/workflows/docker.yml",
       "held": [
         {
@@ -187,6 +290,12 @@
       "id": ".github/workflows/docker.yml",
       "landings": [],
       "name": "Publish to GHCR",
+      "packs": [
+        "LICENSE",
+        "README.md",
+        "audiobooker/",
+        "pyproject.toml"
+      ],
       "pushes": false,
       "reach": [
         {
@@ -232,7 +341,7 @@
         {
           "boundary": "site",
           "depth": 0,
-          "files": 3
+          "files": 5
         }
       ],
       "runs": [
@@ -282,7 +391,7 @@
       "runsCount": 0,
       "runsMore": 0,
       "sends": [
-        "publishes to PyPI and @mcptoolshop/audiobooker (npm) to npm on a release event"
+        "publishes to PyPI and @mcptoolshop/audiobooker to npm on a release event"
       ],
       "stages": [],
       "triggers": [
@@ -290,6 +399,64 @@
         "or by hand"
       ],
       "untracked": "npm/CHANGELOG.md, which is not tracked"
+    },
+    {
+      "checks": [],
+      "checksCount": 0,
+      "checksMore": 0,
+      "file": "action.yml",
+      "id": "action.yml#Audiobooker",
+      "kind": "action",
+      "landings": [],
+      "name": "Audiobooker",
+      "pushes": false,
+      "reach": [
+        {
+          "boundary": "audiobooker",
+          "depth": 0,
+          "files": 37
+        },
+        {
+          "boundary": "tools",
+          "depth": 0,
+          "files": 1
+        }
+      ],
+      "runs": [
+        "audiobooker/cli.py",
+        "tools/read_project_version.py"
+      ],
+      "runsCount": 2,
+      "runsMore": 0,
+      "sends": [],
+      "stages": [],
+      "triggers": []
+    },
+    {
+      "checks": [],
+      "checksCount": 0,
+      "checksMore": 0,
+      "file": "npm/package.json",
+      "id": "npm/package.json#audiobooker",
+      "kind": "command",
+      "landings": [],
+      "name": "audiobooker",
+      "pushes": false,
+      "reach": [
+        {
+          "boundary": "npm",
+          "depth": 0,
+          "files": 1
+        }
+      ],
+      "runs": [
+        "npm/bin/audiobooker.js"
+      ],
+      "runsCount": 1,
+      "runsMore": 0,
+      "sends": [],
+      "stages": [],
+      "triggers": []
     },
     {
       "checks": [],
@@ -305,7 +472,7 @@
         {
           "boundary": "audiobooker",
           "depth": 0,
-          "files": 34
+          "files": 37
         }
       ],
       "runs": [
@@ -322,16 +489,29 @@
   "duplicatesLead": null,
   "duplicatesNote": [],
   "edges": [],
-  "generated": [],
-  "generatedAt": "2026-09-25T02:18:47.349Z",
+  "engine": "1.24.0",
+  "generated": [
+    {
+      "block": true,
+      "place": "tools/pyright_baseline.txt",
+      "writers": [
+        "tools/check_pyright_gate.py"
+      ]
+    }
+  ],
+  "generatedAt": "2026-09-30T20:08:00.132Z",
   "limits": [
-    "22 import sites could not be resolved.",
-    "31 writes and 25 reads use paths built at run time and are not named here.",
+    "14 import sites name a declared dependency that shares its name with a local module (docx); they are read as the dependency, which is not in this repository.",
+    "7 imports could not be resolved: `audiobooker/cli.py` imports a path built at run time, twice; `audiobooker/language/profile.py` imports a path built at run time; `tests/test_feat_f5_cli.py` imports a path built at run time; and 3 more.",
+    "5 writes and 8 reads use paths built at run time and are not named here.",
     "1 write goes to places this repository does not track, so it is not listed as generated.",
-    "9 reads go to a path their caller passes, not to this repository.",
-    "4 writes and 4 reads go to the home directory (.config/, .local/ and AppData/) or a path their caller passes, not to this repository.",
+    "27 writes and 39 reads go to a path their caller passes, not to this repository.",
+    "3 writes and 5 reads go to the home directory (.local/, AppData/ and audiobooker/) or a path their caller passes, not to this repository.",
+    "1 write and 2 reads go to the home directory (.config/, AppData/ and audiobooker/), not to this repository.",
+    "2 reads go to the directory the command is run in (audiobooker and pyproject.toml), not to this repository.",
+    "1 read goes to the directory the command is run in (.audiobookerrc) or the home directory (.audiobookerrc), not to this repository.",
     "4 commands are built at run time and not followed.",
-    "Statistics confidence is low: fewer than 20 source files reach 10 revisions in the window."
+    "Statistics confidence is low: fewer than 25 source files reach 10 revisions in the window."
   ],
   "mainDoor": ".github/workflows/ci.yml",
   "partLabels": {
@@ -347,13 +527,165 @@
     "tools": "tools"
   },
   "parts": 10,
-  "readers": [],
+  "readers": [
+    {
+      "readers": [
+        "tools/check_ci_policy.py"
+      ],
+      "target": "tools/pyright_baseline.txt"
+    }
+  ],
   "repo": "mcp-tool-shop-org/audiobooker",
-  "sequences": [],
+  "sequences": [
+    {
+      "entry": "suggest_aliases",
+      "file": "audiobooker/nlp/speaker_resolver.py",
+      "inner": [],
+      "part": "audiobooker",
+      "partLabel": "audiobooker",
+      "phrase": "`suggest_aliases`",
+      "steps": [
+        {
+          "name": "get_profile",
+          "part": "audiobooker",
+          "partLabel": "audiobooker",
+          "phrase": "`get_profile`"
+        },
+        {
+          "name": "BookNLPAdapter",
+          "part": "audiobooker",
+          "partLabel": "audiobooker",
+          "phrase": "`BookNLPAdapter`"
+        }
+      ]
+    },
+    {
+      "entry": "render_project_detailed",
+      "file": "audiobooker/renderer/engine.py",
+      "inner": [],
+      "part": "audiobooker",
+      "partLabel": "audiobooker",
+      "phrase": "`render_project_detailed`",
+      "steps": [
+        {
+          "name": "get",
+          "part": "audiobooker",
+          "partLabel": "audiobooker",
+          "phrase": "`get`"
+        },
+        {
+          "name": "check_ffmpeg",
+          "part": "audiobooker",
+          "partLabel": "audiobooker",
+          "phrase": "`check_ffmpeg`"
+        },
+        {
+          "name": "_resolve_loudnorm_profile",
+          "part": "audiobooker",
+          "partLabel": "audiobooker",
+          "phrase": "`_resolve_loudnorm_profile`"
+        },
+        {
+          "name": "get_cache_root",
+          "part": "audiobooker",
+          "partLabel": "audiobooker",
+          "phrase": "`get_cache_root`"
+        },
+        {
+          "name": "get_manifest_path",
+          "part": "audiobooker",
+          "partLabel": "audiobooker",
+          "phrase": "`get_manifest_path`"
+        },
+        {
+          "name": "render_params_hash",
+          "part": "audiobooker",
+          "partLabel": "audiobooker",
+          "phrase": "`render_params_hash`"
+        },
+        {
+          "name": "load_manifest",
+          "part": "audiobooker",
+          "partLabel": "audiobooker",
+          "phrase": "`load_manifest`"
+        },
+        {
+          "name": "CacheManifest",
+          "part": "audiobooker",
+          "partLabel": "audiobooker",
+          "phrase": "`CacheManifest`"
+        },
+        {
+          "name": "RenderProgressTracker",
+          "part": "audiobooker",
+          "partLabel": "audiobooker",
+          "phrase": "`RenderProgressTracker`"
+        },
+        {
+          "name": "RenderFailureReport",
+          "part": "audiobooker",
+          "partLabel": "audiobooker",
+          "phrase": "`RenderFailureReport`"
+        },
+        {
+          "name": "chapter_text_hash",
+          "part": "audiobooker",
+          "partLabel": "audiobooker",
+          "phrase": "`chapter_text_hash`"
+        },
+        {
+          "name": "casting_hash",
+          "part": "audiobooker",
+          "partLabel": "audiobooker",
+          "phrase": "`casting_hash`"
+        },
+        {
+          "count": 4,
+          "name": null,
+          "part": "audiobooker",
+          "partLabel": "audiobooker",
+          "phrase": "`progress.py`"
+        },
+        {
+          "count": 4,
+          "name": null,
+          "part": "audiobooker",
+          "partLabel": "audiobooker",
+          "phrase": "`cache_manifest.py`"
+        }
+      ]
+    },
+    {
+      "entry": "assemble_m4b",
+      "file": "audiobooker/renderer/output.py",
+      "inner": [],
+      "part": "audiobooker",
+      "partLabel": "audiobooker",
+      "phrase": "`assemble_m4b`",
+      "steps": [
+        {
+          "name": "RealFFmpegRunner",
+          "part": "audiobooker",
+          "partLabel": "audiobooker",
+          "phrase": "`RealFFmpegRunner`"
+        },
+        {
+          "name": "RealFFmpegRunner",
+          "part": "audiobooker",
+          "partLabel": "audiobooker",
+          "phrase": "`RealFFmpegRunner`"
+        }
+      ]
+    }
+  ],
   "startDoor": ".github/workflows/ci.yml",
   "startHere": [
     ".github/workflows/ci.yml",
-    "audiobooker/cli.py"
+    "audiobooker/cli.py",
+    "audiobooker/renderer/engine.py",
+    "audiobooker/__init__.py",
+    "audiobooker/models.py",
+    "audiobooker/formats.py"
   ],
   "summary": null,
   "summaryFrom": null,
@@ -363,7 +695,7 @@
     "examples": 0,
     "tools": 0
   },
-  "unnamedWrites": 31,
+  "unnamedWrites": 5,
   "unread": [],
   "unreadFiles": 0,
   "unreadNote": [],
@@ -380,5 +712,5 @@
     }
   ],
   "untestedNote": [],
-  "written": 0
+  "written": 1
 }
