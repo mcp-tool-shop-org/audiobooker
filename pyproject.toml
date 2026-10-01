@@ -121,7 +121,7 @@ dev = [
     # CH-B-009 (wave 5 amend): .pre-commit-config.yaml's ruff-pre-commit hook
     # rev is now pinned to match this exact version (v0.16.6) -- see that
     # file. Bump both together, deliberately, never independently.
-    "ruff==0.16.6",
+    "ruff==0.16.9",
     "pip-audit>=2.7.0",
 ]
 
