@@ -10,7 +10,7 @@ import re
 import sys
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-PYPA_V1142 = "dc37677b2e1c63e2034f94d8a5b11f265b73ba33"
+PYPA_PUBLISH_PIN = "7245906fb61fa33a13554f9d5fb856fe61758086"  # v1.14.3, GHSA-5xjx-3w67-w9x9
 REQUIRED_CI_JOBS = ("ci", "dep-audit", "typecheck")
 # YAML block scalars: | / > plus chomp (|- |+ >- >+) and indent (|2, |-2).
 _BLOCK_SCALAR = re.compile(r"^[|>][+-]?(?:\d+)?$")
@@ -155,10 +155,10 @@ def check_pyright_gate() -> None:
 
 def check_release_yml() -> None:
     text = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
-    if PYPA_V1142 not in text:
+    if PYPA_PUBLISH_PIN not in text:
         fail(
             f"release.yml: pypa/gh-action-pypi-publish is not pinned to "
-            f"{PYPA_V1142} (v1.14.2, Metadata-Version 2.5)"
+            f"{PYPA_PUBLISH_PIN} (v1.14.3)"
         )
     if re.search(r"pip install --upgrade pip build(?!\S)", text):
         fail("release.yml: unpinned `pip install --upgrade pip build`")
