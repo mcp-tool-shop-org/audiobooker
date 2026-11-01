@@ -172,7 +172,7 @@ jobs:
       # replace the artifact its earlier attempt saved.
       - name: Save coverage for Codecov
         if: ${{ env.COVERAGE_LEG == 'true' }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: codecov-coverage
           path: coverage.xml
@@ -182,7 +182,7 @@ jobs:
 
       - name: Save test results for Codecov
         if: ${{ !cancelled() && env.COVERAGE_LEG == 'true' && steps.tests.outcome != 'skipped' }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: codecov-test-results
           path: junit.xml
