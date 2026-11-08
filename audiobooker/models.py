@@ -152,7 +152,7 @@ def _looks_absolute(raw: str) -> bool:
     """True when ``raw`` was written as an absolute path on EITHER platform.
 
     ``Path.is_absolute()`` answers only for the running platform:
-    ``PurePosixPath("C:\\\\Users\\\\a").is_absolute()`` is False, and
+    ``PurePosixPath("C:\\\\Data\\\\a").is_absolute()`` is False, and
     ``PureWindowsPath("/home/a").is_absolute()`` is False as well (no drive).
     Anchoring either of those under the project directory would invent a path
     the user never wrote, so both spellings count as absolute here.

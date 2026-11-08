@@ -340,8 +340,8 @@ class TestPortablePaths:
         # A Windows absolute path must NOT be re-anchored under the project
         # dir, on either platform — on POSIX, Path.is_absolute() says False
         # for it, which is exactly the trap.
-        assert str(resolve_stored_path("C:\\Users\\alice\\b.epub", base)) == (
-            "C:\\Users\\alice\\b.epub"
+        assert str(resolve_stored_path("C:\\Books\\b.epub", base)) == (
+            "C:\\Books\\b.epub"
         )
         # A POSIX absolute path, likewise, on Windows where is_absolute() is
         # also False for it.

@@ -158,11 +158,14 @@ jobs:
       # the first clean all-success run after this merges if you want the
       # receipt:
       #   gh api repos/mcp-tool-shop-org/audiobooker/actions/runs/<id>/jobs
+      # Coverage floor 81 = measured 81.1% (2026-11-07), rounded down; ratchet
+      # toward the 90% org bar (coverage-bar rule). Never lower it to get green.
       - name: Run tests with coverage
         id: tests
         run: |
           pytest tests/ -v --tb=short \
-            --cov=audiobooker --cov-report=xml --cov-report=term-missing --junitxml=junit.xml
+            --cov=audiobooker --cov-report=xml --cov-report=term-missing --junitxml=junit.xml \
+            --cov-fail-under=81
 
       # The codecov job below uploads what these two steps save; this job
       # never holds an OIDC token. Coverage is saved when the tests passed,
