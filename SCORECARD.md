@@ -3,7 +3,7 @@
 **Repo:** audiobooker
 **Type tags:** [pypi] [npm] [cli] [container]
 
-## Current — measured 2026-09-14 (v3.0.0, post dogfood swarm)
+## Current — re-run 2026-11-07 for v3.0.1 (measured 2026-09-14 at v3.0.0, post dogfood swarm)
 
 `npx @mcptoolshop/shipcheck audit` — **26 checked · 0 unchecked · 11 skipped ·
 100% · all hard gates pass.**

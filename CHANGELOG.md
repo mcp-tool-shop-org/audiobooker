@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.1] - 2026-11-07
+
+Maintenance release. Nothing in the audiobooker program itself changes: the
+same commands, the same audio, the same cache. What changed is the machinery
+around it.
+
+### Security
+
+- The documentation site's build tools are updated to versions that fix known
+  advisories (a Vite file-exposure issue, Zod memory exhaustion on oversized
+  input, several undici issues, a smol-toml and a source-map-js denial of
+  service). These run only when the site is built and are not part of the
+  `audiobooker-ai` package you install.
+- The release workflow now uses the patched PyPI publishing action
+  (GHSA-5xjx-3w67-w9x9).
+
+### Changed
+
+- The documentation site is now built on pull requests, so a broken site
+  change is caught before it merges.
+- Added a repository map (Atlas) that is checked in CI, and coverage reports
+  are uploaded to Codecov.
+- Routine updates to CI actions and the pinned lint tool.
+
 ## [3.0.0] - 2026-09-14
 
 Major, because five things that used to be accepted now fail instead — the

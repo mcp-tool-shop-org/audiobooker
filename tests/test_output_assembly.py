@@ -175,8 +175,8 @@ class TestEscapeConcatPath:
         Note: concatenate_audio_files uses .as_posix() before calling this,
         so backslashes only appear in raw test inputs, not real usage.
         """
-        result = _escape_concat_path("C:\\Users\\me\\file.wav")
-        assert "C:\\Users\\me\\file.wav" == result
+        result = _escape_concat_path("C:\\Audio\\file.wav")
+        assert "C:\\Audio\\file.wav" == result
 
     def test_unicode_path(self):
         """Unicode in paths passes through unchanged."""

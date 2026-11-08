@@ -8,7 +8,7 @@ Converts HTML content to plain text suitable for TTS.
 import logging
 import re
 from pathlib import Path
-from typing import Optional
+from typing import Optional, cast
 from html.parser import HTMLParser
 
 from audiobooker.models import Chapter
@@ -1267,7 +1267,7 @@ def parse_epub(
         # Write cover art next to the EPUB
         cover_path = path.parent / f"{path.stem}_cover{cover_image_ext}"
         try:
-            cover_path.write_bytes(cover_image_data)
+            cover_path.write_bytes(cast(bytes, cover_image_data))
             metadata["cover_art_path"] = str(cover_path)
             logger.info("Extracted cover art to %s", cover_path)
         except OSError as e:
