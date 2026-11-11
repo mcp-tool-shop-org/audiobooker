@@ -1,21 +1,15 @@
 # audiobooker: how it works
 
-Mapped at 2026-09-30 from commit 6fcd238 by Atlas 1.24.0.
+Mapped at 2026-11-11 from commit a72befb by Atlas 1.26.0.
 
 ## What this is
 
 10 parts, mostly Python (131 files), CSS (2), JavaScript (2), TypeScript (2) and Astro (1). Work enters through 7 doors; CI and Publish to GHCR each reach 3 parts, and CI is followed because a pull request goes through it. It publishes to PyPI, @mcptoolshop/audiobooker to npm, and a container image. It deploys a site to GitHub Pages. People run audiobooker. Other repositories use the Audiobooker action.
 
-## What changed since 2026-09-25 (d8ba5c2)
+## What changed since 2026-09-30 (6fcd238)
 
-- CI's push trigger now also names `codecov.yml`.
-- CI now also runs audiobooker/__init__.py, audiobooker/casting/voice_registry.py, audiobooker/casting/voice_suggester.py and 13 more.
-- Audiobooker (action.yml) is a new action other repositories use. It runs audiobooker/cli.py and tools/read_project_version.py.
-- And 1 more change to a door.
-- tools/pyright_baseline.txt is now written by tools/check_pyright_gate.py.
-- pyproject.toml is now also read by action.yml.
-- tools was authored and is now mixed.
-- 1 file added and 1 changed content, across 2 parts.
+- .github/workflows/*.yml is now read by tools/check_ci_policy.py.
+- 21 files changed content, across 7 parts.
 
 ## What comes in
 
@@ -73,10 +67,10 @@ Mapped at 2026-09-30 from commit 6fcd238 by Atlas 1.24.0.
 
 ## What tends to change together
 
-- **audiobooker/parser/epub.py** and **audiobooker/parser/pdf.py** changed together in 7 of 8 commits, inside the audiobooker part.
+- **audiobooker/parser/epub.py** and **audiobooker/parser/pdf.py** changed together in 7 of 9 commits, inside the audiobooker part.
 - **audiobooker/parser/pdf.py** and **audiobooker/parser/text.py** changed together in 6 of 8 commits, inside the audiobooker part.
 - **audiobooker/renderer/cache_manifest.py** and **audiobooker/renderer/hash_utils.py** changed together in 5 of 7 commits, inside the audiobooker part.
-- **audiobooker/parser/epub.py** and **audiobooker/parser/text.py** changed together in 6 of 9 commits, inside the audiobooker part.
+- **audiobooker/parser/epub.py** and **audiobooker/parser/text.py** changed together in 6 of 10 commits, inside the audiobooker part.
 - **audiobooker/parser/docx.py** and **audiobooker/parser/pdf.py** changed together in 4 of 8 commits, inside the audiobooker part.
 
 Confidence is low: fewer than 25 source files reach 10 revisions in the window.
@@ -110,16 +104,18 @@ People write .github/, assets/, docs/, npm/, the repository root and site/; 5 wr
 
 Read those in order to follow one pull request end to end.
 
+Beside the path, audiobooker/renderer/engine.py also calls audiobooker/renderer/output.py, audiobooker/renderer/cache_manifest.py, audiobooker/renderer/hash_utils.py, audiobooker/renderer/progress.py and 1 more file.
+
 ## What this map cannot see
 
 - 14 import sites name a declared dependency that shares its name with a local module (docx); they are read as the dependency, which is not in this repository.
 - 7 imports could not be resolved: `audiobooker/cli.py` imports a path built at run time, twice; `audiobooker/language/profile.py` imports a path built at run time; `tests/test_feat_f5_cli.py` imports a path built at run time; and 3 more.
-- 5 writes and 8 reads use paths built at run time and are not named here.
+- 5 writes and 6 reads use paths built at run time and are not named here.
 - 1 write goes to places this repository does not track, so it is not listed as generated.
 - 27 writes and 39 reads go to a path their caller passes, not to this repository.
 - 3 writes and 5 reads go to the home directory (.local/, AppData/ and audiobooker/) or a path their caller passes, not to this repository.
-- 1 write and 2 reads go to the home directory (.config/, AppData/ and audiobooker/), not to this repository.
-- 2 reads go to the directory the command is run in (audiobooker and pyproject.toml), not to this repository.
+- 1 write and 3 reads go to the home directory (.config/, AppData/ and audiobooker/), not to this repository.
+- 3 reads go to the directory the command is run in, not to this repository.
 - 1 read goes to the directory the command is run in (.audiobookerrc) or the home directory (.audiobookerrc), not to this repository.
 - 4 commands are built at run time and not followed.
 - Statistics confidence is low: fewer than 25 source files reach 10 revisions in the window.

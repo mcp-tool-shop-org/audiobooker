@@ -17,19 +17,19 @@
           "path": ".github/release.yml"
         },
         {
-          "hash": "d42fdd1675d8b961b100501e46e261d9043bded90d07d221c2646cff9fed6d7d",
+          "hash": "ff0a6049661f434973596b450856537b1294e5f467d55414b6e671cace7cb9ca",
           "path": ".github/workflows/ci.yml"
         },
         {
-          "hash": "059d07ea410c641aa6eed022cd5de45befe70f9c179b6d101289dea12f4fc51b",
+          "hash": "87ed7e18ac29619c4d95bf2757d2c918c690c33f3d73c605ec463559a9429337",
           "path": ".github/workflows/docker.yml"
         },
         {
-          "hash": "23340aae8899e0501b7c159bafdfb882d813f87eeef1a3b213e78a4de12137cd",
+          "hash": "0c98951a25ac7397d1f6cdde5a19931f96b50bb0cb72517a9a4dc7b850c3fc27",
           "path": ".github/workflows/pages.yml"
         },
         {
-          "hash": "036891cd86a11fcc55cb5dd794f89caf5713d87bce3ef4e095f052ea04c1fc5e",
+          "hash": "5f2f9215bf06fb378f72725ec5c4a36982003aaf4cc6be7429d126df33e54ab0",
           "path": ".github/workflows/release.yml"
         }
       ],
@@ -67,7 +67,7 @@
       "unresolvedSites": 0
     },
     {
-      "dynamicReads": 6,
+      "dynamicReads": 5,
       "dynamicSpawns": 0,
       "dynamicSpawnsInTests": 0,
       "dynamicWrites": 5,
@@ -5832,7 +5832,7 @@
               "line": 1392
             }
           ],
-          "hash": "6acd53282ece2b40ca68d89e71eacdfe2f10401421ff7d44e870641399492a68",
+          "hash": "d43943a932811859d322c47f2f524a7f1869afde0bd598c00dc0a41b745d10af",
           "importOrder": [
             "audiobooker/__init__.py",
             "audiobooker/formats.py",
@@ -6503,7 +6503,7 @@
               "line": 1361
             }
           ],
-          "hash": "5a04d1f401a76ff3d505342fc93d2f8604dfb68573287153b8668067e2450c40",
+          "hash": "53ed45ff5b9060ef1d8bea21b9cf5f65cf56eefbc2fe3ea41d84ba94c6e2d523",
           "importOrder": [
             "audiobooker/models.py",
             "audiobooker/language/profile.py",
@@ -10051,6 +10051,13 @@
         {
           "reads": 1,
           "where": [
+            "cwd"
+          ],
+          "writes": 0
+        },
+        {
+          "reads": 1,
+          "where": [
             "cwd:.audiobookerrc",
             "home:.audiobookerrc"
           ],
@@ -10071,7 +10078,7 @@
           "writes": 0
         },
         {
-          "reads": 2,
+          "reads": 3,
           "where": [
             "home:.config/",
             "home:AppData/",
@@ -10080,7 +10087,7 @@
           "writes": 1
         }
       ],
-      "outsideReads": 42,
+      "outsideReads": 44,
       "outsideWrites": 28,
       "role": "code",
       "testRunners": [
@@ -10229,7 +10236,7 @@
           "sequences": []
         },
         {
-          "hash": "81339b90518c7e2c218c2695fd071b8c70b415b7f97464c7919dfe1e3b238924",
+          "hash": "6b33d00f87f0390865c53422c075dd8f498b43f571cd0a1401de160cf6fd1c67",
           "path": "npm/package.json"
         }
       ],
@@ -10286,7 +10293,7 @@
           "path": ".pre-commit-config.yaml"
         },
         {
-          "hash": "17b19295161a3bbe9f3def3dad5404781e1b981fcea05cf654a75982c9d1788c",
+          "hash": "24d7eede112ba7f85989b70005cedb13bee3c2558ce43c7b2022574b184a7c25",
           "path": "CHANGELOG.md"
         },
         {
@@ -10310,23 +10317,23 @@
           "path": "Makefile"
         },
         {
-          "hash": "5edd0e06f6dc5edc3cb6aee057d8a3651b7272152dda8c6880523a38e9f3445f",
+          "hash": "936ebe843a13a9364f0a6d6b57cce5221c92c0a64321df86afebae80417958cf",
           "path": "README.es.md"
         },
         {
-          "hash": "053335c9979477b3f498e85b592438fc9f06a2996f2b3015996c479d87eb4720",
+          "hash": "5586eb5a5eceb70315cf6561de6738cd19b88b1210773092d0d9382aff51a2eb",
           "path": "README.fr.md"
         },
         {
-          "hash": "ad2e408ab29ec42ee2a503ad5a1d0c999b4049af047acb2b3a0c37961e2f438f",
+          "hash": "3e88998e19662e3b5968683c71243b9e26ba82d8720b26cb3920119a2ac614f4",
           "path": "README.hi.md"
         },
         {
-          "hash": "0b0f6f32ff501dbc0924653e6f536a9ec16e26f27d4100965689041d31aae4df",
+          "hash": "6c12772ff25b02b8e5351f1356cb4c34f88d2fe818fe22e63c35af9d1ade621d",
           "path": "README.it.md"
         },
         {
-          "hash": "a80f246378700e0776ea428b4fe1b1cdf47b2fd5e5826060abcd9f3cb5ba7f12",
+          "hash": "56b8e787216d9c3e918e95fe23fa0c206667e19630d0a512c2019e8ff8a035db",
           "path": "README.ja.md"
         },
         {
@@ -10334,15 +10341,15 @@
           "path": "README.md"
         },
         {
-          "hash": "0eb9ce348fdada9c952632fc004594c8a3cd253693aeb026b3d8b7da2378657a",
+          "hash": "ca076ed3064dac15410c58d004e608fa53c9ca8799223a3c80e26fd537aa88d1",
           "path": "README.pt-BR.md"
         },
         {
-          "hash": "39022d8914cdb5e807abfa0accf7a82483cbb2bb7e3893957954d0c4b131ac59",
+          "hash": "0afff5ffdae3f4cb90b4fa27bb09985a5b829b7f7eabcc809dadebe31800a065",
           "path": "README.zh.md"
         },
         {
-          "hash": "6231b8fadabce8869fb09e90b0119e264eb69cebfad66addb2c6dd3066449002",
+          "hash": "dcbf4b0eec5896f8d486b8cbf96b3e585d8562c57734830b7abe353f8e47e24a",
           "path": "SCORECARD.md"
         },
         {
@@ -10362,7 +10369,7 @@
           "path": "codecov.yml"
         },
         {
-          "hash": "cc1121ebc39d8e719cee55d265d455706f274c2e2a4a2e3ab401dcb623e37f63",
+          "hash": "4eb775f33d4ce5410bd750f505c3a6f1c1241402fa42ea1f73e41ae798a949ef",
           "path": "pyproject.toml"
         }
       ],
@@ -10389,7 +10396,7 @@
           "path": "site/astro.config.mjs"
         },
         {
-          "hash": "43be06d37552deaa7bb058af94a783dea310b0e305885f085bd7568eb16f32e7",
+          "hash": "7fd70cca8dc546475bc39b8f631b752220d2b4154663244d238c771b5b5321a1",
           "path": "site/package-lock.json"
         },
         {
@@ -11333,7 +11340,7 @@
           "testFramework": "pytest"
         },
         {
-          "hash": "7e8f35aab37534316caff8ce5fac0beb4600a61c1e6d9787f3fde1667419a0a6",
+          "hash": "725fd172c6eba4549b7ee2dadd74d75d896e3c4290f8d3d67d2be2fdaf6cc630",
           "importsFiles": [
             "audiobooker/renderer/output.py"
           ],
@@ -11893,7 +11900,7 @@
           "testFramework": "pytest"
         },
         {
-          "hash": "f79fc9ab560a7a8a265da4ffba6d2e70f5c16e6f03e023bc892ee21190752338",
+          "hash": "19117bbeaed7b6d0487b9f5b904022bc74a0cad25ca087f47b04bbe042d8e532",
           "importOrder": [
             "audiobooker/models.py",
             "audiobooker/project.py",
@@ -11951,7 +11958,7 @@
       "unresolvedSites": 3
     },
     {
-      "dynamicReads": 2,
+      "dynamicReads": 1,
       "dynamicSpawns": 0,
       "dynamicSpawnsInTests": 0,
       "dynamicWrites": 0,
@@ -11971,7 +11978,7 @@
             "fail",
             "main"
           ],
-          "hash": "d8885c86d496f623e04cd355a70e88848e317d9052d7982def51222ee224e42b",
+          "hash": "e1f33d785fe4db9965fa2aaac354db76a25d8929405117ea4d4646b4e7e98157",
           "path": "tools/check_ci_policy.py",
           "sequences": [
             {
@@ -13373,9 +13380,9 @@
       "to": "audiobooker"
     }
   ],
-  "engine": "1.24.0",
+  "engine": "1.26.0",
   "generatedFrom": {
-    "commit": "6fcd238d2aafd234b4c5de59d4f88c3b2c46e8b9",
+    "commit": "a72befb706b26b26a920e4280c9992944ea6ab12",
     "tracked": 192
   },
   "landings": [
@@ -13388,6 +13395,17 @@
         }
       ],
       "target": ".github/workflows",
+      "writers": []
+    },
+    {
+      "readers": [
+        {
+          "by": "tools/check_ci_policy.py",
+          "call": "read_text",
+          "confidence": "ast"
+        }
+      ],
+      "target": ".github/workflows/*.yml",
       "writers": []
     },
     {
