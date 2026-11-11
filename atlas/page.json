@@ -34,89 +34,30 @@
   ],
   "changes": {
     "fileCounts": {
-      "added": 1,
-      "changed": 1,
+      "added": 0,
+      "changed": 21,
       "moved": 0,
-      "parts": 2,
+      "parts": 7,
       "removed": 0
     },
     "items": [
       {
-        "kind": "door",
-        "sentence": "CI's push trigger now also names `codecov.yml`.",
-        "subjects": [
-          ".github/workflows/ci.yml"
-        ]
-      },
-      {
-        "kind": "door",
-        "sentence": "CI now also runs audiobooker/__init__.py, audiobooker/casting/voice_registry.py, audiobooker/casting/voice_suggester.py and 13 more.",
-        "subjects": [
-          ".github/workflows/ci.yml",
-          "audiobooker/__init__.py",
-          "audiobooker/casting/voice_registry.py",
-          "audiobooker/casting/voice_suggester.py",
-          "audiobooker/language/en.py",
-          "audiobooker/language/profile.py",
-          "audiobooker/nlp/booknlp_adapter.py",
-          "audiobooker/nlp/emotion.py",
-          "audiobooker/nlp/speaker_resolver.py",
-          "audiobooker/renderer/cache_manifest.py",
-          "audiobooker/renderer/engine.py",
-          "audiobooker/renderer/failure_report.py",
-          "audiobooker/renderer/ffmpeg_runner.py",
-          "audiobooker/renderer/hash_utils.py",
-          "audiobooker/renderer/output.py",
-          "audiobooker/renderer/progress.py",
-          "audiobooker/renderer/protocols.py"
-        ]
-      },
-      {
-        "kind": "door",
-        "sentence": "Audiobooker (action.yml) is a new action other repositories use. It runs audiobooker/cli.py and tools/read_project_version.py.",
-        "subjects": [
-          "action.yml",
-          "audiobooker/cli.py",
-          "tools/read_project_version.py"
-        ]
-      },
-      {
-        "kind": "door",
-        "sentence": "And 1 more change to a door.",
-        "subjects": []
-      },
-      {
         "kind": "landing",
-        "sentence": "tools/pyright_baseline.txt is now written by tools/check_pyright_gate.py.",
+        "sentence": ".github/workflows/*.yml is now read by tools/check_ci_policy.py.",
         "subjects": [
-          "tools/pyright_baseline.txt",
-          "tools/check_pyright_gate.py"
-        ]
-      },
-      {
-        "kind": "landing",
-        "sentence": "pyproject.toml is now also read by action.yml.",
-        "subjects": [
-          "pyproject.toml",
-          "action.yml"
-        ]
-      },
-      {
-        "kind": "origin",
-        "sentence": "tools was authored and is now mixed.",
-        "subjects": [
-          "tools"
+          ".github/workflows/*.yml",
+          "tools/check_ci_policy.py"
         ]
       },
       {
         "kind": "counts",
-        "sentence": "1 file added and 1 changed content, across 2 parts.",
+        "sentence": "21 files changed content, across 7 parts.",
         "subjects": []
       }
     ],
     "since": {
-      "commit": "d8ba5c2db800ac2d775f396663be64e19cb53e69",
-      "generatedAt": "2026-09-25T02:18:47.349Z"
+      "commit": "6fcd238d2aafd234b4c5de59d4f88c3b2c46e8b9",
+      "generatedAt": "2026-09-30T20:08:00.132Z"
     },
     "unchanged": false
   },
@@ -124,7 +65,7 @@
     {
       "a": "audiobooker/parser/epub.py",
       "b": "audiobooker/parser/pdf.py",
-      "either": 8,
+      "either": 9,
       "partLabels": [
         "audiobooker",
         "audiobooker"
@@ -169,7 +110,7 @@
     {
       "a": "audiobooker/parser/epub.py",
       "b": "audiobooker/parser/text.py",
-      "either": 9,
+      "either": 10,
       "partLabels": [
         "audiobooker",
         "audiobooker"
@@ -202,7 +143,7 @@
     "Window: 180 days; a pair counts from 3 shared commits, since 4 source files reach 10 revisions; the floor rises to 10 when 25 do."
   ],
   "changesTogetherWithTests": 0,
-  "commit": "6fcd238d2aafd234b4c5de59d4f88c3b2c46e8b9",
+  "commit": "a72befb706b26b26a920e4280c9992944ea6ab12",
   "defaultBranch": "main",
   "derived": "10 parts, mostly Python (131 files), CSS (2), JavaScript (2), TypeScript (2) and Astro (1). Work enters through 7 doors; CI and Publish to GHCR each reach 3 parts, and CI is followed because a pull request goes through it. It publishes to PyPI, @mcptoolshop/audiobooker to npm, and a container image. It deploys a site to GitHub Pages. People run audiobooker. Other repositories use the Audiobooker action.",
   "doors": [
@@ -489,7 +430,7 @@
   "duplicatesLead": null,
   "duplicatesNote": [],
   "edges": [],
-  "engine": "1.24.0",
+  "engine": "1.26.0",
   "generated": [
     {
       "block": true,
@@ -499,16 +440,16 @@
       ]
     }
   ],
-  "generatedAt": "2026-09-30T20:08:00.132Z",
+  "generatedAt": "2026-11-11T22:08:53.799Z",
   "limits": [
     "14 import sites name a declared dependency that shares its name with a local module (docx); they are read as the dependency, which is not in this repository.",
     "7 imports could not be resolved: `audiobooker/cli.py` imports a path built at run time, twice; `audiobooker/language/profile.py` imports a path built at run time; `tests/test_feat_f5_cli.py` imports a path built at run time; and 3 more.",
-    "5 writes and 8 reads use paths built at run time and are not named here.",
+    "5 writes and 6 reads use paths built at run time and are not named here.",
     "1 write goes to places this repository does not track, so it is not listed as generated.",
     "27 writes and 39 reads go to a path their caller passes, not to this repository.",
     "3 writes and 5 reads go to the home directory (.local/, AppData/ and audiobooker/) or a path their caller passes, not to this repository.",
-    "1 write and 2 reads go to the home directory (.config/, AppData/ and audiobooker/), not to this repository.",
-    "2 reads go to the directory the command is run in (audiobooker and pyproject.toml), not to this repository.",
+    "1 write and 3 reads go to the home directory (.config/, AppData/ and audiobooker/), not to this repository.",
+    "3 reads go to the directory the command is run in, not to this repository.",
     "1 read goes to the directory the command is run in (.audiobookerrc) or the home directory (.audiobookerrc), not to this repository.",
     "4 commands are built at run time and not followed.",
     "Statistics confidence is low: fewer than 25 source files reach 10 revisions in the window."
@@ -678,6 +619,18 @@
       ]
     }
   ],
+  "startBeside": [
+    {
+      "files": [
+        "audiobooker/renderer/output.py",
+        "audiobooker/renderer/cache_manifest.py",
+        "audiobooker/renderer/hash_utils.py",
+        "audiobooker/renderer/progress.py",
+        "audiobooker/renderer/failure_report.py"
+      ],
+      "from": "audiobooker/renderer/engine.py"
+    }
+  ],
   "startDoor": ".github/workflows/ci.yml",
   "startHere": [
     ".github/workflows/ci.yml",
@@ -695,6 +648,7 @@
     "examples": 0,
     "tools": 0
   },
+  "testedCodeParts": 3,
   "unnamedWrites": 5,
   "unread": [],
   "unreadFiles": 0,
